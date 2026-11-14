@@ -8,7 +8,7 @@ const TIE_WINDOW: f32 = 0.05;
 pub fn score_candidate(query: &TrackQuery, candidate: &LrclibRecord) -> f32 {
     let title_similarity = similarity(
         &query.canonical.norm_title,
-        &normalize_for_match(candidate.track_name.as_deref().unwrap_or_default()),
+        &normalize_for_match(candidate.title()),
     );
     let artist_similarity = if query.canonical.norm_artist.is_empty() {
         0.8
@@ -24,10 +24,13 @@ pub fn score_candidate(query: &TrackQuery, candidate: &LrclibRecord) -> f32 {
 }
 
 pub fn duration_score(query_sec: Option<f64>, candidate_sec: Option<f64>) -> f32 {
-    let Some(query_sec) = query_sec else {
+    let Some(query_sec) = query_sec.filter(|duration| duration.is_finite() && *duration > 0.0)
+    else {
         return 0.75;
     };
-    let Some(candidate_sec) = candidate_sec.filter(|duration| *duration > 0.0) else {
+    let Some(candidate_sec) =
+        candidate_sec.filter(|duration| duration.is_finite() && *duration > 0.0)
+    else {
         return 0.75;
     };
 
@@ -92,24 +95,31 @@ fn similarity(left: &str, right: &str) -> f32 {
 }
 
 fn quality_rank(candidate: &LrclibRecord) -> u8 {
-    if candidate.has_word_sync {
+    if candidate.has_word_sync
+        && candidate
+            .lyricsfile
+            .as_deref()
+            .is_some_and(|lyrics| !lyrics.trim().is_empty())
+    {
         0
+    } else if candidate.has_word_sync {
+        1
     } else if candidate
         .synced_lyrics
         .as_deref()
         .is_some_and(|lyrics| !lyrics.trim().is_empty())
     {
-        1
-    } else if candidate.instrumental {
         2
+    } else if candidate.instrumental {
+        3
     } else if candidate
         .plain_lyrics
         .as_deref()
         .is_some_and(|lyrics| !lyrics.trim().is_empty())
     {
-        3
-    } else {
         4
+    } else {
+        5
     }
 }
 
@@ -154,6 +164,8 @@ mod tests {
         assert_eq!(duration_score(Some(200.0), Some(220.0)), 0.0);
         assert_eq!(duration_score(Some(200.0), None), 0.75);
         assert_eq!(duration_score(None, Some(200.0)), 0.75);
+        assert_eq!(duration_score(Some(f64::NAN), Some(200.0)), 0.75);
+        assert_eq!(duration_score(Some(200.0), Some(f64::INFINITY)), 0.75);
 
         let mid = duration_score(Some(200.0), Some(211.0));
         assert!((mid - 0.5).abs() < 0.001);
@@ -167,17 +179,46 @@ mod tests {
     }
 
     #[test]
-    fn prefers_word_sync_within_tie_window() {
-        let mut word_sync = record(2, "Yellow", "Coldplay", 267.0);
-        word_sync.has_word_sync = true;
-        word_sync.synced_lyrics = Some("[00:01.00]Yellow".to_string());
+    fn prefers_word_sync_and_lyricsfile_within_tie_window() {
+        let mut word_sync_with_file = record(1, "Yellow", "Coldplay", 262.0);
+        word_sync_with_file.has_word_sync = true;
+        word_sync_with_file.lyricsfile = Some("version: '1.0'\nlines: []\n".to_string());
+        word_sync_with_file.synced_lyrics = Some("[00:01.00]Yellow".to_string());
 
-        let mut instrumental = record(1, "Yellow", "Coldplay", 267.0);
-        instrumental.instrumental = true;
+        let mut synced_exact = record(2, "Yellow", "Coldplay", 267.0);
+        synced_exact.synced_lyrics = Some("[00:01.00]Yellow".to_string());
 
-        let candidates = [instrumental, word_sync];
-        let (selected, _) = select_best(&query(), &candidates).unwrap();
+        let mut instrumental_exact = record(3, "Yellow", "Coldplay", 267.0);
+        instrumental_exact.instrumental = true;
 
-        assert_eq!(selected.id, 2);
+        let mut plain_exact = record(4, "Yellow", "Coldplay", 267.0);
+        plain_exact.plain_lyrics = Some("Yellow".to_string());
+
+        let candidates = [
+            plain_exact,
+            instrumental_exact,
+            synced_exact,
+            word_sync_with_file,
+        ];
+        let ranked = rank_candidates(&query(), &candidates);
+
+        assert_eq!(ranked[0].0.id, 1);
+        assert_eq!(ranked[1].0.id, 2);
+        assert_eq!(ranked[2].0.id, 3);
+        assert_eq!(ranked[3].0.id, 4);
+    }
+
+    #[test]
+    fn uses_name_fallback_when_track_name_missing() {
+        let candidate = LrclibRecord {
+            id: 9,
+            name: Some("Yellow".to_string()),
+            track_name: None,
+            artist_name: Some("Coldplay".to_string()),
+            duration: Some(267.0),
+            ..LrclibRecord::default()
+        };
+
+        assert!((score_candidate(&query(), &candidate) - 1.0).abs() < f32::EPSILON);
     }
 }

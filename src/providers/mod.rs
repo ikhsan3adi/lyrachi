@@ -9,7 +9,10 @@ use crate::core::model::{CanonicalTrackKey, SyncedTrack};
 use crate::media::TrackMeta;
 use local::LocalProvider;
 use lrclib::LrclibClient;
-use sanitize::{canonical_key, clean_artist, clean_text, clean_title, split_artist_title};
+use sanitize::{
+    canonical_key, clean_artist, clean_text, clean_title, normalize_for_match, split_artist_title,
+    strip_dash_qualifier,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
@@ -51,14 +54,23 @@ pub struct TrackQuery {
 impl TrackQuery {
     pub fn from_meta(meta: &TrackMeta, user_offset_ms: i64) -> Self {
         let mut artist = clean_artist(&meta.artist);
-        let mut title = clean_title(&meta.title);
-
-        if artist.is_empty()
-            && let Some((left, right)) = split_artist_title(&title)
-        {
-            artist = clean_artist(&left);
-            title = clean_title(&right);
-        }
+        let split_source = strip_dash_qualifier(&meta.title);
+        let title = if let Some((left, right)) = split_artist_title(&split_source) {
+            let left_artist = clean_artist(&left);
+            let right_title = clean_title(&right);
+            if !left_artist.is_empty()
+                && !right_title.is_empty()
+                && (artist.is_empty()
+                    || normalize_for_match(&left_artist) == normalize_for_match(&artist))
+            {
+                artist = left_artist;
+                right_title
+            } else {
+                clean_title(&meta.title)
+            }
+        } else {
+            clean_title(&meta.title)
+        };
 
         let album = meta
             .album
@@ -78,7 +90,7 @@ impl TrackQuery {
     }
 
     pub fn is_usable(&self) -> bool {
-        !self.title.is_empty()
+        !self.title.is_empty() && !self.canonical.norm_title.is_empty()
     }
 
     pub fn duration_sec(&self) -> Option<f64> {
@@ -168,10 +180,39 @@ mod tests {
     }
 
     #[test]
-    fn rejects_empty_titles() {
-        let query = TrackQuery::from_meta(&meta("   ", "Artist", None, None), 0);
+    fn splits_browser_title_with_featured_artist_before_noise_strip() {
+        let query = TrackQuery::from_meta(
+            &meta("Artist feat. Guest - Song (Official Video)", "", None, None),
+            0,
+        );
 
-        assert!(!query.is_usable());
+        assert_eq!(query.artist, "Artist");
+        assert_eq!(query.title, "Song");
+    }
+
+    #[test]
+    fn avoids_duplicate_artist_prefix_when_artist_matches_topic_channel() {
+        let query = TrackQuery::from_meta(
+            &meta(
+                "Coldplay - Yellow (Official Video)",
+                "Coldplay - Topic",
+                None,
+                None,
+            ),
+            0,
+        );
+
+        assert_eq!(query.artist, "Coldplay");
+        assert_eq!(query.title, "Yellow");
+    }
+
+    #[test]
+    fn rejects_empty_or_punctuation_only_titles() {
+        let blank = TrackQuery::from_meta(&meta("   ", "Artist", None, None), 0);
+        let punctuation = TrackQuery::from_meta(&meta("...", "Artist", None, None), 0);
+
+        assert!(!blank.is_usable());
+        assert!(!punctuation.is_usable());
     }
 
     #[test]

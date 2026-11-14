@@ -6,19 +6,23 @@ use crate::core::model::CanonicalTrackKey;
 
 static NOISE_BRACKETS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\s*[\(\[]\s*(?:official\s*(?:music\s*)?video|official\s*audio|official\s*lyric\s*video|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|m/v|hd|hq|4k|8k|remaster(?:ed)?(?:\s*\d{4})?|live(?:\s*at\s+[^)\]]+)?|performance|acoustic)\s*[\)\]]",
+        r"(?i)\s*[\(\[]\s*(?:official\s*(?:(?:music|lyric)\s*)?(?:video|audio|visuali[sz]er)|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|m/v|(?:full\s+)?hd|hq|4k|8k|1080p|720p|(?:\d{4}\s+)?remaster(?:ed)?(?:\s*\d{4})?(?:\s*version)?|live(?:\s*at\s+[^)\]]+)?|performance|acoustic)\s*[\)\]]",
     )
     .expect("valid noise regex")
 });
 static UNICODE_BRACKETS: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"\s*【[^】]*】").expect("valid unicode bracket regex"));
-static FEATURED: LazyLock<Regex> = LazyLock::new(|| {
-    Regex::new(r"(?i)\s*(?:[\(\[]\s*)?(?:feat\.?|ft\.?|featuring)\s+[^\)\]]+(?:[\)\]]|$)")
-        .expect("valid featured regex")
+static FEATURED_BRACKETS: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s*[\(\[]\s*(?:feat\.?|ft\.?|featuring)\b[^\)\]]*[\)\]]")
+        .expect("valid bracketed featured regex")
+});
+static FEATURED_PLAIN: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\s+\b(?:feat\.?|ft\.?|featuring)(?:\.|\s)\s*[^(\[\)\]-]+$")
+        .expect("valid plain featured regex")
 });
 static DASH_QUALIFIER: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\s+-\s+(?:official\s*(?:music\s*)?video|official\s*audio|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|hd|4k).*$",
+        r"(?i)\s+-\s+(?:official\s*(?:(?:music|lyric)\s*)?(?:video|audio|visuali[sz]er)|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|hd|4k|(?:\d{4}\s+)?remaster(?:ed)?(?:\s*\d{4})?(?:\s*version)?).*$",
     )
     .expect("valid dash qualifier regex")
 });
@@ -31,31 +35,45 @@ pub fn clean_text(input: &str) -> String {
     let input = input.replace(['\u{2014}', '\u{2013}'], "-");
     let mut text = NOISE_BRACKETS.replace_all(&input, " ").into_owned();
     text = UNICODE_BRACKETS.replace_all(&text, " ").into_owned();
-    text = FEATURED.replace_all(&text, " ").into_owned();
+    text = FEATURED_BRACKETS.replace_all(&text, " ").into_owned();
+    text = NOISE_BRACKETS.replace_all(&text, " ").into_owned();
     text = DASH_QUALIFIER.replace_all(&text, " ").into_owned();
-    text = VEVO.replace_all(&text, " ").into_owned();
+    text = FEATURED_PLAIN.replace_all(&text, " ").into_owned();
     collapse_text(&text)
 }
 
 pub fn clean_artist(input: &str) -> String {
     let text = clean_text(input);
-    collapse_text(&TOPIC.replace_all(&text, " "))
+    let text = TOPIC.replace_all(&text, " ");
+    collapse_text(&VEVO.replace_all(&text, " "))
 }
 
 pub fn clean_title(input: &str) -> String {
     clean_text(input)
 }
 
-pub fn split_artist_title(title: &str) -> Option<(String, String)> {
-    let (artist, title) = title.split_once(" - ")?;
-    let artist = artist.trim();
-    let title = title.trim();
+pub(crate) fn strip_dash_qualifier(input: &str) -> String {
+    let normalized = input.replace(['\u{2014}', '\u{2013}'], "-");
+    DASH_QUALIFIER.replace_all(&normalized, "").into_owned()
+}
 
-    if artist.is_empty() || title.is_empty() {
+pub fn split_artist_title(title: &str) -> Option<(String, String)> {
+    let normalized = title.replace(['\u{2014}', '\u{2013}'], "-");
+    let (artist, right) = normalized.split_once(" - ")?;
+    let artist = artist.trim();
+    let mut song = right.trim();
+
+    if let Some((tag, rest)) = song.split_once(" - ")
+        && tag.trim().eq_ignore_ascii_case("topic")
+    {
+        song = rest.trim();
+    }
+
+    if artist.is_empty() || song.is_empty() {
         return None;
     }
 
-    Some((artist.to_string(), title.to_string()))
+    Some((artist.to_string(), song.to_string()))
 }
 
 pub fn normalize_for_match(input: &str) -> String {
@@ -115,27 +133,51 @@ mod tests {
     #[test]
     fn strips_release_noise() {
         assert_eq!(clean_title("Yellow (Official Video) [4K]"), "Yellow");
+        assert_eq!(clean_title("Yellow (Official Visualizer)"), "Yellow");
+        assert_eq!(clean_title("Yellow [Full HD] (1080p) (720p)"), "Yellow");
         assert_eq!(clean_title("Song - Official Audio"), "Song");
+        assert_eq!(
+            clean_title("Bohemian Rhapsody - Remastered 2011"),
+            "Bohemian Rhapsody"
+        );
+        assert_eq!(clean_title("Heroes (2017 Remaster)"), "Heroes");
+        assert_eq!(clean_title("Heroes (Remastered 2011 Version)"), "Heroes");
         assert_eq!(clean_title("Song (Live at Wembley)"), "Song");
         assert_eq!(clean_title("Song 【MV】"), "Song");
     }
 
     #[test]
-    fn strips_featured_artists() {
+    fn strips_featured_artists_without_corrupting_words_or_titles() {
         assert_eq!(clean_title("Song feat. Guest"), "Song");
         assert_eq!(clean_title("Song (ft. Guest)"), "Song");
+        assert_eq!(clean_artist("Daft. Punk"), "Daft. Punk");
+        assert_eq!(clean_title("Left. Right"), "Left. Right");
+        assert_eq!(
+            clean_title("Artist feat. Guest - Song (Official Video)"),
+            "Artist feat. Guest - Song"
+        );
     }
 
     #[test]
     fn cleans_channel_style_artists() {
         assert_eq!(clean_artist("Coldplay - Topic"), "Coldplay");
         assert_eq!(clean_artist("ColdplayVEVO"), "Coldplay");
+        assert_eq!(clean_artist("ColdplayVEVO - Topic"), "Coldplay");
+        assert_eq!(clean_title("ChannelVEVO"), "ChannelVEVO");
     }
 
     #[test]
     fn splits_artist_and_title() {
         assert_eq!(
             split_artist_title("Coldplay - Yellow"),
+            Some(("Coldplay".to_string(), "Yellow".to_string()))
+        );
+        assert_eq!(
+            split_artist_title("Coldplay \u{2013} Yellow"),
+            Some(("Coldplay".to_string(), "Yellow".to_string()))
+        );
+        assert_eq!(
+            split_artist_title("Coldplay - Topic - Yellow"),
             Some(("Coldplay".to_string(), "Yellow".to_string()))
         );
         assert_eq!(split_artist_title("Yellow"), None);
