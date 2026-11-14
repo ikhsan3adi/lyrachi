@@ -14,7 +14,7 @@ pub struct Args {
     #[arg(long = "local-dir", value_name = "PATH")]
     pub local_dir: Vec<PathBuf>,
 
-    /// Manual lyric delay in milliseconds. Positive values delay the lyrics.
+    /// Manual lyric offset in milliseconds added to the playback position.
     #[arg(
         long,
         default_value_t = 0,
