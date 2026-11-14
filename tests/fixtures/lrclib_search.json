@@ -1,0 +1,54 @@
+[
+  {
+    "id": 1,
+    "name": "Yellow",
+    "trackName": "Yellow",
+    "artistName": "Coldplay",
+    "albumName": "Parachutes",
+    "duration": 267.0,
+    "instrumental": false,
+    "hasWordSync": true,
+    "plainLyrics": "Look at the stars\nLook how they shine for you\n",
+    "syncedLyrics": "[00:33.37] Look at the stars\n[00:36.16] Look how they shine for you\n",
+    "lyricsfile": "version: '1.0'\nmetadata:\n  title: Yellow\n  artist: Coldplay\n  album: Parachutes\n  duration_ms: 267000\n  instrumental: false\nlines:\n- text: Look at the stars\n  start_ms: 33370\n  end_ms: 34667\n  words:\n  - text: 'Look '\n    start_ms: 33370\n  - text: 'at '\n    start_ms: 33803\n  - text: 'the '\n    start_ms: 33944\n  - text: stars\n    start_ms: 34152\n- text: Look how they shine for you\n  start_ms: 36160\n  end_ms: 38588\n  words:\n  - text: 'Look '\n    start_ms: 36160\n  - text: 'how '\n    start_ms: 36351\n  - text: 'they '\n    start_ms: 36459\n  - text: 'shine '\n    start_ms: 36567\n  - text: 'for '\n    start_ms: 36850\n  - text: you\n    start_ms: 37282\n"
+  },
+  {
+    "id": 2,
+    "name": "Yellow (Live)",
+    "trackName": "Yellow (Live)",
+    "artistName": "Coldplay",
+    "albumName": "Live",
+    "duration": 300.0,
+    "instrumental": false,
+    "hasWordSync": false,
+    "plainLyrics": "Live version\n",
+    "syncedLyrics": "[00:01.00] Live version\n",
+    "lyricsfile": null
+  },
+  {
+    "id": 3,
+    "name": "Yellow",
+    "trackName": "Yellow",
+    "artistName": "Some Cover Band",
+    "albumName": "Covers",
+    "duration": 200.0,
+    "instrumental": false,
+    "hasWordSync": false,
+    "plainLyrics": "Cover version\n",
+    "syncedLyrics": "[00:01.00] Cover version\n",
+    "lyricsfile": null
+  },
+  {
+    "id": 4,
+    "name": "Yellow",
+    "trackName": "Yellow",
+    "artistName": "Coldplay",
+    "albumName": "Parachutes",
+    "duration": 267.0,
+    "instrumental": true,
+    "hasWordSync": false,
+    "plainLyrics": null,
+    "syncedLyrics": null,
+    "lyricsfile": null
+  }
+]

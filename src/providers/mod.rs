@@ -2,3 +2,203 @@ pub mod local;
 pub mod lrclib;
 pub mod sanitize;
 pub mod score;
+
+use std::path::PathBuf;
+
+use crate::core::model::{CanonicalTrackKey, SyncedTrack};
+use crate::media::TrackMeta;
+use local::LocalProvider;
+use lrclib::LrclibClient;
+use sanitize::{canonical_key, clean_artist, clean_text, clean_title, split_artist_title};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Provider {
+    Local,
+    Lrclib,
+}
+
+impl Provider {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Local => "local",
+            Self::Lrclib => "lrclib",
+        }
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum ProviderError {
+    #[error("local lyric file error: {0}")]
+    Io(#[from] std::io::Error),
+    #[error("LRCLIB request failed: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("LRCLIB returned HTTP {0}")]
+    Status(reqwest::StatusCode),
+    #[error("invalid LRCLIB response: {0}")]
+    Json(#[from] serde_json::Error),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackQuery {
+    pub artist: String,
+    pub title: String,
+    pub album: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub user_offset_ms: i64,
+    pub canonical: CanonicalTrackKey,
+}
+
+impl TrackQuery {
+    pub fn from_meta(meta: &TrackMeta, user_offset_ms: i64) -> Self {
+        let mut artist = clean_artist(&meta.artist);
+        let mut title = clean_title(&meta.title);
+
+        if artist.is_empty()
+            && let Some((left, right)) = split_artist_title(&title)
+        {
+            artist = clean_artist(&left);
+            title = clean_title(&right);
+        }
+
+        let album = meta
+            .album
+            .as_deref()
+            .map(clean_text)
+            .filter(|album| !album.is_empty());
+        let canonical = canonical_key(&artist, &title, album.as_deref(), meta.duration_ms);
+
+        Self {
+            artist,
+            title,
+            album,
+            duration_ms: meta.duration_ms,
+            user_offset_ms,
+            canonical,
+        }
+    }
+
+    pub fn is_usable(&self) -> bool {
+        !self.title.is_empty()
+    }
+
+    pub fn duration_sec(&self) -> Option<f64> {
+        self.duration_ms
+            .map(|duration_ms| duration_ms as f64 / 1_000.0)
+    }
+}
+
+pub struct ProviderResolver {
+    local: LocalProvider,
+    lrclib: LrclibClient,
+}
+
+impl ProviderResolver {
+    pub fn new(local_dirs: Vec<PathBuf>) -> Result<Self, ProviderError> {
+        Ok(Self {
+            local: LocalProvider::new(local_dirs),
+            lrclib: LrclibClient::new()?,
+        })
+    }
+
+    pub async fn resolve(
+        &self,
+        meta: &TrackMeta,
+        user_offset_ms: i64,
+    ) -> Result<Option<SyncedTrack>, ProviderError> {
+        let query = TrackQuery::from_meta(meta, user_offset_ms);
+
+        if !query.is_usable() {
+            return Ok(None);
+        }
+
+        if let Some(track) = self.local.find(&query).await? {
+            return Ok(Some(track));
+        }
+
+        self.lrclib.resolve(&query).await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("lyrachi-{name}-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn meta(title: &str, artist: &str, album: Option<&str>, duration_ms: Option<u64>) -> TrackMeta {
+        TrackMeta {
+            title: title.to_string(),
+            artist: artist.to_string(),
+            album: album.map(str::to_string),
+            duration_ms,
+            track_id: None,
+        }
+    }
+
+    #[test]
+    fn builds_clean_query_from_browser_metadata() {
+        let query = TrackQuery::from_meta(
+            &meta(
+                "Coldplay - Yellow (Official Video)",
+                "",
+                Some("Parachutes"),
+                Some(267_000),
+            ),
+            100,
+        );
+
+        assert_eq!(query.artist, "Coldplay");
+        assert_eq!(query.title, "Yellow");
+        assert_eq!(query.album.as_deref(), Some("Parachutes"));
+        assert_eq!(query.duration_ms, Some(267_000));
+        assert_eq!(query.user_offset_ms, 100);
+        assert_eq!(query.canonical.norm_artist, "coldplay");
+        assert_eq!(query.canonical.norm_title, "yellow");
+    }
+
+    #[test]
+    fn rejects_empty_titles() {
+        let query = TrackQuery::from_meta(&meta("   ", "Artist", None, None), 0);
+
+        assert!(!query.is_usable());
+    }
+
+    #[test]
+    fn computes_duration_seconds() {
+        let query = TrackQuery::from_meta(&meta("Song", "Artist", None, Some(12_345)), 0);
+
+        assert_eq!(query.duration_sec(), Some(12.345));
+    }
+
+    #[tokio::test]
+    async fn local_provider_wins_before_lrclib() {
+        let dir = temp_dir("resolver-local");
+        std::fs::write(
+            dir.join("Coldplay - Yellow.lrc"),
+            "[00:01.00]Look at the stars\n",
+        )
+        .unwrap();
+        let resolver = ProviderResolver::new(vec![dir.clone()]).unwrap();
+
+        let track = resolver
+            .resolve(&meta("Yellow", "Coldplay", None, None), 0)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.source_provider, "local");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+}
