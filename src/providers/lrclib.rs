@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use reqwest::StatusCode;
 use serde::{Deserialize, Deserializer};
+use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
 use super::score;
@@ -16,7 +17,7 @@ const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
 const USER_AGENT: &str = concat!(
     "lyrachi/",
     env!("CARGO_PKG_VERSION"),
-    " (https://codeberg.org/ikhsan3adi/lyrachi)"
+    " (https://github.com/ikhsan3adi/lyrachi)"
 );
 const MAX_CANDIDATES: usize = 20;
 
@@ -78,13 +79,25 @@ impl LrclibClient {
     }
 
     pub async fn resolve(&self, query: &TrackQuery) -> Result<Option<SyncedTrack>, ProviderError> {
-        if let Some(record) = self.get(query).await?
+        self.resolve_with_cancel(query, &CancellationToken::new())
+            .await
+    }
+
+    pub async fn resolve_with_cancel(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SyncedTrack>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if let Some(record) = self.get(query, cancel).await?
             && let Some(track) = Self::record_to_track(&record, 1.0, query)?
         {
             return Ok(Some(track));
         }
 
-        let candidates = self.search(query).await?;
+        let candidates = self.search(query, cancel).await?;
         let ranked =
             score::rank_candidates(query, &candidates[..candidates.len().min(MAX_CANDIDATES)]);
 
@@ -97,30 +110,46 @@ impl LrclibClient {
         Ok(None)
     }
 
-    async fn get(&self, query: &TrackQuery) -> Result<Option<LrclibRecord>, ProviderError> {
+    async fn get(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<LrclibRecord>, ProviderError> {
         if query.canonical.norm_artist.is_empty() || query.canonical.norm_title.is_empty() {
             return Ok(None);
         }
 
         let params = get_params(query);
-        let response = self
+        let send_fut = self
             .client
             .get(format!("{}/api/get", self.base_url))
             .query(&params)
-            .send()
-            .await?;
+            .send();
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+            res = send_fut => res?,
+        };
 
         match response.status() {
             StatusCode::NOT_FOUND => Ok(None),
             status if status.is_success() => {
-                let body = response.text().await?;
+                let body = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                    res = response.text() => res?,
+                };
                 Ok(Some(serde_json::from_str(&body)?))
             }
             status => Err(ProviderError::Status(status)),
         }
     }
 
-    async fn search(&self, query: &TrackQuery) -> Result<Vec<LrclibRecord>, ProviderError> {
+    async fn search(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<LrclibRecord>, ProviderError> {
         if query.canonical.norm_title.is_empty() {
             return Ok(Vec::new());
         }
@@ -132,7 +161,7 @@ impl LrclibClient {
                 ("track_name", query.title.clone()),
                 ("artist_name", query.artist.clone()),
             ];
-            records = self.search_request(&params).await?;
+            records = self.search_request(&params, cancel).await?;
         }
 
         if records.is_empty() {
@@ -143,7 +172,7 @@ impl LrclibClient {
                     .trim()
                     .to_string()
             };
-            records = self.search_request(&[("q", q)]).await?;
+            records = self.search_request(&[("q", q)], cancel).await?;
         }
 
         Ok(records)
@@ -152,18 +181,27 @@ impl LrclibClient {
     async fn search_request(
         &self,
         params: &[(&str, String)],
+        cancel: &CancellationToken,
     ) -> Result<Vec<LrclibRecord>, ProviderError> {
-        let response = self
+        let send_fut = self
             .client
             .get(format!("{}/api/search", self.base_url))
             .query(params)
-            .send()
-            .await?;
+            .send();
+        let response = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+            res = send_fut => res?,
+        };
 
         match response.status() {
             StatusCode::NOT_FOUND => Ok(Vec::new()),
             status if status.is_success() => {
-                let body = response.text().await?;
+                let body = tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                    res = response.text() => res?,
+                };
                 Ok(serde_json::from_str(&body)?)
             }
             status => Err(ProviderError::Status(status)),
@@ -589,6 +627,31 @@ mod tests {
             err,
             ProviderError::Status(StatusCode::INTERNAL_SERVER_ERROR)
         ));
+    }
+
+    #[tokio::test]
+    async fn mock_cancels_in_flight_http_request() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        });
+
+        let client = LrclibClient::with_base_url(format!("http://{addr}")).unwrap();
+        let cancel = CancellationToken::new();
+        let cancel_trigger = cancel.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            cancel_trigger.cancel();
+        });
+
+        let err = client
+            .resolve_with_cancel(&query(), &cancel)
+            .await
+            .unwrap_err();
+        server.abort();
+        assert!(matches!(err, ProviderError::Cancelled));
     }
 
     #[tokio::test]

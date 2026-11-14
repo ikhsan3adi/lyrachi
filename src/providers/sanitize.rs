@@ -6,7 +6,7 @@ use crate::core::model::CanonicalTrackKey;
 
 static NOISE_BRACKETS: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(
-        r"(?i)\s*[\(\[]\s*(?:official\s*(?:(?:music|lyric)\s*)?(?:video|audio|visuali[sz]er)|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|m/v|(?:full\s+)?hd|hq|4k|8k|1080p|720p|(?:\d{4}\s+)?remaster(?:ed)?(?:\s*\d{4})?(?:\s*version)?|live(?:\s*at\s+[^)\]]+)?|performance|acoustic)\s*[\)\]]",
+        r"(?i)\s*[\(\[]\s*(?:official\s*(?:(?:music|lyric)\s*)?(?:video|audio|visuali[sz]er)|lyric\s*video|lyrics?|visuali[sz]er|audio|video|mv|m/v|(?:full\s+)?hd|hq|4k|8k|1080p|720p|(?:(?:\d{4}|4k|8k|hd)\s+)?remaster(?:ed)?(?:\s*\d{4})?(?:\s*version)?|live(?:\s*at\s+[^)\]]+)?|performance|acoustic)\s*[\)\]]",
     )
     .expect("valid noise regex")
 });

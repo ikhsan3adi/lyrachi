@@ -5,6 +5,7 @@ use std::time::Instant;
 
 use tokio::fs;
 use tokio::sync::OnceCell;
+use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
 use super::sanitize::{
@@ -59,24 +60,38 @@ impl LocalProvider {
     }
 
     pub async fn find(&self, query: &TrackQuery) -> Result<Option<SyncedTrack>, ProviderError> {
+        self.find_with_cancel(query, &CancellationToken::new())
+            .await
+    }
+
+    pub async fn find_with_cancel(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SyncedTrack>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
         let title_key = &query.canonical.norm_title;
         if query.title.is_empty() || title_key.is_empty() || self.dirs.is_empty() {
             return Ok(None);
         }
 
-        let index = self
-            .index
-            .get_or_init(|| async {
-                let dirs = self.dirs.clone();
-                match tokio::task::spawn_blocking(move || scan_dirs(&dirs)).await {
-                    Ok(files) => files,
-                    Err(error) => {
-                        warn!(%error, "local lyric scan task failed");
-                        Vec::new()
-                    }
+        let init_fut = self.index.get_or_init(|| async {
+            let dirs = self.dirs.clone();
+            match tokio::task::spawn_blocking(move || scan_dirs(&dirs)).await {
+                Ok(files) => files,
+                Err(error) => {
+                    warn!(%error, "local lyric scan task failed");
+                    Vec::new()
                 }
-            })
-            .await;
+            }
+        });
+        let index = tokio::select! {
+            biased;
+            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+            files = init_fut => files,
+        };
 
         let artist_key = &query.canonical.norm_artist;
         let combined_dash_artist_key = (!artist_key.is_empty() && query.artist.contains(" - "))
@@ -112,7 +127,15 @@ impl LocalProvider {
         });
 
         for (_, _, path) in matches {
-            let content = match fs::read_to_string(path).await {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let read_res = tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                res = fs::read_to_string(path) => res,
+            };
+            let content = match read_res {
                 Ok(content) => content,
                 Err(error) => {
                     warn!(%error, path = %path.display(), "failed to read local lyric file");

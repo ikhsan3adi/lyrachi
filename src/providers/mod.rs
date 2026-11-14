@@ -5,6 +5,8 @@ pub mod score;
 
 use std::path::PathBuf;
 
+use tokio_util::sync::CancellationToken;
+
 use crate::core::model::{CanonicalTrackKey, SyncedTrack};
 use crate::media::TrackMeta;
 use local::LocalProvider;
@@ -39,6 +41,8 @@ pub enum ProviderError {
     Status(reqwest::StatusCode),
     #[error("invalid LRCLIB response: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("lyric resolution cancelled")]
+    Cancelled,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -118,16 +122,26 @@ impl ProviderResolver {
         user_offset_ms: i64,
     ) -> Result<Option<SyncedTrack>, ProviderError> {
         let query = TrackQuery::from_meta(meta, user_offset_ms);
+        self.resolve_query(&query, &CancellationToken::new()).await
+    }
 
+    pub async fn resolve_query(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SyncedTrack>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
         if !query.is_usable() {
             return Ok(None);
         }
 
-        if let Some(track) = self.local.find(&query).await? {
+        if let Some(track) = self.local.find_with_cancel(query, cancel).await? {
             return Ok(Some(track));
         }
 
-        self.lrclib.resolve(&query).await
+        self.lrclib.resolve_with_cancel(query, cancel).await
     }
 }
 
