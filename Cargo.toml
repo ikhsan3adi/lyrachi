@@ -3,7 +3,7 @@ name = "lyrachi"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.89"
-description = "Terminal lyrics for MPRIS players"
+description = "Synchronized terminal lyrics for active media players"
 
 [dependencies]
 ratatui = { version = "0.30.2", features = ["crossterm_0_29"] }

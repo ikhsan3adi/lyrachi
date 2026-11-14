@@ -4,9 +4,13 @@ use clap::Parser;
 
 /// Command line arguments for the MVP.
 #[derive(Debug, Parser)]
-#[command(name = "lyrachi", version, about = "Terminal lyrics for MPRIS players")]
+#[command(
+    name = "lyrachi",
+    version,
+    about = "Synchronized terminal lyrics for active media players"
+)]
 pub struct Args {
-    /// Only consider this MPRIS player bus (for example: mpv, spotify, firefox).
+    /// Only consider this media player (for example: mpv, spotify, firefox).
     #[arg(long, value_name = "NAME")]
     pub player: Option<String>,
 
