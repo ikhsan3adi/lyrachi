@@ -183,7 +183,7 @@ impl PlaybackClock {
 
         if Some(polled_ms) == *last_polled_ms {
             *stale_poll_count = stale_poll_count.saturating_add(1);
-            if *stale_poll_count >= 2 {
+            if *stale_poll_count >= 1 {
                 return;
             }
         } else {
@@ -391,7 +391,7 @@ mod tests {
     }
 
     #[test]
-    fn stale_polls_are_ignored_after_the_second_repeat() {
+    fn stale_polls_are_ignored_from_the_first_repeat() {
         let base = Instant::now();
         let mut clock = playing_clock(base, 0);
 
@@ -399,10 +399,10 @@ mod tests {
         assert_eq!(clock.raw_position_at(at(base, 1_000)), 1_023);
 
         clock.on_position_poll(1_046, Duration::ZERO, at(base, 1_100));
-        assert_eq!(clock.raw_position_at(at(base, 1_100)), 1_085);
+        assert_eq!(clock.raw_position_at(at(base, 1_100)), 1_123);
 
         clock.on_position_poll(1_046, Duration::ZERO, at(base, 1_200));
-        assert_eq!(clock.raw_position_at(at(base, 1_200)), 1_185);
+        assert_eq!(clock.raw_position_at(at(base, 1_200)), 1_223);
 
         clock.on_position_poll(1_700, Duration::ZERO, at(base, 1_300));
         assert_eq!(clock.raw_position_at(at(base, 1_300)), 1_700);
@@ -416,7 +416,16 @@ mod tests {
         ));
 
         clock.on_position_poll(1_700, Duration::ZERO, at(base, 1_400));
-        assert_eq!(clock.raw_position_at(at(base, 1_400)), 1_750);
+        assert_eq!(clock.raw_position_at(at(base, 1_400)), 1_800);
+
+        let mut stepped = playing_clock(base, 178_025);
+        stepped.on_position_poll(178_025, Duration::ZERO, at(base, 0));
+        stepped.on_position_poll(178_025, Duration::ZERO, at(base, 1_000));
+        assert_eq!(stepped.raw_position_at(at(base, 1_000)), 179_025);
+        stepped.on_position_poll(178_025, Duration::ZERO, at(base, 2_000));
+        assert_eq!(stepped.raw_position_at(at(base, 2_000)), 180_025);
+        stepped.on_position_poll(181_055, Duration::ZERO, at(base, 3_000));
+        assert_eq!(stepped.raw_position_at(at(base, 3_000)), 181_025);
     }
 
     #[test]
