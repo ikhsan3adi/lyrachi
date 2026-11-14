@@ -21,9 +21,9 @@ impl EffectiveOffsets {
         let raw_ms = i64::try_from(raw_ms).unwrap_or(i64::MAX);
         raw_ms
             .saturating_add(self.intrinsic_ms)
-            .saturating_add(self.global_ms)
-            .saturating_add(self.player_ms)
-            .saturating_add(self.user_ms)
+            .saturating_sub(self.global_ms)
+            .saturating_sub(self.player_ms)
+            .saturating_sub(self.user_ms)
             .saturating_add(self.lookahead_ms)
             .max(0) as u64
     }
@@ -420,38 +420,38 @@ mod tests {
     }
 
     #[test]
-    fn effective_offsets_combine_all_five_sources_additively() {
+    fn effective_offsets_follow_standard_lrc_and_delay_signs() {
         let base = Instant::now();
         let clock = playing_clock(base, 0);
 
-        let mixed = EffectiveOffsets {
+        let offsets = EffectiveOffsets {
             intrinsic_ms: 300,
             global_ms: 50,
-            player_ms: -120,
+            player_ms: 20,
             user_ms: 100,
             lookahead_ms: 80,
         };
-        assert_eq!(clock.effective_lyric_ms(at(base, 1_000), mixed), 1_410);
 
-        let all_positive = EffectiveOffsets {
-            intrinsic_ms: 10,
-            global_ms: 20,
-            player_ms: 30,
-            user_ms: 40,
-            lookahead_ms: 50,
-        };
+        assert_eq!(clock.effective_lyric_ms(at(base, 1_000), offsets), 1_210);
         assert_eq!(
-            clock.effective_lyric_ms(at(base, 1_000), all_positive),
-            1_150
+            clock.effective_lyric_ms(
+                at(base, 1_000),
+                EffectiveOffsets {
+                    user_ms: -100,
+                    ..EffectiveOffsets::default()
+                }
+            ),
+            1_100
         );
-
-        let clamped = EffectiveOffsets {
-            intrinsic_ms: -500,
-            global_ms: -300,
-            player_ms: -200,
-            user_ms: -100,
-            lookahead_ms: 50,
-        };
-        assert_eq!(clock.effective_lyric_ms(at(base, 1_000), clamped), 0);
+        assert_eq!(
+            clock.effective_lyric_ms(
+                at(base, 1_000),
+                EffectiveOffsets {
+                    intrinsic_ms: -2_000,
+                    ..EffectiveOffsets::default()
+                }
+            ),
+            0
+        );
     }
 }
