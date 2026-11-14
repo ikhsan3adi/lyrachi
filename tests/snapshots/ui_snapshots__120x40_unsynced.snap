@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                    Yellow  Coldplay
+                                                   Plain lyric line 3
+                                                   Plain lyric line 4
+                                                   Plain lyric line 5
+                                                   Plain lyric line 6
+                                                   Plain lyric line 7
+                                                   Plain lyric line 8
+                                                   Plain lyric line 9
+                                                   Plain lyric line 10
+                                                   Plain lyric line 11
+                                                   Plain lyric line 12
+                                                   Plain lyric line 13
+                                                   Plain lyric line 14
+                                                   Plain lyric line 15
+                                                   Plain lyric line 16
+                                                   Plain lyric line 17
+                                                   Plain lyric line 18
+                                                   Plain lyric line 19
+                                                   Plain lyric line 20
+                                                   Plain lyric line 21
+                                                   Plain lyric line 22
+                                                   Plain lyric line 23
+                                                   Plain lyric line 24
+                                                   Plain lyric line 25
+                                                   Plain lyric line 26
+                                                   Plain lyric line 27
+                                                   Plain lyric line 28
+                                                   Plain lyric line 29
+                                                   Plain lyric line 30
+                                                   Plain lyric line 31
+                                                   Plain lyric line 32
+                                                   Plain lyric line 33
+                                                   Plain lyric line 34
+                                                   Plain lyric line 35
+                                                   Plain lyric line 36
+                                                   Plain lyric line 37
+                                                   Plain lyric line 38
+                                                   Plain lyric line 39
+                                                   Plain lyric line 40
+limusic | playing | lrclib | +0 ms | 91% | unsynced 3/40

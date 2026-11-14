@@ -102,6 +102,7 @@ pub struct TrackMeta {
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaEvent {
     PlayerChanged { bus: String, kind: PlayerKind },
+    NoPlayer,
     TrackChanged(TrackMeta),
     NoTrack,
     Status(PlaybackStatus),

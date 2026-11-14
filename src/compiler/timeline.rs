@@ -1,1 +1,321 @@
-//! Compiled lyric timeline is implemented in M5.
+use crate::core::model::{LineRole, SyncGranularity, SyncedTrack, WordToken};
+use crate::core::text::wrap_text;
+
+pub const HORIZONTAL_PADDING: u16 = 2;
+const MIN_WRAP_WIDTH: u16 = 1;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrappedSubLine {
+    pub text: String,
+    pub display_width: u16,
+    pub source_byte_range: (usize, usize),
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledLine {
+    pub source_line_idx: usize,
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub role: LineRole,
+    pub wrapped_main: Vec<WrappedSubLine>,
+    pub wrapped_annotations: Vec<String>,
+    pub words: Vec<WordToken>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct ActiveStageCursor {
+    pub active_line_idx: Option<usize>,
+    pub active_word_idx: Option<usize>,
+    pub progress: f32,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompiledTimeline {
+    pub viewport_width: u16,
+    pub granularity: SyncGranularity,
+    pub lines: Vec<CompiledLine>,
+}
+
+impl CompiledTimeline {
+    pub fn compile(track: &SyncedTrack, viewport_width: u16) -> Self {
+        let wrap_width = viewport_width
+            .saturating_sub(HORIZONTAL_PADDING.saturating_mul(2))
+            .max(MIN_WRAP_WIDTH);
+
+        let lines = track
+            .lines
+            .iter()
+            .enumerate()
+            .map(|(source_line_idx, line)| {
+                let wrapped_main = wrap_text(&line.text, wrap_width)
+                    .into_iter()
+                    .map(|wrapped| WrappedSubLine {
+                        text: wrapped.text,
+                        display_width: wrapped.display_width,
+                        source_byte_range: wrapped.source_range,
+                    })
+                    .collect();
+                let wrapped_annotations = line
+                    .annotations
+                    .iter()
+                    .flat_map(|annotation| wrap_text(&annotation.text, wrap_width))
+                    .map(|wrapped| wrapped.text)
+                    .collect();
+
+                CompiledLine {
+                    source_line_idx,
+                    start_ms: line.start_ms,
+                    end_ms: line.end_ms,
+                    role: line.role,
+                    wrapped_main,
+                    wrapped_annotations,
+                    words: line.words.clone(),
+                }
+            })
+            .collect();
+
+        Self {
+            viewport_width,
+            granularity: track.granularity,
+            lines,
+        }
+    }
+
+    pub fn evaluate(&self, effective_ms: u64) -> ActiveStageCursor {
+        let Some(active_line_idx) = self.line_index(effective_ms) else {
+            return ActiveStageCursor {
+                active_line_idx: None,
+                active_word_idx: None,
+                progress: 0.0,
+            };
+        };
+        let line = &self.lines[active_line_idx];
+        let active_word_idx = self.word_index(line, effective_ms);
+        let progress = match active_word_idx {
+            Some(word_idx) => {
+                let word = &line.words[word_idx];
+                interval_progress(word.start_ms, word.end_ms, effective_ms)
+            }
+            None => interval_progress(line.start_ms, line.end_ms, effective_ms),
+        };
+
+        ActiveStageCursor {
+            active_line_idx: Some(active_line_idx),
+            active_word_idx,
+            progress,
+        }
+    }
+
+    pub fn next_boundary_ms(&self, effective_ms: u64) -> Option<u64> {
+        let next_line_idx = self
+            .lines
+            .partition_point(|line| line.start_ms <= effective_ms);
+        let mut earliest = self.lines.get(next_line_idx).map(|line| line.start_ms);
+
+        if let Some(line_idx) = self.line_index(effective_ms) {
+            let line = &self.lines[line_idx];
+            if line.end_ms < u64::MAX {
+                earliest = min_boundary(earliest, Some(line.end_ms + 1));
+            }
+
+            let next_word_idx = line
+                .words
+                .partition_point(|word| word.start_ms <= effective_ms);
+            let next_word_start = line.words.get(next_word_idx).map(|word| word.start_ms);
+            earliest = min_boundary(earliest, next_word_start);
+
+            if let Some(word_idx) = self.word_index(line, effective_ms) {
+                let word = &line.words[word_idx];
+                if word.end_ms < u64::MAX {
+                    earliest = min_boundary(earliest, Some(word.end_ms + 1));
+                }
+            }
+        }
+
+        earliest
+    }
+
+    pub fn anchor_line_index(&self, effective_ms: u64) -> Option<usize> {
+        if self.lines.is_empty() {
+            return None;
+        }
+        if let Some(active) = self.line_index(effective_ms) {
+            return Some(active);
+        }
+        let next_idx = self
+            .lines
+            .partition_point(|line| line.start_ms <= effective_ms);
+        Some(next_idx.saturating_sub(1))
+    }
+
+    fn line_index(&self, effective_ms: u64) -> Option<usize> {
+        let next_idx = self
+            .lines
+            .partition_point(|line| line.start_ms <= effective_ms);
+        let idx = next_idx.checked_sub(1)?;
+        (effective_ms <= self.lines[idx].end_ms).then_some(idx)
+    }
+
+    fn word_index(&self, line: &CompiledLine, effective_ms: u64) -> Option<usize> {
+        let next_idx = line
+            .words
+            .partition_point(|word| word.start_ms <= effective_ms);
+        let idx = next_idx.checked_sub(1)?;
+        (effective_ms <= line.words[idx].end_ms).then_some(idx)
+    }
+}
+
+fn min_boundary(current: Option<u64>, candidate: Option<u64>) -> Option<u64> {
+    match (current, candidate) {
+        (Some(a), Some(b)) => Some(a.min(b)),
+        (Some(a), None) => Some(a),
+        (None, Some(b)) => Some(b),
+        (None, None) => None,
+    }
+}
+
+fn interval_progress(start_ms: u64, end_ms: u64, effective_ms: u64) -> f32 {
+    if end_ms <= start_ms || effective_ms <= start_ms {
+        return 0.0;
+    }
+
+    let elapsed = effective_ms.saturating_sub(start_ms) as f32;
+    let total = end_ms.saturating_sub(start_ms) as f32;
+    (elapsed / total).clamp(0.0, 1.0)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::core::model::LyricLine;
+    use crate::core::text::display_width;
+
+    fn word(text: &str, start_ms: u64, end_ms: u64) -> WordToken {
+        WordToken {
+            byte_range: (0, text.len()),
+            start_ms,
+            end_ms,
+            display_width: display_width(text),
+        }
+    }
+
+    fn track() -> SyncedTrack {
+        SyncedTrack {
+            source_provider: "test".to_string(),
+            source_track_id: None,
+            parser_version: 1,
+            is_instrumental: false,
+            granularity: SyncGranularity::Word,
+            intrinsic_offset_ms: 0,
+            user_offset_ms: 0,
+            match_confidence: 1.0,
+            lines: vec![
+                LyricLine {
+                    start_ms: 1_000,
+                    end_ms: 3_000,
+                    role: LineRole::Primary,
+                    text: "hello wide world".to_string(),
+                    words: vec![
+                        word("hello ", 1_000, 1_400),
+                        word("wide ", 1_400, 1_900),
+                        word("world", 1_900, 3_000),
+                    ],
+                    annotations: vec![crate::core::model::Annotation {
+                        kind: crate::core::model::AnnotationKind::Translation,
+                        text: "translated line".to_string(),
+                    }],
+                },
+                LyricLine {
+                    start_ms: 4_000,
+                    end_ms: 5_000,
+                    role: LineRole::Primary,
+                    text: "next".to_string(),
+                    words: vec![word("next", 4_000, 5_000)],
+                    annotations: Vec::new(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn wraps_lines_and_annotations_within_viewport() {
+        let timeline = CompiledTimeline::compile(&track(), 16);
+
+        assert_eq!(timeline.viewport_width, 16);
+        assert_eq!(timeline.lines[0].wrapped_main.len(), 2);
+        assert_eq!(
+            timeline.lines[0].wrapped_annotations,
+            ["translated", "line"]
+        );
+        for line in &timeline.lines {
+            for wrapped in &line.wrapped_main {
+                assert!(wrapped.display_width <= 12);
+            }
+        }
+    }
+
+    #[test]
+    fn evaluates_line_word_and_progress() {
+        let timeline = CompiledTimeline::compile(&track(), 40);
+
+        let before = timeline.evaluate(999);
+        assert_eq!(before.active_line_idx, None);
+
+        let first = timeline.evaluate(1_500);
+        assert_eq!(first.active_line_idx, Some(0));
+        assert_eq!(first.active_word_idx, Some(1));
+        assert!((first.progress - 0.2).abs() < 0.0001);
+
+        let second = timeline.evaluate(4_500);
+        assert_eq!(second.active_line_idx, Some(1));
+        assert_eq!(second.active_word_idx, Some(0));
+        assert!((second.progress - 0.5).abs() < 0.0001);
+
+        let after = timeline.evaluate(5_001);
+        assert_eq!(after.active_line_idx, None);
+    }
+
+    #[test]
+    fn reports_next_line_or_word_boundary() {
+        let timeline = CompiledTimeline::compile(&track(), 40);
+
+        assert_eq!(timeline.next_boundary_ms(500), Some(1_000));
+        assert_eq!(timeline.next_boundary_ms(1_500), Some(1_900));
+        assert_eq!(timeline.next_boundary_ms(2_500), Some(3_001));
+        assert_eq!(timeline.next_boundary_ms(3_500), Some(4_000));
+        assert_eq!(timeline.next_boundary_ms(4_500), Some(5_001));
+        assert_eq!(timeline.next_boundary_ms(5_500), None);
+    }
+
+    #[test]
+    fn reports_word_end_before_midline_pause() {
+        let mut paused_track = track();
+        paused_track.lines[0].words = vec![
+            word("hello ", 1_000, 1_300),
+            word("wide ", 1_800, 2_200),
+            word("world", 2_200, 3_000),
+        ];
+        let timeline = CompiledTimeline::compile(&paused_track, 40);
+
+        assert_eq!(timeline.next_boundary_ms(1_200), Some(1_301));
+        assert_eq!(timeline.next_boundary_ms(1_500), Some(1_800));
+    }
+
+    #[test]
+    fn anchors_viewport_across_active_lines_and_gaps() {
+        let timeline = CompiledTimeline::compile(&track(), 40);
+
+        assert_eq!(timeline.anchor_line_index(500), Some(0));
+        assert_eq!(timeline.anchor_line_index(1_500), Some(0));
+        assert_eq!(timeline.anchor_line_index(3_500), Some(0));
+        assert_eq!(timeline.anchor_line_index(4_500), Some(1));
+        assert_eq!(timeline.anchor_line_index(6_000), Some(1));
+
+        let mut empty = track();
+        empty.lines.clear();
+        assert_eq!(
+            CompiledTimeline::compile(&empty, 40).anchor_line_index(0),
+            None
+        );
+    }
+}

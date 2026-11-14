@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                     Lyrachi
+
+
+
+
+
+
+
+
+
+
+                                No track playing
+
+                         Play something to load lyrics.
+
+
+
+
+
+
+
+
+
+limusic | playing | - | +0 ms | -

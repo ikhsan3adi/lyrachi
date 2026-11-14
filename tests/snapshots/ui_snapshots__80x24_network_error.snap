@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                Yellow  Coldplay
+
+
+
+
+
+
+
+
+
+
+                              Could not load lyrics
+
+                   LRCLIB request failed: operation timed out
+
+
+
+
+
+
+
+
+
+limusic | playing | error | +0 ms | -

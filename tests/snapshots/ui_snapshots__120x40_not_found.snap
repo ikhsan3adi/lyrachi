@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                    Yellow  Coldplay
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                     No lyrics found
+
+                                       Add a local .lrc file or try another track.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+limusic | playing | not found | +0 ms | -

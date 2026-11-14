@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                         Lyrachi
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                  No MPRIS player found
+
+                                           Start a player that exposes MPRIS.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+no player | stopped | - | +0 ms | -

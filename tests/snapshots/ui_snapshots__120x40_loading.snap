@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                    Yellow  Coldplay
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                                     Loading lyrics
+
+                                            Searching local files and LRCLIB.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+limusic | playing | loading | +0 ms | -

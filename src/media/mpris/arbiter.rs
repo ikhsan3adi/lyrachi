@@ -162,8 +162,7 @@ async fn reselect(
 
     let Some(selected) = selected else {
         if had_active {
-            let _ = tx.send(MediaEvent::Status(PlaybackStatus::Stopped)).await;
-            let _ = tx.send(MediaEvent::NoTrack).await;
+            let _ = tx.send(MediaEvent::NoPlayer).await;
         }
         return Ok(());
     };
