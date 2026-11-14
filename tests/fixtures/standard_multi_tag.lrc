@@ -1,0 +1,12 @@
+[ti:Signal Test]
+[ar:Fixture Artist]
+[al:Fixture Album]
+[length:02:00]
+[offset:-300]
+[00:01.00]First line
+[00:03.50]Second line
+[00:05.00]
+[00:15.00][00:45.00]Repeated chorus
+[00:50.00]After chorus
+[01:10.00]Late line
+[01:12.00]Last line
