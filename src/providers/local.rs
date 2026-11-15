@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -73,7 +73,17 @@ impl LocalProvider {
             return Err(ProviderError::Cancelled);
         }
         let title_key = &query.canonical.norm_title;
-        if query.title.is_empty() || title_key.is_empty() || self.dirs.is_empty() {
+        if query.title.is_empty() || title_key.is_empty() {
+            return Ok(None);
+        }
+
+        if let Some(audio_path) = query.track_url.as_deref().and_then(file_url_path)
+            && let Some(track) = self.find_sidecar(&audio_path, query, cancel).await?
+        {
+            return Ok(Some(track));
+        }
+
+        if self.dirs.is_empty() {
             return Ok(None);
         }
 
@@ -165,6 +175,128 @@ impl LocalProvider {
         }
 
         Ok(None)
+    }
+
+    async fn find_sidecar(
+        &self,
+        audio_path: &Path,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<SyncedTrack>, ProviderError> {
+        let Some(stem) = audio_path.file_stem().and_then(|stem| stem.to_str()) else {
+            return Ok(None);
+        };
+
+        for extension in ["elrc", "lrc"] {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let path = audio_path.with_file_name(format!("{stem}.{extension}"));
+            let Some(content) = read_lyric_text(&path, cancel).await? else {
+                continue;
+            };
+            match parse_lrc(&content, query.duration_ms) {
+                Ok(parsed) => {
+                    let track = normalize_track(
+                        parsed,
+                        Provider::Local.as_str(),
+                        Some(path.to_string_lossy().into_owned()),
+                        1.0,
+                        query.duration_ms,
+                        query.user_offset_ms,
+                    );
+                    if track.is_instrumental || !track.lines.is_empty() {
+                        return Ok(Some(track));
+                    }
+                    warn!(path = %path.display(), "local sidecar produced no usable lines");
+                }
+                Err(error) => {
+                    warn!(%error, path = %path.display(), "invalid local sidecar");
+                }
+            }
+        }
+
+        Ok(None)
+    }
+}
+
+async fn read_lyric_text(
+    path: &Path,
+    cancel: &CancellationToken,
+) -> Result<Option<String>, ProviderError> {
+    let read = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+        result = fs::read_to_string(path) => result,
+    };
+
+    match read {
+        Ok(content) => Ok(Some(content)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => {
+            warn!(%error, path = %path.display(), "failed to read local lyric file");
+            Ok(None)
+        }
+    }
+}
+
+fn file_url_path(raw: &str) -> Option<PathBuf> {
+    let rest = raw.strip_prefix("file://")?;
+    let (authority, path) = match rest.find('/') {
+        Some(0) => ("", rest),
+        Some(index) => (&rest[..index], &rest[index..]),
+        None => return None,
+    };
+
+    if !authority.is_empty() && !authority.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
+
+    let decoded = percent_decode(path)?;
+    if decoded.contains('\0') {
+        return None;
+    }
+    let path = PathBuf::from(decoded);
+    if !path.is_absolute()
+        || path
+            .components()
+            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    {
+        return None;
+    }
+
+    Some(path)
+}
+
+fn percent_decode(raw: &str) -> Option<String> {
+    let bytes = raw.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            let high = *bytes.get(index + 1)?;
+            let low = *bytes.get(index + 2)?;
+            let value = hex_value(high)?
+                .checked_mul(16)?
+                .checked_add(hex_value(low)?)?;
+            decoded.push(value);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+
+    String::from_utf8(decoded).ok()
+}
+
+fn hex_value(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
     }
 }
 
@@ -532,6 +664,81 @@ mod tests {
         assert_eq!(track.lines[0].text, "Matched featured file");
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn sidecar_file_url_wins_over_music_directory_index() {
+        let audio_dir = temp_dir("sidecar-audio");
+        let music_dir = temp_dir("sidecar-music");
+        let audio = audio_dir.join("Coldplay - Yellow.flac");
+        std::fs::write(&audio, []).unwrap();
+        std::fs::write(
+            audio_dir.join("Coldplay - Yellow.elrc"),
+            "[00:01.00] <00:01.00>Sidecar <00:01.40>wins\n",
+        )
+        .unwrap();
+        std::fs::write(
+            audio_dir.join("Coldplay - Yellow.lrc"),
+            "[00:01.00]Plain sidecar\n",
+        )
+        .unwrap();
+        std::fs::write(
+            music_dir.join("Coldplay - Yellow.lrc"),
+            "[00:01.00]Indexed copy\n",
+        )
+        .unwrap();
+
+        let url = format!("file://{}", audio.display().to_string().replace(' ', "%20"));
+        let track = LocalProvider::with_dirs(vec![music_dir.clone()])
+            .find(&query_with_url("Yellow", "Coldplay", None, Some(url)))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.lines[0].text, "Sidecar wins");
+        assert!(
+            track
+                .source_track_id
+                .as_deref()
+                .is_some_and(|path| path.ends_with("Coldplay - Yellow.elrc"))
+        );
+
+        std::fs::remove_dir_all(audio_dir).unwrap();
+        std::fs::remove_dir_all(music_dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_non_file_urls_and_path_traversal() {
+        let empty_dir = temp_dir("sidecar-empty");
+        let audio_dir = temp_dir("sidecar-traversal");
+        let outside_dir = temp_dir("sidecar-outside");
+        std::fs::write(
+            outside_dir.join("Song.elrc"),
+            "[00:01.00] <00:01.00>Outside\n",
+        )
+        .unwrap();
+
+        let provider = LocalProvider::with_dirs(vec![empty_dir.clone()]);
+        for url in [
+            "https://example.com/Song.flac".to_string(),
+            "rtsp://example.com/Song.flac".to_string(),
+            "Song.flac".to_string(),
+            format!(
+                "file://{}/../{}/Song.flac",
+                audio_dir.display(),
+                outside_dir.file_name().unwrap().to_string_lossy()
+            ),
+        ] {
+            let track = provider
+                .find(&query_with_url("Song", "Artist", None, Some(url)))
+                .await
+                .unwrap();
+            assert!(track.is_none());
+        }
+
+        std::fs::remove_dir_all(empty_dir).unwrap();
+        std::fs::remove_dir_all(audio_dir).unwrap();
+        std::fs::remove_dir_all(outside_dir).unwrap();
     }
 
     #[test]
