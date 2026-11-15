@@ -16,6 +16,54 @@ const MIN_WORD_MS: u64 = 300;
 const MAX_WORD_MS: u64 = 2_500;
 const WORD_MS_PER_GRAPHEME: u64 = 150;
 const INSTRUMENTAL_FALLBACK_MS: u64 = 5_000;
+pub const MAX_LINES: usize = 2_000;
+pub const MAX_WORDS: usize = 16_000;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum NormalizeError {
+    #[error("lyrics contain {0} lines, limit is {MAX_LINES}")]
+    TooManyLines(usize),
+    #[error("lyrics contain {0} word tokens, limit is {MAX_WORDS}")]
+    TooManyWords(usize),
+}
+
+pub fn validate_parsed_limits(parsed: &ParsedTrack) -> Result<(), NormalizeError> {
+    if parsed.lines.len() > MAX_LINES {
+        return Err(NormalizeError::TooManyLines(parsed.lines.len()));
+    }
+
+    let words = parsed
+        .lines
+        .iter()
+        .map(|line| line.text.split_whitespace().count().max(line.words.len()))
+        .sum();
+
+    if words > MAX_WORDS {
+        return Err(NormalizeError::TooManyWords(words));
+    }
+
+    Ok(())
+}
+
+fn empty_track(
+    source_provider: String,
+    source_track_id: Option<String>,
+    match_confidence: f32,
+    intrinsic_offset_ms: i64,
+    user_offset_ms: i64,
+) -> SyncedTrack {
+    SyncedTrack {
+        source_provider,
+        source_track_id,
+        parser_version: PARSER_VERSION,
+        is_instrumental: false,
+        granularity: SyncGranularity::Unsynced,
+        intrinsic_offset_ms,
+        user_offset_ms,
+        match_confidence,
+        lines: Vec::new(),
+    }
+}
 
 #[derive(Debug, Clone)]
 struct MergedLine {
@@ -28,6 +76,54 @@ struct MergedLine {
 }
 
 pub fn normalize_track(
+    parsed: ParsedTrack,
+    source_provider: impl Into<String>,
+    source_track_id: Option<String>,
+    match_confidence: f32,
+    track_duration_ms: Option<u64>,
+    user_offset_ms: i64,
+) -> SyncedTrack {
+    if let Err(error) = validate_parsed_limits(&parsed) {
+        warn!(%error, "lyrics rejected by safety limits");
+        return empty_track(
+            source_provider.into(),
+            source_track_id,
+            match_confidence,
+            parsed.intrinsic_offset_ms,
+            user_offset_ms,
+        );
+    }
+
+    normalize_track_unchecked(
+        parsed,
+        source_provider,
+        source_track_id,
+        match_confidence,
+        track_duration_ms,
+        user_offset_ms,
+    )
+}
+
+pub fn normalize_track_checked(
+    parsed: ParsedTrack,
+    source_provider: impl Into<String>,
+    source_track_id: Option<String>,
+    match_confidence: f32,
+    track_duration_ms: Option<u64>,
+    user_offset_ms: i64,
+) -> Result<SyncedTrack, NormalizeError> {
+    validate_parsed_limits(&parsed)?;
+    Ok(normalize_track_unchecked(
+        parsed,
+        source_provider,
+        source_track_id,
+        match_confidence,
+        track_duration_ms,
+        user_offset_ms,
+    ))
+}
+
+fn normalize_track_unchecked(
     parsed: ParsedTrack,
     source_provider: impl Into<String>,
     source_track_id: Option<String>,
@@ -120,6 +216,39 @@ pub fn normalize_plain(
     match_confidence: f32,
     user_offset_ms: i64,
 ) -> SyncedTrack {
+    let line_count = plain.lines().count();
+    let word_count = plain.split_whitespace().count();
+
+    if line_count > MAX_LINES {
+        warn!(
+            line_count,
+            limit = MAX_LINES,
+            "plain lyrics rejected by safety limits"
+        );
+        return empty_track(
+            source_provider.into(),
+            source_track_id,
+            match_confidence,
+            0,
+            user_offset_ms,
+        );
+    }
+
+    if word_count > MAX_WORDS {
+        warn!(
+            word_count,
+            limit = MAX_WORDS,
+            "plain lyrics rejected by safety limits"
+        );
+        return empty_track(
+            source_provider.into(),
+            source_track_id,
+            match_confidence,
+            0,
+            user_offset_ms,
+        );
+    }
+
     let lines = plain
         .lines()
         .filter_map(|line| {
@@ -469,6 +598,49 @@ mod tests {
             duration,
             0,
         )
+    }
+
+    #[test]
+    fn rejects_tracks_over_line_limit() {
+        let lines = (0..=MAX_LINES)
+            .map(|index| parsed_line(index as u64 * 1_000, "line"))
+            .collect();
+        let parsed = ParsedTrack {
+            lines,
+            ..ParsedTrack::default()
+        };
+
+        assert!(matches!(
+            validate_parsed_limits(&parsed),
+            Err(NormalizeError::TooManyLines(count)) if count == MAX_LINES + 1
+        ));
+        let track = normalize_track(parsed, "fixture", None, 1.0, None, 0);
+        assert!(track.lines.is_empty());
+    }
+
+    #[test]
+    fn rejects_tracks_over_word_limit() {
+        let text = vec!["word"; 81].join(" ");
+        let lines = (0..200)
+            .map(|index| parsed_line(index as u64 * 1_000, &text))
+            .collect();
+        let parsed = ParsedTrack {
+            lines,
+            ..ParsedTrack::default()
+        };
+
+        assert!(matches!(
+            validate_parsed_limits(&parsed),
+            Err(NormalizeError::TooManyWords(count)) if count == 16_200
+        ));
+    }
+
+    #[test]
+    fn rejects_plain_lyrics_over_word_limit() {
+        let plain = vec!["word"; MAX_WORDS + 1].join(" ");
+        let track = normalize_plain(&plain, "fixture", None, 1.0, 0);
+
+        assert!(track.lines.is_empty());
     }
 
     #[test]

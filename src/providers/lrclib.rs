@@ -5,10 +5,11 @@ use serde::{Deserialize, Deserializer};
 use tokio_util::sync::CancellationToken;
 use tracing::warn;
 
+use super::http;
 use super::score;
 use super::{Provider, ProviderError, TrackQuery};
 use crate::core::model::{SyncGranularity, SyncedTrack};
-use crate::core::normalize::{normalize_instrumental, normalize_plain, normalize_track};
+use crate::core::normalize::{normalize_instrumental, normalize_plain, normalize_track_checked};
 use crate::core::parse::lrc::parse_lrc;
 use crate::core::parse::lyricsfile::parse_lyricsfile;
 
@@ -69,7 +70,7 @@ impl LrclibClient {
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Result<Self, ProviderError> {
-        let client = reqwest::Client::builder()
+        let client = http::client_builder()
             .timeout(REQUEST_TIMEOUT)
             .user_agent(USER_AGENT)
             .build()?;
@@ -137,7 +138,7 @@ impl LrclibClient {
                 let body = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-                    res = response.text() => res?,
+                    res = http::read_limited_text(response) => res?,
                 };
                 Ok(Some(serde_json::from_str(&body)?))
             }
@@ -200,7 +201,7 @@ impl LrclibClient {
                 let body = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-                    res = response.text() => res?,
+                    res = http::read_limited_text(response) => res?,
                 };
                 Ok(serde_json::from_str(&body)?)
             }
@@ -238,14 +239,15 @@ impl LrclibClient {
         {
             match parse_lyricsfile(lyricsfile) {
                 Ok(parsed) => {
-                    let track = normalize_track(
+                    let track = normalize_track_checked(
                         parsed,
                         Provider::Lrclib.as_str(),
                         source_track_id.clone(),
                         confidence,
                         duration_ms,
                         query.user_offset_ms,
-                    );
+                    )
+                    .map_err(|error| ProviderError::Invalid(error.to_string()))?;
                     if (track.is_instrumental || track.granularity == SyncGranularity::Word)
                         && !track.lines.is_empty()
                     {
@@ -266,14 +268,15 @@ impl LrclibClient {
         {
             match parse_lrc(lyrics, duration_ms) {
                 Ok(parsed) => {
-                    let track = normalize_track(
+                    let track = normalize_track_checked(
                         parsed,
                         Provider::Lrclib.as_str(),
                         source_track_id.clone(),
                         confidence,
                         duration_ms,
                         query.user_offset_ms,
-                    );
+                    )
+                    .map_err(|error| ProviderError::Invalid(error.to_string()))?;
                     if track.is_instrumental || !track.lines.is_empty() {
                         return Ok(Some(track));
                     }

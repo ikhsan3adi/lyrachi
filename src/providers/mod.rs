@@ -1,3 +1,4 @@
+mod http;
 pub mod local;
 pub mod lrclib;
 pub mod sanitize;
@@ -57,6 +58,8 @@ pub enum ProviderError {
     Status(reqwest::StatusCode),
     #[error("invalid LRCLIB response: {0}")]
     Json(#[from] serde_json::Error),
+    #[error("invalid provider input: {0}")]
+    Invalid(String),
     #[error("lyric resolution cancelled")]
     Cancelled,
 }

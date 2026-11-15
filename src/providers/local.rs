@@ -4,6 +4,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use tokio::fs;
+use tokio::io::AsyncReadExt;
 use tokio::sync::OnceCell;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
@@ -17,6 +18,7 @@ use crate::core::normalize::normalize_track;
 use crate::core::parse::lrc::parse_lrc;
 
 const MAX_SCAN_DEPTH: usize = 16;
+pub const MAX_LOCAL_LYRIC_BYTES: u64 = 256 * 1024;
 
 #[derive(Debug, Clone)]
 struct IndexedLyricFile {
@@ -140,17 +142,8 @@ impl LocalProvider {
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }
-            let read_res = tokio::select! {
-                biased;
-                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-                res = fs::read_to_string(path) => res,
-            };
-            let content = match read_res {
-                Ok(content) => content,
-                Err(error) => {
-                    warn!(%error, path = %path.display(), "failed to read local lyric file");
-                    continue;
-                }
+            let Some(content) = read_lyric_text(path, cancel).await? else {
+                continue;
             };
             match parse_lrc(&content, query.duration_ms) {
                 Ok(parsed) => {
@@ -224,15 +217,66 @@ async fn read_lyric_text(
     path: &Path,
     cancel: &CancellationToken,
 ) -> Result<Option<String>, ProviderError> {
+    let metadata = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+        result = fs::metadata(path) => result,
+    };
+
+    let metadata = match metadata {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            warn!(%error, path = %path.display(), "failed to inspect local lyric file");
+            return Ok(None);
+        }
+    };
+
+    if metadata.len() > MAX_LOCAL_LYRIC_BYTES {
+        return Err(ProviderError::Invalid(format!(
+            "local lyric file {} is {} bytes, limit is {MAX_LOCAL_LYRIC_BYTES}",
+            path.display(),
+            metadata.len()
+        )));
+    }
+
+    let file = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+        result = fs::File::open(path) => result,
+    };
+
+    let file = match file {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => {
+            warn!(%error, path = %path.display(), "failed to open local lyric file");
+            return Ok(None);
+        }
+    };
+
+    let mut reader = file.take(MAX_LOCAL_LYRIC_BYTES + 1);
+    let mut bytes = Vec::with_capacity(metadata.len().min(MAX_LOCAL_LYRIC_BYTES) as usize);
     let read = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-        result = fs::read_to_string(path) => result,
+        result = reader.read_to_end(&mut bytes) => result,
     };
 
     match read {
-        Ok(content) => Ok(Some(content)),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Ok(length) if length as u64 > MAX_LOCAL_LYRIC_BYTES => {
+            Err(ProviderError::Invalid(format!(
+                "local lyric file {} exceeds {MAX_LOCAL_LYRIC_BYTES} bytes",
+                path.display()
+            )))
+        }
+        Ok(_) => match String::from_utf8(bytes) {
+            Ok(content) => Ok(Some(content)),
+            Err(error) => {
+                warn!(%error, path = %path.display(), "local lyric file is not valid UTF-8");
+                Ok(None)
+            }
+        },
         Err(error) => {
             warn!(%error, path = %path.display(), "failed to read local lyric file");
             Ok(None)
@@ -642,6 +686,24 @@ mod tests {
             .await
             .unwrap();
         assert!(missing.is_none());
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn rejects_local_lyric_file_over_size_limit() {
+        let dir = temp_dir("oversized");
+        std::fs::write(
+            dir.join("Yellow.lrc"),
+            vec![b'x'; MAX_LOCAL_LYRIC_BYTES as usize + 1],
+        )
+        .unwrap();
+
+        let result = LocalProvider::with_dirs(vec![dir.clone()])
+            .find(&query("Yellow", "", None))
+            .await;
+
+        assert!(matches!(result, Err(ProviderError::Invalid(_))));
 
         std::fs::remove_dir_all(dir).unwrap();
     }
