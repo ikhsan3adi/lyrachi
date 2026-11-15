@@ -122,14 +122,46 @@ impl TrackQuery {
 pub struct ProviderResolver {
     local: LocalProvider,
     lrclib: LrclibClient,
+    order: Vec<Provider>,
+    network: bool,
 }
 
 impl ProviderResolver {
     pub fn new(local_dirs: Vec<PathBuf>) -> Result<Self, ProviderError> {
+        Self::with_config(local_dirs, Provider::all().to_vec(), true)
+    }
+
+    pub fn with_config(
+        local_dirs: Vec<PathBuf>,
+        order: Vec<Provider>,
+        network: bool,
+    ) -> Result<Self, ProviderError> {
+        let lrclib = LrclibClient::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
-            lrclib: LrclibClient::new()?,
+            lrclib,
+            order,
+            network,
         })
+    }
+
+    #[cfg(test)]
+    fn with_config_and_base_url(
+        local_dirs: Vec<PathBuf>,
+        order: Vec<Provider>,
+        network: bool,
+        base_url: impl Into<String>,
+    ) -> Result<Self, ProviderError> {
+        Ok(Self {
+            local: LocalProvider::new(local_dirs),
+            lrclib: LrclibClient::with_base_url(base_url)?,
+            order,
+            network,
+        })
+    }
+
+    pub fn network_enabled(&self) -> bool {
+        self.network
     }
 
     pub async fn resolve(
@@ -153,17 +185,31 @@ impl ProviderResolver {
             return Ok(None);
         }
 
-        if let Some(track) = self.local.find_with_cancel(query, cancel).await? {
-            return Ok(Some(track));
+        for provider in &self.order {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let track = match provider {
+                Provider::Local => self.local.find_with_cancel(query, cancel).await?,
+                Provider::Lrclib if self.network => {
+                    self.lrclib.resolve_with_cancel(query, cancel).await?
+                }
+                Provider::Lrclib => None,
+            };
+            if track.is_some() {
+                return Ok(track);
+            }
         }
 
-        self.lrclib.resolve_with_cancel(query, cancel).await
+        Ok(None)
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use std::time::{SystemTime, UNIX_EPOCH};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    use tokio::net::TcpListener;
 
     use super::*;
 
@@ -270,6 +316,52 @@ mod tests {
 
         assert_eq!(track.source_provider, "local");
 
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn offline_skips_network_provider_without_opening_a_socket() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+        let resolver = ProviderResolver::with_config_and_base_url(
+            Vec::new(),
+            vec![Provider::Lrclib],
+            false,
+            base_url,
+        )
+        .unwrap();
+
+        let track = resolver
+            .resolve(&meta("Yellow", "Coldplay", None, None), 0)
+            .await
+            .unwrap();
+
+        assert!(track.is_none());
+        assert!(
+            tokio::time::timeout(Duration::from_millis(100), listener.accept())
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn honors_configured_provider_order() {
+        let dir = temp_dir("resolver-order");
+        std::fs::write(dir.join("Yellow.lrc"), "[00:01.00]Local\n").unwrap();
+        let resolver = ProviderResolver::with_config(
+            vec![dir.clone()],
+            vec![Provider::Lrclib, Provider::Local],
+            false,
+        )
+        .unwrap();
+
+        let track = resolver
+            .resolve(&meta("Yellow", "Coldplay", None, None), 0)
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.source_provider, "local");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }

@@ -32,6 +32,13 @@ pub fn status_line(state: &UiState) -> Line<'static> {
         text.push_str(" | ");
         text.push_str(&extra);
     }
+    if state.offline {
+        text.push_str(" | offline");
+    }
+    if let Some(warning) = &state.config_warning {
+        text.push_str(" | ");
+        text.push_str(warning);
+    }
 
     Line::from(text).style(Style::default().add_modifier(Modifier::DIM))
 }
@@ -110,6 +117,20 @@ mod tests {
         assert_eq!(
             status_line(&state).to_string(),
             "mpv | playing | lrclib | +0 ms | 90% | instrumental"
+        );
+    }
+
+    #[test]
+    fn shows_offline_mode_and_config_warnings() {
+        let mut state = UiState::new();
+        state.player = Some("mpv".to_string());
+        state.offline = true;
+        state.config_warning = Some("invalid config: unknown key".to_string());
+        state.set_not_found();
+
+        assert_eq!(
+            status_line(&state).to_string(),
+            "mpv | stopped | not found | +0 ms | - | offline | invalid config: unknown key"
         );
     }
 }

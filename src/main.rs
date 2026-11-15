@@ -32,14 +32,14 @@ async fn main() -> Result<()> {
     }
 
     if args.dump_events {
-        return app::run_dump_events(args).await;
+        return app::run_dump_events(outcome.config.player_filter).await;
     }
 
     let mut terminal = ratatui::init();
     if std::env::var_os("LYRACHI_TEST_PANIC").is_some() {
         panic!("forced panic for terminal restore test");
     }
-    let result = app::run(&mut terminal, args).await;
+    let result = app::run(&mut terminal, outcome.config, outcome.warnings).await;
     ratatui::restore();
     result
 }

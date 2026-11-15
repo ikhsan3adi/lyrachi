@@ -10,7 +10,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, debug_span, warn};
 
 use crate::{
-    cli::Args,
+    config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
     media::{MediaEvent, mpris::arbiter},
     providers::{ProviderError, ProviderResolver},
@@ -23,8 +23,16 @@ pub mod resolve;
 use event::AppEvent;
 use resolve::{ResolveCoordinator, TrackPlan};
 
-pub async fn run(terminal: &mut DefaultTerminal, args: Args) -> color_eyre::Result<()> {
-    let resolver = match ProviderResolver::new(args.local_dir.clone()) {
+pub async fn run(
+    terminal: &mut DefaultTerminal,
+    config: RuntimeConfig,
+    warnings: Vec<String>,
+) -> color_eyre::Result<()> {
+    let resolver = match ProviderResolver::with_config(
+        config.local_dirs.clone(),
+        config.provider_order.clone(),
+        config.network,
+    ) {
         Ok(resolver) => Some(Arc::new(resolver)),
         Err(error) => {
             warn!(%error, "lyrics providers unavailable");
@@ -32,15 +40,17 @@ pub async fn run(terminal: &mut DefaultTerminal, args: Args) -> color_eyre::Resu
         }
     };
     let mut state = UiState::new();
-    state.global_offset_ms = args.offset_ms.unwrap_or(0);
-    state.lookahead_ms = args.lookahead_ms.unwrap_or(0);
+    state.global_offset_ms = config.global_offset_ms;
+    state.lookahead_ms = config.lookahead_ms;
+    state.offline = !config.network;
+    state.config_warning = warnings.first().cloned();
     let mut clock = PlaybackClock::new();
-    let mut coordinator = ResolveCoordinator::new();
+    let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
     let (app_tx, mut app_rx) = mpsc::channel(64);
     let cancel = CancellationToken::new();
-    let player_filter = args.player.clone();
+    let player_filter = config.player_filter.clone();
     let monitor_cancel = cancel.clone();
     let monitor_tx = media_tx.clone();
     let monitor = match zbus::Connection::session().await {
@@ -104,11 +114,10 @@ pub async fn run(terminal: &mut DefaultTerminal, args: Args) -> color_eyre::Resu
     Ok(())
 }
 
-pub async fn run_dump_events(args: Args) -> color_eyre::Result<()> {
+pub async fn run_dump_events(player_filter: Option<String>) -> color_eyre::Result<()> {
     let (tx, mut rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
-    let player_filter = args.player.clone();
     let conn = zbus::Connection::session().await?;
     let mut monitor =
         tokio::spawn(async move { arbiter::run(player_filter, conn, tx, monitor_cancel).await });
