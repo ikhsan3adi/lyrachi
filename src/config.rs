@@ -23,6 +23,9 @@ pub struct RuntimeConfig {
     pub network: bool,
     pub local_dirs: Vec<PathBuf>,
     pub l1_entries: usize,
+    pub fullscreen: bool,
+    pub show_header: bool,
+    pub show_status: bool,
 }
 
 impl Default for RuntimeConfig {
@@ -35,6 +38,9 @@ impl Default for RuntimeConfig {
             network: true,
             local_dirs: Vec::new(),
             l1_entries: L1_CACHE_CAPACITY,
+            fullscreen: false,
+            show_header: true,
+            show_status: true,
         }
     }
 }
@@ -128,6 +134,15 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     }
     if let Some(l1_entries) = file.cache.l1_entries {
         config.l1_entries = clamp_l1_entries(l1_entries, "cache.l1_entries", warnings);
+    }
+    if let Some(fullscreen) = file.ui.fullscreen {
+        config.fullscreen = fullscreen;
+    }
+    if let Some(show_header) = file.ui.show_header {
+        config.show_header = show_header;
+    }
+    if let Some(show_status) = file.ui.show_status {
+        config.show_status = show_status;
     }
 }
 
@@ -340,6 +355,21 @@ l1_entries = 8
         assert_eq!(cli.config.lookahead_ms, 40);
         assert_eq!(cli.config.local_dirs, vec![PathBuf::from("/from-cli")]);
         assert!(!cli.config.network);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_ui_layout_preferences() {
+        let path = temp_file(
+            "ui-layout",
+            "[ui]\nfullscreen = true\nshow_header = false\nshow_status = false\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert!(outcome.config.fullscreen);
+        assert!(!outcome.config.show_header);
+        assert!(!outcome.config.show_status);
 
         fs::remove_file(path).unwrap();
     }

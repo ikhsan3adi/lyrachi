@@ -44,6 +44,7 @@ async fn main() -> Result<()> {
         outcome.config,
         outcome.warnings,
         paths.offsets_file,
+        paths.config_file,
     )
     .await;
     ratatui::restore();

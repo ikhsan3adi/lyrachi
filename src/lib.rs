@@ -11,5 +11,6 @@ pub mod logging;
 pub mod media;
 pub mod offsets;
 pub mod paths;
+pub mod prefs;
 pub mod providers;
 pub mod ui;

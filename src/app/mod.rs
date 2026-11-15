@@ -1,5 +1,5 @@
 use std::io::Write as _;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -15,6 +15,7 @@ use crate::{
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
     media::{MediaEvent, TrackMeta, mpris::arbiter},
     offsets::{DebouncedOffsetWriter, OffsetStore},
+    prefs::{self, UiPrefs},
     providers::{ProviderError, ProviderResolver, TrackQuery},
     ui::{UiState, render},
 };
@@ -30,6 +31,7 @@ pub async fn run(
     config: RuntimeConfig,
     warnings: Vec<String>,
     offsets_file: PathBuf,
+    config_file: PathBuf,
 ) -> color_eyre::Result<()> {
     let resolver = match ProviderResolver::with_config(
         config.local_dirs.clone(),
@@ -47,6 +49,8 @@ pub async fn run(
     state.lookahead_ms = config.lookahead_ms;
     state.offline = !config.network;
     state.config_warning = warnings.first().cloned();
+    state.configure_layout(config.fullscreen, config.show_header, config.show_status);
+    refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
     let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
@@ -84,6 +88,9 @@ pub async fn run(
             let wait = offsets
                 .time_until_flush(now)
                 .map_or(wait, |flush_wait| wait.min(flush_wait));
+            let wait = state
+                .time_until_banner_expiry(now)
+                .map_or(wait, |banner_wait| wait.min(banner_wait));
 
             tokio::select! {
                 event = events.next() => {
@@ -91,7 +98,14 @@ pub async fn run(
                         break;
                     };
                     let event = event?;
-                    if handle_input(&mut state, &mut coordinator, &mut offsets, event) {
+                    if handle_input(
+                        &mut state,
+                        &mut coordinator,
+                        &mut offsets,
+                        Some(&config_file),
+                        Instant::now(),
+                        event,
+                    ) {
                         break;
                     }
                 }
@@ -199,8 +213,9 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
 
     terminal.draw(|frame| {
         let area = frame.area();
-        state.resize(area.width, area.height);
         let now = Instant::now();
+        state.expire_banner(now);
+        state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
         render::render(frame, state, effective_ms);
     })?;
@@ -336,6 +351,8 @@ fn handle_input(
     state: &mut UiState,
     coordinator: &mut ResolveCoordinator,
     offsets: &mut DebouncedOffsetWriter,
+    config_file: Option<&Path>,
+    now: Instant,
     event: Event,
 ) -> bool {
     let Event::Key(key) = event else {
@@ -348,6 +365,21 @@ fn handle_input(
     match key.code {
         KeyCode::Char('q') => true,
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        KeyCode::Char('f') => {
+            state.toggle_fullscreen();
+            persist_layout(state, config_file, now);
+            false
+        }
+        KeyCode::Char('t') => {
+            state.toggle_header();
+            persist_layout(state, config_file, now);
+            false
+        }
+        KeyCode::Char('s') => {
+            state.toggle_status();
+            persist_layout(state, config_file, now);
+            false
+        }
         KeyCode::Char('[') => {
             state.adjust_offset(-100);
             record_offset(state, coordinator, offsets);
@@ -372,6 +404,42 @@ fn handle_input(
             false
         }
         _ => false,
+    }
+}
+
+fn persist_layout(state: &mut UiState, config_file: Option<&Path>, now: Instant) {
+    refresh_hidden_status_banner(state, now);
+
+    let Some(config_file) = config_file else {
+        return;
+    };
+    let (fullscreen, show_header, show_status) = state.persisted_layout();
+    let prefs = UiPrefs {
+        fullscreen,
+        show_header,
+        show_status,
+    };
+    if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
+        let message = format!("Could not save preferences: {error}");
+        state.config_warning = Some(message.clone());
+        state.show_banner(message, now);
+    }
+}
+
+fn refresh_hidden_status_banner(state: &mut UiState, now: Instant) {
+    if state.show_status {
+        state.clear_banner();
+        return;
+    }
+
+    let message = state
+        .config_warning
+        .clone()
+        .or_else(|| state.offline.then(|| "Offline mode".to_string()));
+    if let Some(message) = message {
+        state.show_banner(message, now);
+    } else {
+        state.clear_banner();
     }
 }
 
@@ -732,6 +800,8 @@ mod tests {
             &mut state,
             &mut coordinator,
             &mut offsets,
+            None,
+            Instant::now(),
             key_event
         ));
         assert_eq!(state.user_offset_ms, -100);
@@ -757,9 +827,69 @@ mod tests {
             &mut state,
             &mut coordinator,
             &mut offsets,
+            None,
+            Instant::now(),
             reset_event
         ));
         assert_eq!(state.user_offset_ms, 0);
         assert_eq!(offsets.offset_for(&canonical), 0);
+    }
+
+    #[test]
+    fn layout_keys_toggle_and_persist_preferences() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-layout-keys-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |state: &mut UiState,
+                     coordinator: &mut ResolveCoordinator,
+                     offsets: &mut DebouncedOffsetWriter,
+                     code: char| {
+            let event = Event::Key(KeyEvent {
+                code: KeyCode::Char(code),
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            });
+            assert!(!handle_input(
+                state,
+                coordinator,
+                offsets,
+                Some(&config_file),
+                Instant::now(),
+                event
+            ));
+        };
+
+        press(&mut state, &mut coordinator, &mut offsets, 'f');
+        assert!(state.is_fullscreen());
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("fullscreen = true"));
+        assert!(saved.contains("show_header = true"));
+        assert!(saved.contains("show_status = true"));
+
+        press(&mut state, &mut coordinator, &mut offsets, 't');
+        assert_eq!((state.show_header, state.show_status), (true, false));
+        press(&mut state, &mut coordinator, &mut offsets, 's');
+        assert_eq!((state.show_header, state.show_status), (true, true));
+
+        state.config_warning = Some("invalid config: unknown key".to_string());
+        press(&mut state, &mut coordinator, &mut offsets, 's');
+        assert!(!state.show_status);
+        assert_eq!(state.banner_message(), Some("invalid config: unknown key"));
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

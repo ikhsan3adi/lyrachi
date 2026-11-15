@@ -10,19 +10,26 @@ use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, HORIZONTAL_PADDING, WrappedSubLine,
 };
 
-use super::{LyricsView, UiState, status::status_line};
+use super::{LyricsView, UiState, status::footer_line};
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let area = frame.area();
-    let [header, body, status] = Layout::vertical([
-        Constraint::Length(1),
+    let header_rows = u16::from(state.show_header);
+    let footer_rows = u16::from(state.footer_visible());
+    let [header, body, footer] = Layout::vertical([
+        Constraint::Length(header_rows),
         Constraint::Min(1),
-        Constraint::Length(1),
+        Constraint::Length(footer_rows),
     ])
     .areas(area);
-    render_header(frame, content_area(header), state);
+
+    if header_rows > 0 {
+        render_header(frame, content_area(header), state);
+    }
     render_body(frame, content_area(body), state, effective_ms);
-    frame.render_widget(Paragraph::new(status_line(state)), status);
+    if let Some(line) = footer_line(state) {
+        frame.render_widget(Paragraph::new(line), footer);
+    }
 }
 
 fn content_area(area: Rect) -> Rect {

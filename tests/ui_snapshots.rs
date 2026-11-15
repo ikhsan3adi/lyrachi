@@ -218,6 +218,12 @@ fn instrumental() -> UiState {
     state
 }
 
+fn fullscreen() -> UiState {
+    let mut state = word_sync();
+    state.configure_layout(true, true, true);
+    state
+}
+
 fn render_state(state: &mut UiState, width: u16, height: u16, effective_ms: u64) -> String {
     state.resize(width, height);
     let backend = TestBackend::new(width, height);
@@ -314,6 +320,16 @@ fn word_sync_80x24() {
 #[test]
 fn word_sync_120x40() {
     snapshot(&mut word_sync(), 120, 40, 9_500, "120x40_word_sync");
+}
+
+#[test]
+fn fullscreen_80x24() {
+    snapshot(&mut fullscreen(), 80, 24, 9_500, "80x24_fullscreen");
+}
+
+#[test]
+fn fullscreen_120x40() {
+    snapshot(&mut fullscreen(), 120, 40, 9_500, "120x40_fullscreen");
 }
 
 #[test]

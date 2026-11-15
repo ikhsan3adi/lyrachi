@@ -1,11 +1,26 @@
 use ratatui::{
-    style::{Modifier, Style},
-    text::Line,
+    style::{Color, Modifier, Style},
+    text::{Line, Span},
 };
 
 use crate::core::{clock::PlaybackStatus, model::SyncGranularity};
 
 use super::{LyricsView, UiState};
+
+pub fn footer_line(state: &UiState) -> Option<Line<'static>> {
+    if state.show_status {
+        return Some(status_line(state));
+    }
+
+    state.banner_message().map(|message| {
+        Line::from(Span::styled(
+            message.to_string(),
+            Style::default()
+                .fg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ))
+    })
+}
 
 pub fn status_line(state: &UiState) -> Line<'static> {
     let player = state.player.as_deref().unwrap_or("no player");
@@ -118,6 +133,16 @@ mod tests {
             status_line(&state).to_string(),
             "mpv | playing | lrclib | +0 ms | 90% | instrumental"
         );
+    }
+
+    #[test]
+    fn footer_uses_banner_when_status_is_hidden() {
+        let mut state = UiState::new();
+        state.toggle_status();
+        assert!(footer_line(&state).is_none());
+
+        state.show_banner("Offline mode", std::time::Instant::now());
+        assert_eq!(footer_line(&state).unwrap().to_string(), "Offline mode");
     }
 
     #[test]

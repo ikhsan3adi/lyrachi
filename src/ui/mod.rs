@@ -1,14 +1,15 @@
 pub mod render;
 pub mod status;
 
+use std::time::{Duration, Instant};
+
 use crate::compiler::timeline::CompiledTimeline;
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 
-const HEADER_ROWS: u16 = 1;
-const STATUS_ROWS: u16 = 1;
+const BANNER_DURATION: Duration = Duration::from_secs(3);
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LyricsView {
@@ -33,6 +34,10 @@ pub struct UiState {
     pub lookahead_ms: u64,
     pub offline: bool,
     pub config_warning: Option<String>,
+    pub show_header: bool,
+    pub show_status: bool,
+    pub transient_banner: Option<(String, Instant)>,
+    fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
     pub viewport_width: u16,
     pub viewport_height: u16,
@@ -56,6 +61,10 @@ impl UiState {
             lookahead_ms: 0,
             offline: false,
             config_warning: None,
+            show_header: true,
+            show_status: true,
+            transient_banner: None,
+            fullscreen_restore: None,
             scroll: 0,
             viewport_width: 80,
             viewport_height: 24,
@@ -69,6 +78,85 @@ impl UiState {
         }
         self.viewport_height = height;
         self.clamp_scroll();
+    }
+
+    pub fn configure_layout(&mut self, fullscreen: bool, show_header: bool, show_status: bool) {
+        if fullscreen {
+            self.fullscreen_restore =
+                (show_header || show_status).then_some((show_header, show_status));
+            self.show_header = false;
+            self.show_status = false;
+        } else {
+            self.show_header = show_header;
+            self.show_status = show_status;
+            self.fullscreen_restore = None;
+        }
+        self.clamp_scroll();
+    }
+
+    pub fn toggle_fullscreen(&mut self) {
+        if self.show_header || self.show_status {
+            self.fullscreen_restore = Some((self.show_header, self.show_status));
+            self.show_header = false;
+            self.show_status = false;
+        } else {
+            (self.show_header, self.show_status) =
+                self.fullscreen_restore.take().unwrap_or((true, true));
+        }
+        self.clamp_scroll();
+    }
+
+    pub fn toggle_header(&mut self) {
+        self.show_header = !self.show_header;
+        self.fullscreen_restore = None;
+        self.clamp_scroll();
+    }
+
+    pub fn toggle_status(&mut self) {
+        self.show_status = !self.show_status;
+        self.fullscreen_restore = None;
+        self.clamp_scroll();
+    }
+
+    pub fn is_fullscreen(&self) -> bool {
+        !self.show_header && !self.show_status
+    }
+
+    pub fn persisted_layout(&self) -> (bool, bool, bool) {
+        let fullscreen = self.is_fullscreen();
+        let (show_header, show_status) = if fullscreen {
+            self.fullscreen_restore.unwrap_or((true, true))
+        } else {
+            (self.show_header, self.show_status)
+        };
+        (fullscreen, show_header, show_status)
+    }
+
+    pub fn show_banner(&mut self, message: impl Into<String>, now: Instant) {
+        self.transient_banner = Some((message.into(), now));
+    }
+
+    pub fn clear_banner(&mut self) {
+        self.transient_banner = None;
+    }
+
+    pub fn banner_message(&self) -> Option<&str> {
+        self.transient_banner
+            .as_ref()
+            .map(|(message, _)| message.as_str())
+    }
+
+    pub fn expire_banner(&mut self, now: Instant) {
+        if let Some((_, shown_at)) = &self.transient_banner
+            && now.duration_since(*shown_at) >= BANNER_DURATION
+        {
+            self.transient_banner = None;
+        }
+    }
+
+    pub fn time_until_banner_expiry(&self, now: Instant) -> Option<Duration> {
+        let (_, shown_at) = self.transient_banner.as_ref()?;
+        Some(BANNER_DURATION.saturating_sub(now.duration_since(*shown_at)))
     }
 
     pub fn set_no_player(&mut self) {
@@ -175,10 +263,16 @@ impl UiState {
         self.scroll = (self.scroll + 1).min(max_scroll);
     }
 
+    pub fn footer_visible(&self) -> bool {
+        self.show_status || self.transient_banner.is_some()
+    }
+
     fn body_rows(&self) -> usize {
+        let header_rows = u16::from(self.show_header);
+        let footer_rows = u16::from(self.footer_visible());
         usize::from(
             self.viewport_height
-                .saturating_sub(HEADER_ROWS + STATUS_ROWS)
+                .saturating_sub(header_rows + footer_rows)
                 .max(1),
         )
     }
@@ -259,6 +353,63 @@ mod tests {
 
         state.resize(120, 30);
         assert_eq!(state.timeline().unwrap().viewport_width, 120);
+    }
+
+    #[test]
+    fn layout_toggles_restore_fullscreen_state() {
+        let mut state = UiState::new();
+        assert_eq!(state.persisted_layout(), (false, true, true));
+
+        state.toggle_fullscreen();
+        assert!(state.is_fullscreen());
+        assert_eq!(state.persisted_layout(), (true, true, true));
+
+        state.toggle_fullscreen();
+        assert_eq!((state.show_header, state.show_status), (true, true));
+
+        state.toggle_header();
+        assert_eq!((state.show_header, state.show_status), (false, true));
+        state.configure_layout(true, state.show_header, state.show_status);
+        assert!(state.is_fullscreen());
+        assert_eq!(state.persisted_layout(), (true, false, true));
+
+        state.toggle_fullscreen();
+        assert_eq!((state.show_header, state.show_status), (false, true));
+    }
+
+    #[test]
+    fn body_rows_follow_layout_and_banner() {
+        let mut state = UiState::new();
+        state.viewport_height = 24;
+        assert_eq!(state.body_rows(), 22);
+
+        state.toggle_header();
+        assert_eq!(state.body_rows(), 23);
+
+        state.toggle_status();
+        assert_eq!(state.body_rows(), 24);
+
+        state.show_banner("Offline mode", Instant::now());
+        assert_eq!(state.body_rows(), 23);
+
+        state.expire_banner(Instant::now() + BANNER_DURATION);
+        assert_eq!(state.body_rows(), 24);
+    }
+
+    #[test]
+    fn banner_expires_after_three_seconds() {
+        let now = Instant::now();
+        let mut state = UiState::new();
+        state.show_banner("Could not save preferences", now);
+
+        assert_eq!(
+            state.time_until_banner_expiry(now + Duration::from_secs(1)),
+            Some(Duration::from_secs(2))
+        );
+        state.expire_banner(now + Duration::from_secs(2));
+        assert_eq!(state.banner_message(), Some("Could not save preferences"));
+        state.expire_banner(now + BANNER_DURATION);
+        assert_eq!(state.banner_message(), None);
     }
 
     #[test]
