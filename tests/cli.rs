@@ -102,3 +102,76 @@ fn paths_command_prints_resolved_paths_without_tui() {
 
     std::fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn parses_status_with_json_and_global_config_after_subcommand() {
+    let args = Args::try_parse_from([
+        "lyrachi",
+        "status",
+        "--json",
+        "--config",
+        "/tmp/config.toml",
+    ])
+    .expect("status args");
+
+    assert_eq!(args.command, Some(Command::Status { json: true }));
+    assert_eq!(args.config.as_deref(), Some(Path::new("/tmp/config.toml")));
+}
+
+#[test]
+fn status_defaults_to_text_output() {
+    let args = Args::try_parse_from(["lyrachi", "status"]).expect("status args");
+
+    assert_eq!(args.command, Some(Command::Status { json: false }));
+}
+
+#[test]
+fn parses_status_with_offline_after_subcommand() {
+    let args = Args::try_parse_from(["lyrachi", "status", "--offline"]).expect("status args");
+
+    assert_eq!(args.command, Some(Command::Status { json: false }));
+    assert!(args.offline);
+}
+
+#[test]
+fn status_json_prints_one_object_without_tui_or_dbus() {
+    let root = std::env::temp_dir().join(format!("lyrachi-status-cli-{}", std::process::id()));
+    let config_home = root.join("config");
+    let data_home = root.join("data");
+    let cache_home = root.join("cache");
+    let state_home = root.join("state");
+    let home = root.join("home");
+    for dir in [&config_home, &data_home, &cache_home, &state_home, &home] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+    let bus = root.join("no-bus");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args(["status", "--json"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_CACHE_HOME", &cache_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", bus.display()),
+        )
+        .env_remove("XDG_MUSIC_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("status --json should print valid JSON");
+    assert!(value.is_object());
+    assert!(value["player"].is_null());
+    assert_eq!(value["playback"], "stopped");
+    assert_eq!(value["offset"]["effective_ms"], 0);
+
+    std::fs::remove_dir_all(root).unwrap();
+}

@@ -22,6 +22,7 @@ use crate::{
 
 pub mod event;
 pub mod resolve;
+pub mod status;
 
 use event::AppEvent;
 use resolve::{ResolveCoordinator, TrackPlan};

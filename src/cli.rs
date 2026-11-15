@@ -26,7 +26,7 @@ pub struct Args {
     pub lookahead_ms: Option<u64>,
 
     /// Disable all network providers.
-    #[arg(long)]
+    #[arg(long, global = true)]
     pub offline: bool,
 
     /// Read configuration from this file.
@@ -49,4 +49,10 @@ pub struct Args {
 pub enum Command {
     /// Print resolved application paths.
     Paths,
+    /// Print the active media snapshot and lyric resolution status.
+    Status {
+        /// Print the status as a single JSON object.
+        #[arg(long)]
+        json: bool,
+    },
 }

@@ -31,6 +31,10 @@ async fn main() -> Result<()> {
         tracing::warn!("{warning}");
     }
 
+    if let Some(Command::Status { json }) = args.command {
+        return app::status::run(outcome.config, paths.offsets_file, json).await;
+    }
+
     if args.dump_events {
         return app::run_dump_events(outcome.config.player_filter).await;
     }

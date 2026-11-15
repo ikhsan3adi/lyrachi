@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use crate::core::clock::PlaybackStatus;
 
+pub mod fake;
 pub mod mpris;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -110,4 +111,29 @@ pub enum MediaEvent {
     Rate(f64),
     Seeked { pos_ms: u64 },
     PositionPoll { pos_ms: u64, rtt: Duration },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PlayerSnapshot {
+    pub bus: String,
+    pub kind: PlayerKind,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct MediaSnapshot {
+    pub player: Option<PlayerSnapshot>,
+    pub track: Option<TrackMeta>,
+    pub playback: PlaybackStatus,
+    pub position_ms: u64,
+}
+
+impl Default for MediaSnapshot {
+    fn default() -> Self {
+        Self {
+            player: None,
+            track: None,
+            playback: PlaybackStatus::Stopped,
+            position_ms: 0,
+        }
+    }
 }
