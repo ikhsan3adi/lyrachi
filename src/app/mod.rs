@@ -21,6 +21,7 @@ use crate::{
 };
 
 pub mod event;
+pub mod pipe;
 pub mod resolve;
 pub mod status;
 

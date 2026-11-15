@@ -35,6 +35,15 @@ async fn main() -> Result<()> {
         return app::status::run(outcome.config, paths.offsets_file, json).await;
     }
 
+    if let Some(Command::Pipe { format, max_width }) = args.command {
+        return app::pipe::run(
+            outcome.config,
+            paths.offsets_file,
+            app::pipe::PipeOptions { format, max_width },
+        )
+        .await;
+    }
+
     if args.dump_events {
         return app::run_dump_events(outcome.config.player_filter).await;
     }

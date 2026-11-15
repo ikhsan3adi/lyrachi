@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-use clap::{Parser, Subcommand};
+use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -55,4 +55,20 @@ pub enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print active lyric lines without starting the TUI.
+    Pipe {
+        /// Output format for status bar integrations.
+        #[arg(long, value_enum, default_value = "plain")]
+        format: PipeFormat,
+        /// Truncate output to this display width.
+        #[arg(long, value_name = "N")]
+        max_width: Option<u16>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum PipeFormat {
+    #[default]
+    Plain,
+    Json,
 }

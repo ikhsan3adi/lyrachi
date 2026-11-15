@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use clap::Parser;
-use lyrachi::cli::{Args, Command};
+use lyrachi::cli::{Args, Command, PipeFormat};
 
 #[test]
 fn defaults_are_empty_and_unset() {
@@ -174,4 +174,26 @@ fn status_json_prints_one_object_without_tui_or_dbus() {
     assert_eq!(value["offset"]["effective_ms"], 0);
 
     std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn parses_pipe_defaults_and_json_width() {
+    let defaults = Args::try_parse_from(["lyrachi", "pipe"]).expect("pipe defaults");
+    assert_eq!(
+        defaults.command,
+        Some(Command::Pipe {
+            format: PipeFormat::Plain,
+            max_width: None
+        })
+    );
+
+    let json = Args::try_parse_from(["lyrachi", "pipe", "--format", "json", "--max-width", "42"])
+        .expect("pipe json");
+    assert_eq!(
+        json.command,
+        Some(Command::Pipe {
+            format: PipeFormat::Json,
+            max_width: Some(42)
+        })
+    );
 }
