@@ -1,10 +1,10 @@
-use crate::core::model::SyncedTrack;
-use crate::providers::ProviderError;
+use crate::providers::{ProviderAnswer, ProviderError};
 
 #[derive(Debug)]
 pub enum AppEvent {
-    Resolved {
+    Lyrics {
         epoch: u64,
-        result: Result<Option<SyncedTrack>, ProviderError>,
+        result: Result<Option<ProviderAnswer>, ProviderError>,
+        is_final: bool,
     },
 }

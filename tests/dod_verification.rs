@@ -15,7 +15,7 @@ use lyrachi::{
         text::display_width,
     },
     media::TrackMeta,
-    providers::{ProviderError, TrackQuery, lrclib::LrclibRecord, score},
+    providers::{Provider, ProviderAnswer, ProviderError, TrackQuery, lrclib::LrclibRecord, score},
     ui::UiState,
 };
 use ratatui::{Terminal, backend::TestBackend};
@@ -118,17 +118,19 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
                         biased;
                         _ = cancel.cancelled() => {
                             let _ = tx
-                                .send(AppEvent::Resolved {
+                                .send(AppEvent::Lyrics {
                                     epoch,
                                     result: Err(ProviderError::Cancelled),
+                                    is_final: true,
                                 })
                                 .await;
                         }
                         _ = tokio::time::sleep(delay) => {
                             let _ = tx
-                                .send(AppEvent::Resolved {
+                                .send(AppEvent::Lyrics {
                                     epoch,
-                                    result: Ok(Some(track)),
+                                    result: Ok(Some(ProviderAnswer::new(Provider::Local, track))),
+                                    is_final: true,
                                 })
                                 .await;
                         }
@@ -153,7 +155,12 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
         task.await.unwrap();
     }
 
-    while let Some(AppEvent::Resolved { epoch, result }) = app_rx.recv().await {
+    while let Some(AppEvent::Lyrics {
+        epoch,
+        result,
+        is_final: _,
+    }) = app_rx.recv().await
+    {
         handle_resolved(&mut state, &mut coordinator, epoch, result);
         if let Some(loaded) = state.lyrics_track() {
             assert_eq!(
@@ -166,7 +173,12 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
 
     let mut late_stale = base_track;
     late_stale.source_track_id = Some("Rapid Track 2".to_string());
-    handle_resolved(&mut state, &mut coordinator, 2, Ok(Some(late_stale)));
+    handle_resolved(
+        &mut state,
+        &mut coordinator,
+        2,
+        Ok(Some(ProviderAnswer::new(Provider::Local, late_stale))),
+    );
 
     let final_track = state
         .lyrics_track()

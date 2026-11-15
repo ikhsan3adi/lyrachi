@@ -2,16 +2,16 @@ use std::collections::{HashMap, VecDeque};
 
 use tokio_util::sync::CancellationToken;
 
-use crate::core::model::{CanonicalTrackKey, SyncedTrack};
+use crate::core::model::CanonicalTrackKey;
 use crate::media::TrackMeta;
-use crate::providers::TrackQuery;
+use crate::providers::{ProviderAnswer, TrackQuery};
 
 pub const L1_CACHE_CAPACITY: usize = 64;
 
 #[derive(Debug, Clone)]
 pub struct L1Cache {
     capacity: usize,
-    entries: VecDeque<(CanonicalTrackKey, SyncedTrack)>,
+    entries: VecDeque<(CanonicalTrackKey, ProviderAnswer)>,
 }
 
 impl Default for L1Cache {
@@ -40,24 +40,24 @@ impl L1Cache {
         self.entries.is_empty()
     }
 
-    pub fn get(&mut self, key: &CanonicalTrackKey) -> Option<SyncedTrack> {
+    pub fn get(&mut self, key: &CanonicalTrackKey) -> Option<ProviderAnswer> {
         let index = self
             .entries
             .iter()
             .position(|(entry_key, _)| entry_key == key)?;
-        let (entry_key, track) = self.entries.remove(index)?;
-        self.entries.push_back((entry_key, track.clone()));
-        Some(track)
+        let (entry_key, answer) = self.entries.remove(index)?;
+        self.entries.push_back((entry_key, answer.clone()));
+        Some(answer)
     }
 
-    pub fn peek(&self, key: &CanonicalTrackKey) -> Option<&SyncedTrack> {
+    pub fn peek(&self, key: &CanonicalTrackKey) -> Option<&ProviderAnswer> {
         self.entries
             .iter()
             .find(|(entry_key, _)| entry_key == key)
-            .map(|(_, track)| track)
+            .map(|(_, answer)| answer)
     }
 
-    pub fn insert(&mut self, key: CanonicalTrackKey, track: SyncedTrack) {
+    pub fn insert(&mut self, key: CanonicalTrackKey, answer: ProviderAnswer) {
         if self.capacity == 0 {
             return;
         }
@@ -70,7 +70,7 @@ impl L1Cache {
         } else if self.entries.len() >= self.capacity {
             self.entries.pop_front();
         }
-        self.entries.push_back((key, track));
+        self.entries.push_back((key, answer));
     }
 }
 
@@ -79,7 +79,7 @@ pub enum TrackPlan {
     Cached {
         epoch: u64,
         user_offset_ms: i64,
-        track: SyncedTrack,
+        answer: ProviderAnswer,
     },
     Fetch {
         epoch: u64,
@@ -163,12 +163,12 @@ impl ResolveCoordinator {
         query.user_offset_ms = user_offset_ms;
         self.active_key = Some(query.canonical.clone());
 
-        if let Some(mut cached) = self.cache.get(&query.canonical) {
-            cached.user_offset_ms = user_offset_ms;
+        if let Some(mut answer) = self.cache.get(&query.canonical) {
+            answer.track.user_offset_ms = user_offset_ms;
             return TrackPlan::Cached {
                 epoch,
                 user_offset_ms,
-                track: cached,
+                answer,
             };
         }
 
@@ -186,24 +186,24 @@ impl ResolveCoordinator {
     pub fn complete_epoch(
         &mut self,
         resolved_epoch: u64,
-        track: Option<SyncedTrack>,
-    ) -> Option<Option<SyncedTrack>> {
+        answer: Option<ProviderAnswer>,
+    ) -> Option<Option<ProviderAnswer>> {
         if resolved_epoch != self.epoch {
             return None;
         }
         self.active_token = None;
 
-        let Some(mut track) = track else {
+        let Some(mut answer) = answer else {
             return Some(None);
         };
 
         if let Some(key) = self.active_key.clone() {
             let user_offset_ms = self.user_offsets.get(&key).copied().unwrap_or(0);
-            track.user_offset_ms = user_offset_ms;
-            self.cache.insert(key, track.clone());
+            answer.track.user_offset_ms = user_offset_ms;
+            self.cache.insert(key, answer.clone());
         }
 
-        Some(Some(track))
+        Some(Some(answer))
     }
 
     pub fn seed_user_offset(&mut self, key: CanonicalTrackKey, user_offset_ms: i64) {
@@ -223,9 +223,9 @@ impl ResolveCoordinator {
         } else {
             self.user_offsets.insert(key.clone(), user_offset_ms);
         }
-        if let Some(mut cached) = self.cache.get(&key) {
-            cached.user_offset_ms = user_offset_ms;
-            self.cache.insert(key, cached);
+        if let Some(mut answer) = self.cache.get(&key) {
+            answer.track.user_offset_ms = user_offset_ms;
+            self.cache.insert(key, answer);
         }
     }
 
@@ -237,7 +237,7 @@ impl ResolveCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{LineRole, LyricLine, SyncGranularity};
+    use crate::core::model::{LineRole, LyricLine, SyncGranularity, SyncedTrack};
 
     fn sample_key(index: usize) -> CanonicalTrackKey {
         CanonicalTrackKey {
@@ -269,6 +269,10 @@ mod tests {
         }
     }
 
+    fn sample_answer(id: &str) -> ProviderAnswer {
+        ProviderAnswer::new(crate::providers::Provider::Lrclib, sample_track(id))
+    }
+
     fn sample_meta(title: &str, artist: &str) -> TrackMeta {
         TrackMeta {
             title: title.to_string(),
@@ -284,14 +288,14 @@ mod tests {
     fn l1_cache_evicts_least_recently_used_at_64_entries() {
         let mut cache = L1Cache::new();
         for index in 0..L1_CACHE_CAPACITY {
-            cache.insert(sample_key(index), sample_track(&index.to_string()));
+            cache.insert(sample_key(index), sample_answer(&index.to_string()));
         }
         assert_eq!(cache.len(), 64);
 
         // Touch entry 0 so entry 1 becomes least recently used.
         assert!(cache.get(&sample_key(0)).is_some());
 
-        cache.insert(sample_key(64), sample_track("64"));
+        cache.insert(sample_key(64), sample_answer("64"));
         assert_eq!(cache.len(), 64);
         assert!(cache.get(&sample_key(0)).is_some());
         assert!(cache.get(&sample_key(1)).is_none());
@@ -320,14 +324,14 @@ mod tests {
 
         assert!(
             coordinator
-                .complete_epoch(epoch_a, Some(sample_track("A")))
+                .complete_epoch(epoch_a, Some(sample_answer("A")))
                 .is_none()
         );
         let resolved_b = coordinator
-            .complete_epoch(epoch_b, Some(sample_track("B")))
+            .complete_epoch(epoch_b, Some(sample_answer("B")))
             .expect("current epoch should resolve")
             .expect("track should be present");
-        assert_eq!(resolved_b.source_track_id.as_deref(), Some("B"));
+        assert_eq!(resolved_b.track.source_track_id.as_deref(), Some("B"));
     }
 
     #[test]
@@ -342,10 +346,10 @@ mod tests {
         };
         coordinator.record_user_offset(-200);
         let resolved_a = coordinator
-            .complete_epoch(epoch_a, Some(sample_track("A")))
+            .complete_epoch(epoch_a, Some(sample_answer("A")))
             .unwrap()
             .unwrap();
-        assert_eq!(resolved_a.user_offset_ms, -200);
+        assert_eq!(resolved_a.track.user_offset_ms, -200);
 
         let _ = coordinator.prepare_track(&meta_b);
         coordinator.record_user_offset(100);
@@ -353,12 +357,12 @@ mod tests {
         match coordinator.prepare_track(&meta_a) {
             TrackPlan::Cached {
                 user_offset_ms,
-                track,
+                answer,
                 ..
             } => {
                 assert_eq!(user_offset_ms, -200);
-                assert_eq!(track.user_offset_ms, -200);
-                assert_eq!(track.source_track_id.as_deref(), Some("A"));
+                assert_eq!(answer.track.user_offset_ms, -200);
+                assert_eq!(answer.track.source_track_id.as_deref(), Some("A"));
             }
             other => panic!("expected cached plan, got {other:?}"),
         }

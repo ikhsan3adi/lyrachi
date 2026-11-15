@@ -12,8 +12,7 @@ use tracing::{info, warn};
 use super::sanitize::{
     clean_artist, clean_title, normalize_for_match, split_artist_title, strip_dash_qualifier,
 };
-use super::{Provider, ProviderError, TrackQuery};
-use crate::core::model::SyncedTrack;
+use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
 use crate::core::normalize::normalize_track;
 use crate::core::parse::lrc::parse_lrc;
 
@@ -61,7 +60,7 @@ impl LocalProvider {
         &self.dirs
     }
 
-    pub async fn find(&self, query: &TrackQuery) -> Result<Option<SyncedTrack>, ProviderError> {
+    pub async fn find(&self, query: &TrackQuery) -> Result<Option<ProviderAnswer>, ProviderError> {
         self.find_with_cancel(query, &CancellationToken::new())
             .await
     }
@@ -70,7 +69,7 @@ impl LocalProvider {
         &self,
         query: &TrackQuery,
         cancel: &CancellationToken,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
@@ -80,9 +79,9 @@ impl LocalProvider {
         }
 
         if let Some(audio_path) = query.track_url.as_deref().and_then(file_url_path)
-            && let Some(track) = self.find_sidecar(&audio_path, query, cancel).await?
+            && let Some(answer) = self.find_sidecar(&audio_path, query, cancel).await?
         {
-            return Ok(Some(track));
+            return Ok(Some(answer));
         }
 
         if self.dirs.is_empty() {
@@ -159,7 +158,7 @@ impl LocalProvider {
                         warn!(path = %path.display(), "local lyric file produced no usable lines");
                         continue;
                     }
-                    return Ok(Some(track));
+                    return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
                 }
                 Err(error) => {
                     warn!(%error, path = %path.display(), "invalid local lyric file");
@@ -175,7 +174,7 @@ impl LocalProvider {
         audio_path: &Path,
         query: &TrackQuery,
         cancel: &CancellationToken,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         let Some(stem) = audio_path.file_stem().and_then(|stem| stem.to_str()) else {
             return Ok(None);
         };
@@ -199,7 +198,7 @@ impl LocalProvider {
                         query.user_offset_ms,
                     );
                     if track.is_instrumental || !track.lines.is_empty() {
-                        return Ok(Some(track));
+                        return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
                     }
                     warn!(path = %path.display(), "local sidecar produced no usable lines");
                 }
@@ -598,9 +597,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.source_provider, "local");
-        assert_eq!(track.lines.len(), 2);
-        assert_eq!(track.lines[0].text, "Look at the stars");
+        assert_eq!(track.track.source_provider, "local");
+        assert_eq!(track.track.lines.len(), 2);
+        assert_eq!(track.track.lines[0].text, "Look at the stars");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -617,7 +616,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.lines[0].text, "Right");
+        assert_eq!(track.track.lines[0].text, "Right");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -638,8 +637,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.granularity, SyncGranularity::Word);
-        assert_eq!(track.lines[0].text, "Look stars");
+        assert_eq!(track.track.granularity, SyncGranularity::Word);
+        assert_eq!(track.track.lines[0].text, "Look stars");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -659,8 +658,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.granularity, SyncGranularity::Word);
-        assert_eq!(track.lines[0].words.len(), 3);
+        assert_eq!(track.track.granularity, SyncGranularity::Word);
+        assert_eq!(track.track.lines[0].words.len(), 3);
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -678,7 +677,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.lines[0].text, "Recovered");
+        assert_eq!(track.track.lines[0].text, "Recovered");
 
         std::fs::write(dir.join("Empty.lrc"), "not a lyric file\n").unwrap();
         let missing = LocalProvider::with_dirs(vec![dir.clone()])
@@ -723,7 +722,7 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.lines[0].text, "Matched featured file");
+        assert_eq!(track.track.lines[0].text, "Matched featured file");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -757,9 +756,10 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.lines[0].text, "Sidecar wins");
+        assert_eq!(track.track.lines[0].text, "Sidecar wins");
         assert!(
             track
+                .track
                 .source_track_id
                 .as_deref()
                 .is_some_and(|path| path.ends_with("Coldplay - Yellow.elrc"))

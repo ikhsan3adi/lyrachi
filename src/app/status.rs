@@ -14,7 +14,7 @@ use crate::media::mpris::proxy::{PlayerProxy, micros_to_ms};
 use crate::media::{MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta};
 use crate::offsets::OffsetStore;
 use crate::providers::sanitize::encode_offset_key;
-use crate::providers::{ProviderResolver, TrackQuery};
+use crate::providers::{ProviderAnswer, ProviderResolver, TrackQuery};
 
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -355,6 +355,12 @@ impl From<&SyncedTrack> for StatusLyrics {
                 0.0
             },
         }
+    }
+}
+
+impl From<&ProviderAnswer> for StatusLyrics {
+    fn from(answer: &ProviderAnswer) -> Self {
+        Self::from(&answer.track)
     }
 }
 

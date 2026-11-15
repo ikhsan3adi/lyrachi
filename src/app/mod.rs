@@ -16,7 +16,7 @@ use crate::{
     media::{MediaEvent, TrackMeta, mpris::arbiter},
     offsets::{DebouncedOffsetWriter, OffsetStore},
     prefs::{self, UiPrefs},
-    providers::{ProviderError, ProviderResolver, TrackQuery},
+    providers::{ProviderAnswer, ProviderError, ProviderResolver, TrackQuery},
     ui::{UiState, render},
 };
 
@@ -128,9 +128,10 @@ pub async fn run(
                     );
                 }
                 Some(event) = app_rx.recv() => {
-                    let AppEvent::Resolved {
+                    let AppEvent::Lyrics {
                         epoch: resolved_epoch,
                         result,
+                        is_final: _,
                     } = event;
                     handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
                 }
@@ -261,11 +262,11 @@ pub fn handle_media(
                 }
                 TrackPlan::Cached {
                     user_offset_ms,
-                    track,
+                    answer,
                     ..
                 } => {
                     state.user_offset_ms = user_offset_ms;
-                    state.set_lyrics(track);
+                    state.set_lyrics(answer.track);
                 }
                 TrackPlan::Fetch {
                     epoch: request_epoch,
@@ -286,9 +287,10 @@ pub fn handle_media(
                             return;
                         }
                         let _ = app_tx
-                            .send(AppEvent::Resolved {
+                            .send(AppEvent::Lyrics {
                                 epoch: request_epoch,
                                 result,
+                                is_final: true,
                             })
                             .await;
                     });
@@ -326,15 +328,15 @@ pub fn handle_resolved(
     state: &mut UiState,
     coordinator: &mut ResolveCoordinator,
     resolved_epoch: u64,
-    result: Result<Option<crate::core::model::SyncedTrack>, ProviderError>,
+    result: Result<Option<ProviderAnswer>, ProviderError>,
 ) {
     match result {
-        Ok(track) => {
-            if let Some(outcome) = coordinator.complete_epoch(resolved_epoch, track) {
+        Ok(answer) => {
+            if let Some(outcome) = coordinator.complete_epoch(resolved_epoch, answer) {
                 match outcome {
-                    Some(track) => {
-                        state.user_offset_ms = track.user_offset_ms;
-                        state.set_lyrics(track);
+                    Some(answer) => {
+                        state.user_offset_ms = answer.track.user_offset_ms;
+                        state.set_lyrics(answer.track);
                     }
                     None => state.set_not_found(),
                 }
@@ -515,6 +517,7 @@ fn player_label(bus: &str) -> String {
 mod tests {
     use super::*;
     use crate::core::model::{LineRole, LyricLine, SyncGranularity, SyncedTrack};
+    use crate::providers::Provider;
 
     fn track() -> SyncedTrack {
         SyncedTrack {
@@ -672,17 +675,19 @@ mod tests {
                             biased;
                             _ = cancel.cancelled() => {
                                 let _ = tx
-                                    .send(AppEvent::Resolved {
+                                    .send(AppEvent::Lyrics {
                                         epoch,
                                         result: Err(ProviderError::Cancelled),
+                                        is_final: true,
                                     })
                                     .await;
                             }
                             _ = tokio::time::sleep(latency) => {
                                 let _ = tx
-                                    .send(AppEvent::Resolved {
+                                    .send(AppEvent::Lyrics {
                                         epoch,
-                                        result: Ok(Some(lrc)),
+                                        result: Ok(Some(ProviderAnswer::new(Provider::Local, lrc))),
+                                        is_final: true,
                                     })
                                     .await;
                             }
@@ -709,9 +714,10 @@ mod tests {
             handle.await.unwrap();
         }
 
-        while let Some(AppEvent::Resolved {
+        while let Some(AppEvent::Lyrics {
             epoch: resolved_epoch,
             result,
+            is_final: _,
         }) = app_rx.recv().await
         {
             handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
@@ -720,7 +726,12 @@ mod tests {
         // Even if a delayed response for epoch 1 arrives after epoch 5 resolved, it is ignored.
         let mut stale_track = track();
         stale_track.source_track_id = Some("Song 1".to_string());
-        handle_resolved(&mut state, &mut coordinator, 1, Ok(Some(stale_track)));
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            1,
+            Ok(Some(ProviderAnswer::new(Provider::Local, stale_track))),
+        );
 
         let loaded = state
             .lyrics_track()
@@ -813,7 +824,8 @@ mod tests {
 
         let mut lrc = track();
         lrc.user_offset_ms = 0;
-        handle_resolved(&mut state, &mut coordinator, epoch, Ok(Some(lrc)));
+        let answer = ProviderAnswer::new(Provider::Local, lrc);
+        handle_resolved(&mut state, &mut coordinator, epoch, Ok(Some(answer)));
 
         assert_eq!(state.user_offset_ms, -100);
         let loaded = state.lyrics_track().expect("lyrics loaded");

@@ -135,7 +135,7 @@ pub async fn run_events<W: Write>(
                 }
             }
             Some(event) = app_rx.recv() => {
-                let AppEvent::Resolved { epoch, result } = event;
+                let AppEvent::Lyrics { epoch, result, .. } = event;
                 handle_resolved(&mut state, &mut coordinator, epoch, result);
             }
             _ = tokio::time::sleep(wait) => {}

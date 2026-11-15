@@ -7,8 +7,8 @@ use tracing::warn;
 
 use super::http;
 use super::score;
-use super::{Provider, ProviderError, TrackQuery};
-use crate::core::model::{SyncGranularity, SyncedTrack};
+use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
+use crate::core::model::SyncGranularity;
 use crate::core::normalize::{normalize_instrumental, normalize_plain, normalize_track_checked};
 use crate::core::parse::lrc::parse_lrc;
 use crate::core::parse::lyricsfile::parse_lyricsfile;
@@ -70,8 +70,15 @@ impl LrclibClient {
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Result<Self, ProviderError> {
+        Self::with_base_url_and_timeout(base_url, REQUEST_TIMEOUT)
+    }
+
+    fn with_base_url_and_timeout(
+        base_url: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, ProviderError> {
         let client = http::client_builder()
-            .timeout(REQUEST_TIMEOUT)
+            .timeout(timeout)
             .user_agent(USER_AGENT)
             .build()?;
         let base_url = base_url.into().trim_end_matches('/').to_string();
@@ -79,7 +86,10 @@ impl LrclibClient {
         Ok(Self { client, base_url })
     }
 
-    pub async fn resolve(&self, query: &TrackQuery) -> Result<Option<SyncedTrack>, ProviderError> {
+    pub async fn resolve(
+        &self,
+        query: &TrackQuery,
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         self.resolve_with_cancel(query, &CancellationToken::new())
             .await
     }
@@ -88,14 +98,14 @@ impl LrclibClient {
         &self,
         query: &TrackQuery,
         cancel: &CancellationToken,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
         if let Some(record) = self.get(query, cancel).await?
-            && let Some(track) = Self::record_to_track(&record, 1.0, query)?
+            && let Some(answer) = Self::record_to_track(&record, 1.0, query)?
         {
-            return Ok(Some(track));
+            return Ok(Some(answer));
         }
 
         let candidates = self.search(query, cancel).await?;
@@ -103,8 +113,8 @@ impl LrclibClient {
             score::rank_candidates(query, &candidates[..candidates.len().min(MAX_CANDIDATES)]);
 
         for (candidate, confidence) in ranked {
-            if let Some(track) = Self::record_to_track(candidate, confidence, query)? {
-                return Ok(Some(track));
+            if let Some(answer) = Self::record_to_track(candidate, confidence, query)? {
+                return Ok(Some(answer));
             }
         }
 
@@ -140,9 +150,10 @@ impl LrclibClient {
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
                     res = http::read_limited_text(response) => res?,
                 };
-                Ok(Some(serde_json::from_str(&body)?))
+                serde_json::from_str(&body).map(Some).map_err(invalid_json)
             }
-            status => Err(ProviderError::Status(status)),
+            StatusCode::TOO_MANY_REQUESTS => Err(rate_limited(&response)),
+            status => Err(unavailable_status(status)),
         }
     }
 
@@ -203,9 +214,10 @@ impl LrclibClient {
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
                     res = http::read_limited_text(response) => res?,
                 };
-                Ok(serde_json::from_str(&body)?)
+                serde_json::from_str(&body).map_err(invalid_json)
             }
-            status => Err(ProviderError::Status(status)),
+            StatusCode::TOO_MANY_REQUESTS => Err(rate_limited(&response)),
+            status => Err(unavailable_status(status)),
         }
     }
 
@@ -213,7 +225,7 @@ impl LrclibClient {
         record: &LrclibRecord,
         confidence: f32,
         query: &TrackQuery,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         let duration_ms = record
             .duration
             .filter(|duration| duration.is_finite() && *duration > 0.0)
@@ -222,13 +234,14 @@ impl LrclibClient {
         let source_track_id = (record.id != 0).then(|| record.id.to_string());
 
         if record.instrumental {
-            return Ok(Some(normalize_instrumental(
+            let track = normalize_instrumental(
                 Provider::Lrclib.as_str(),
                 source_track_id,
                 confidence,
                 duration_ms,
                 query.user_offset_ms,
-            )));
+            );
+            return Ok(Some(ProviderAnswer::new(Provider::Lrclib, track)));
         }
 
         if record.has_word_sync
@@ -255,7 +268,7 @@ impl LrclibClient {
                         ))
                         && !track.lines.is_empty()
                     {
-                        return Ok(Some(track));
+                        return Ok(Some(ProviderAnswer::new(Provider::Lrclib, track)));
                     }
                     warn!("LRCLIB lyricsfile did not contain word sync; falling back");
                 }
@@ -282,7 +295,7 @@ impl LrclibClient {
                     )
                     .map_err(|error| ProviderError::Invalid(error.to_string()))?;
                     if track.is_instrumental || !track.lines.is_empty() {
-                        return Ok(Some(track));
+                        return Ok(Some(ProviderAnswer::new(Provider::Lrclib, track)));
                     }
                 }
                 Err(error) => {
@@ -304,12 +317,38 @@ impl LrclibClient {
                 query.user_offset_ms,
             );
             if !track.lines.is_empty() {
-                return Ok(Some(track));
+                return Ok(Some(ProviderAnswer::new(Provider::Lrclib, track)));
             }
         }
 
         Ok(None)
     }
+}
+
+fn invalid_json(error: serde_json::Error) -> ProviderError {
+    ProviderError::Invalid(format!("invalid LRCLIB response: {error}"))
+}
+
+fn unavailable_status(status: StatusCode) -> ProviderError {
+    ProviderError::Unavailable(format!("LRCLIB returned HTTP {status}"))
+}
+
+fn rate_limited(response: &reqwest::Response) -> ProviderError {
+    ProviderError::RateLimited {
+        retry_after_ms: retry_after_ms(response),
+    }
+}
+
+fn retry_after_ms(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000)
 }
 
 fn get_params(query: &TrackQuery) -> Vec<(&'static str, String)> {
@@ -341,6 +380,7 @@ mod tests {
 
     use super::*;
     use crate::media::TrackMeta;
+    use crate::providers::Tier;
 
     fn fixture() -> Vec<LrclibRecord> {
         serde_json::from_str(include_str!("../../tests/fixtures/lrclib_search.json")).unwrap()
@@ -486,9 +526,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.source_provider, "lrclib");
-        assert_eq!(track.granularity, SyncGranularity::Word);
-        assert_eq!(track.lines[0].text, "Look at the stars");
+        assert_eq!(track.track.source_provider, "lrclib");
+        assert_eq!(track.track.granularity, SyncGranularity::Word);
+        assert_eq!(track.track.lines[0].text, "Look at the stars");
     }
 
     #[test]
@@ -506,9 +546,9 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.source_provider, "lrclib");
-        assert_eq!(track.granularity, SyncGranularity::Syllable);
-        assert_eq!(track.lines[0].text, "hello world");
+        assert_eq!(track.track.source_provider, "lrclib");
+        assert_eq!(track.track.granularity, SyncGranularity::Syllable);
+        assert_eq!(track.track.lines[0].text, "hello world");
     }
 
     #[test]
@@ -519,8 +559,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert!(track.is_instrumental);
-        assert_eq!(track.lines[0].text, "[Instrumental]");
+        assert!(track.track.is_instrumental);
+        assert_eq!(track.track.lines[0].text, "[Instrumental]");
     }
 
     #[test]
@@ -533,7 +573,7 @@ mod tests {
         let track = LrclibClient::record_to_track(&synced, 0.9, &query())
             .unwrap()
             .unwrap();
-        assert_eq!(track.lines.len(), 2);
+        assert_eq!(track.track.lines.len(), 2);
 
         let plain = LrclibRecord {
             id: 11,
@@ -543,7 +583,7 @@ mod tests {
         let track = LrclibClient::record_to_track(&plain, 0.9, &query())
             .unwrap()
             .unwrap();
-        assert_eq!(track.granularity, SyncGranularity::Unsynced);
+        assert_eq!(track.track.granularity, SyncGranularity::Unsynced);
     }
 
     #[test]
@@ -558,8 +598,8 @@ mod tests {
         let track = LrclibClient::record_to_track(&malformed, 0.9, &query())
             .unwrap()
             .unwrap();
-        assert_eq!(track.lines.len(), 1);
-        assert_eq!(track.lines[0].text, "First");
+        assert_eq!(track.track.lines.len(), 1);
+        assert_eq!(track.track.lines[0].text, "First");
 
         let line_only_yaml = LrclibRecord {
             id: 14,
@@ -573,7 +613,7 @@ mod tests {
         let track = LrclibClient::record_to_track(&line_only_yaml, 0.9, &query())
             .unwrap()
             .unwrap();
-        assert_eq!(track.lines[0].text, "From ELRC");
+        assert_eq!(track.track.lines[0].text, "From ELRC");
     }
 
     #[test]
@@ -599,9 +639,12 @@ mod tests {
         let track = client.resolve(&query()).await.unwrap().unwrap();
         handle.await.unwrap();
 
-        assert_eq!(track.source_provider, "lrclib");
-        assert_eq!(track.granularity, SyncGranularity::Word);
-        assert!((track.match_confidence - 1.0).abs() < f32::EPSILON);
+        assert_eq!(track.provider, Provider::Lrclib);
+        assert_eq!(track.tier, Tier::Word);
+        assert_eq!(track.track.source_provider, "lrclib");
+        assert_eq!(track.track.granularity, SyncGranularity::Word);
+        assert!((track.confidence - 1.0).abs() < f32::EPSILON);
+        assert!((track.track.match_confidence - 1.0).abs() < f32::EPSILON);
 
         let recorded = requests.lock().unwrap();
         assert_eq!(recorded.len(), 1);
@@ -625,8 +668,10 @@ mod tests {
         let track = client.resolve(&query()).await.unwrap().unwrap();
         handle.await.unwrap();
 
-        assert_eq!(track.source_track_id.as_deref(), Some("1"));
-        assert_eq!(track.granularity, SyncGranularity::Word);
+        assert_eq!(track.provider, Provider::Lrclib);
+        assert_eq!(track.tier, Tier::Word);
+        assert_eq!(track.track.source_track_id.as_deref(), Some("1"));
+        assert_eq!(track.track.granularity, SyncGranularity::Word);
 
         let recorded = requests.lock().unwrap();
         assert_eq!(recorded.len(), 3);
@@ -642,7 +687,7 @@ mod tests {
         let bad_client = LrclibClient::with_base_url(bad_json_url).unwrap();
         let err = bad_client.resolve(&query()).await.unwrap_err();
         bad_handle.await.unwrap();
-        assert!(matches!(err, ProviderError::Json(_)));
+        assert!(matches!(err, ProviderError::Invalid(_)));
 
         let (err_500_url, _, err_handle) = spawn_mock_server(vec![
             ("404 Not Found", "{}".to_string()),
@@ -652,10 +697,70 @@ mod tests {
         let err_client = LrclibClient::with_base_url(err_500_url).unwrap();
         let err = err_client.resolve(&query()).await.unwrap_err();
         err_handle.await.unwrap();
+        assert!(matches!(err, ProviderError::Unavailable(_)));
+    }
+
+    #[tokio::test]
+    async fn mock_distinguishes_404_429_503_timeout_and_invalid_json() {
+        // 1. 404 Not Found resolves to Ok(None)
+        let (not_found_url, _, nf_handle) = spawn_mock_server(vec![
+            ("404 Not Found", "{}".to_string()),
+            ("404 Not Found", "{}".to_string()),
+            ("404 Not Found", "{}".to_string()),
+        ])
+        .await;
+        let nf_client = LrclibClient::with_base_url(not_found_url).unwrap();
+        let nf_res = nf_client.resolve(&query()).await.unwrap();
+        nf_handle.await.unwrap();
+        assert!(nf_res.is_none());
+
+        // 2. 429 Too Many Requests resolves to Err(ProviderError::RateLimited) with retry_after_ms
+        let (rate_url, _, rate_handle) = spawn_mock_server(vec![(
+            "429 Too Many Requests\r\nRetry-After: 3",
+            "{}".to_string(),
+        )])
+        .await;
+        let rate_client = LrclibClient::with_base_url(rate_url).unwrap();
+        let rate_err = rate_client.resolve(&query()).await.unwrap_err();
+        rate_handle.await.unwrap();
         assert!(matches!(
-            err,
-            ProviderError::Status(StatusCode::INTERNAL_SERVER_ERROR)
+            rate_err,
+            ProviderError::RateLimited {
+                retry_after_ms: Some(3000)
+            }
         ));
+
+        // 3. 503 Service Unavailable resolves to Err(ProviderError::Unavailable)
+        let (unavail_url, _, unavail_handle) =
+            spawn_mock_server(vec![("503 Service Unavailable", "{}".to_string())]).await;
+        let unavail_client = LrclibClient::with_base_url(unavail_url).unwrap();
+        let unavail_err = unavail_client.resolve(&query()).await.unwrap_err();
+        unavail_handle.await.unwrap();
+        assert!(matches!(unavail_err, ProviderError::Unavailable(_)));
+
+        // 4. Timeout resolves to Err(ProviderError::Timeout)
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let timeout_server = tokio::spawn(async move {
+            let (_socket, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        });
+        let timeout_client = LrclibClient::with_base_url_and_timeout(
+            format!("http://{addr}"),
+            Duration::from_millis(50),
+        )
+        .unwrap();
+        let timeout_err = timeout_client.resolve(&query()).await.unwrap_err();
+        timeout_server.abort();
+        assert!(matches!(timeout_err, ProviderError::Timeout));
+
+        // 5. Invalid JSON resolves to Err(ProviderError::Invalid)
+        let (bad_json_url, _, bad_handle) =
+            spawn_mock_server(vec![("200 OK", "{not valid json".to_string())]).await;
+        let bad_client = LrclibClient::with_base_url(bad_json_url).unwrap();
+        let bad_err = bad_client.resolve(&query()).await.unwrap_err();
+        bad_handle.await.unwrap();
+        assert!(matches!(bad_err, ProviderError::Invalid(_)));
     }
 
     #[tokio::test]
@@ -689,7 +794,7 @@ mod tests {
         let client = LrclibClient::new().unwrap();
         let track = client.resolve(&query()).await.unwrap().unwrap();
 
-        assert_eq!(track.source_provider, "lrclib");
-        assert!(!track.lines.is_empty());
+        assert_eq!(track.track.source_provider, "lrclib");
+        assert!(!track.track.lines.is_empty());
     }
 }

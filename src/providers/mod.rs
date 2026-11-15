@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 use tokio_util::sync::CancellationToken;
 
-use crate::core::model::{CanonicalTrackKey, SyncedTrack};
+use crate::core::model::{CanonicalTrackKey, SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use local::LocalProvider;
 use lrclib::LrclibClient;
@@ -48,20 +48,72 @@ impl Provider {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Tier {
+    Instrumental = 1,
+    Plain = 2,
+    Line = 3,
+    Word = 4,
+    Syllable = 5,
+}
+
+impl Tier {
+    pub fn from_track(track: &SyncedTrack) -> Self {
+        if track.is_instrumental {
+            return Self::Instrumental;
+        }
+        match track.granularity {
+            SyncGranularity::Syllable => Self::Syllable,
+            SyncGranularity::Word => Self::Word,
+            SyncGranularity::Line => Self::Line,
+            SyncGranularity::Unsynced => Self::Plain,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ProviderAnswer {
+    pub provider: Provider,
+    pub track: SyncedTrack,
+    pub tier: Tier,
+    pub confidence: f32,
+}
+
+impl ProviderAnswer {
+    pub fn new(provider: Provider, track: SyncedTrack) -> Self {
+        let tier = Tier::from_track(&track);
+        let confidence = track.match_confidence;
+        Self {
+            provider,
+            track,
+            tier,
+            confidence,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum ProviderError {
-    #[error("local lyric file error: {0}")]
-    Io(#[from] std::io::Error),
-    #[error("LRCLIB request failed: {0}")]
-    Http(#[from] reqwest::Error),
-    #[error("LRCLIB returned HTTP {0}")]
-    Status(reqwest::StatusCode),
-    #[error("invalid LRCLIB response: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("invalid provider input: {0}")]
+    #[error("provider unavailable: {0}")]
+    Unavailable(String),
+    #[error("provider rate limited (retry after {retry_after_ms:?} ms)")]
+    RateLimited { retry_after_ms: Option<u64> },
+    #[error("provider request timed out")]
+    Timeout,
+    #[error("invalid provider payload: {0}")]
     Invalid(String),
-    #[error("lyric resolution cancelled")]
+    #[error("provider lookup cancelled")]
     Cancelled,
+}
+
+impl From<reqwest::Error> for ProviderError {
+    fn from(error: reqwest::Error) -> Self {
+        if error.is_timeout() {
+            Self::Timeout
+        } else {
+            Self::Unavailable(error.to_string())
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,7 +225,7 @@ impl ProviderResolver {
         &self,
         meta: &TrackMeta,
         user_offset_ms: i64,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         let query = TrackQuery::from_meta(meta, user_offset_ms);
         self.resolve_query(&query, &CancellationToken::new()).await
     }
@@ -182,7 +234,7 @@ impl ProviderResolver {
         &self,
         query: &TrackQuery,
         cancel: &CancellationToken,
-    ) -> Result<Option<SyncedTrack>, ProviderError> {
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
@@ -194,15 +246,15 @@ impl ProviderResolver {
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }
-            let track = match provider {
+            let answer = match provider {
                 Provider::Local => self.local.find_with_cancel(query, cancel).await?,
                 Provider::Lrclib if self.network => {
                     self.lrclib.resolve_with_cancel(query, cancel).await?
                 }
                 Provider::Lrclib => None,
             };
-            if track.is_some() {
-                return Ok(track);
+            if answer.is_some() {
+                return Ok(answer);
             }
         }
 
@@ -320,7 +372,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.source_provider, "local");
+        assert_eq!(track.provider, Provider::Local);
+        assert_eq!(track.track.source_provider, "local");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
@@ -367,7 +420,8 @@ mod tests {
             .unwrap()
             .unwrap();
 
-        assert_eq!(track.source_provider, "local");
+        assert_eq!(track.provider, Provider::Local);
+        assert_eq!(track.track.source_provider, "local");
         std::fs::remove_dir_all(dir).unwrap();
     }
 }
