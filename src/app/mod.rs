@@ -377,9 +377,10 @@ fn handle_input(
 
 fn record_offset(
     state: &UiState,
-    coordinator: &ResolveCoordinator,
+    coordinator: &mut ResolveCoordinator,
     offsets: &mut DebouncedOffsetWriter,
 ) {
+    coordinator.record_user_offset(state.user_offset_ms);
     let (Some(track), Some(key)) = (state.track.as_ref(), coordinator.active_key()) else {
         return;
     };
@@ -697,5 +698,68 @@ mod tests {
             "firefox"
         );
         assert_eq!(player_label("limusic"), "limusic");
+    }
+
+    #[test]
+    fn handle_input_records_offset_in_coordinator_and_preserves_across_resolution() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let meta = crate::media::TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: Some("Parachutes".to_string()),
+            duration_ms: Some(268_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let plan = coordinator.prepare_track(&meta);
+        let epoch = match plan {
+            TrackPlan::Fetch { epoch, .. } => epoch,
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+
+        let key_event = Event::Key(KeyEvent {
+            code: KeyCode::Char('['),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        assert!(!handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            key_event
+        ));
+        assert_eq!(state.user_offset_ms, -100);
+
+        let canonical = coordinator.active_key().unwrap().clone();
+        assert_eq!(offsets.offset_for(&canonical), -100);
+
+        let mut lrc = track();
+        lrc.user_offset_ms = 0;
+        handle_resolved(&mut state, &mut coordinator, epoch, Ok(Some(lrc)));
+
+        assert_eq!(state.user_offset_ms, -100);
+        let loaded = state.lyrics_track().expect("lyrics loaded");
+        assert_eq!(loaded.user_offset_ms, -100);
+
+        let reset_event = Event::Key(KeyEvent {
+            code: KeyCode::Char('\\'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        assert!(!handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            reset_event
+        ));
+        assert_eq!(state.user_offset_ms, 0);
+        assert_eq!(offsets.offset_for(&canonical), 0);
     }
 }
