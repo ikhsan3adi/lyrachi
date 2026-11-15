@@ -49,11 +49,12 @@ pub(crate) fn trim_line_with_words(
     let start_trim = text.len() - text.trim_start().len();
     let end_trim = text.trim_end().len();
 
-    if start_trim == 0 && end_trim == text.len() {
-        return (text, words);
-    }
+    let trimmed = if start_trim == 0 && end_trim == text.len() {
+        text
+    } else {
+        text[start_trim..end_trim].to_string()
+    };
 
-    let trimmed = text[start_trim..end_trim].to_string();
     for word in &mut words {
         let start = word
             .byte_range
@@ -65,7 +66,7 @@ pub(crate) fn trim_line_with_words(
             .1
             .saturating_sub(start_trim)
             .min(trimmed.len());
-        word.byte_range = (start, end);
+        word.byte_range = crate::core::text::trim_range(&trimmed, start, end);
     }
     words.retain(|word| word.byte_range.0 < word.byte_range.1);
 

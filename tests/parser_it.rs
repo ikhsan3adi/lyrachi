@@ -27,6 +27,8 @@ fn assert_track_invariants(track: &SyncedTrack) {
             assert!(end <= line.text.len(), "word range past text");
             assert!(line.text.is_char_boundary(start));
             assert!(line.text.is_char_boundary(end));
+            let slice = &line.text[start..end];
+            assert_eq!(slice.trim(), slice, "word range contains outer whitespace");
             assert!(
                 word.start_ms <= word.end_ms,
                 "word start {} > end {}",
@@ -132,6 +134,9 @@ fn elrc_intra_word_tags_produce_syllable_granularity() {
     assert_eq!(track.granularity, SyncGranularity::Syllable);
     assert_eq!(line.text, "hello world");
     assert_eq!(line.words.len(), 3);
+    assert_eq!(line.words[0].byte_range, (0, 3));
+    assert_eq!(line.words[1].byte_range, (3, 5));
+    assert_eq!(line.words[2].byte_range, (6, 11));
     assert!(is_intra_word_join(
         &line.text,
         &line.words[0],
@@ -164,6 +169,9 @@ fn elrc_space_separated_tags_produce_word_granularity() {
     assert_eq!(track.granularity, SyncGranularity::Word);
     assert_eq!(line.text, "hel lo world");
     assert_eq!(line.words.len(), 3);
+    assert_eq!(line.words[0].byte_range, (0, 3));
+    assert_eq!(line.words[1].byte_range, (4, 6));
+    assert_eq!(line.words[2].byte_range, (7, 12));
     assert!(!is_intra_word_join(
         &line.text,
         &line.words[0],
@@ -192,7 +200,7 @@ fn real_yellow_lyricsfile_parses_with_word_ranges() {
     assert_eq!(
         &track.lines[0].text
             [track.lines[0].words[0].byte_range.0..track.lines[0].words[0].byte_range.1],
-        "Look "
+        "Look"
     );
     assert_track_invariants(&track);
 }

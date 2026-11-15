@@ -338,10 +338,26 @@ mod tests {
 
         assert_eq!(track.lines[0].text, "Look at stars");
         assert_eq!(track.lines[0].words.len(), 3);
+        assert_eq!(track.lines[0].words[0].byte_range, (0, 4));
+        assert_eq!(track.lines[0].words[1].byte_range, (5, 7));
+        assert_eq!(track.lines[0].words[2].byte_range, (8, 13));
         assert_eq!(track.lines[0].explicit_last_word_end_ms, Some(12_100));
         assert_eq!(track.lines[1].text, "No trailing");
         assert_eq!(track.lines[1].explicit_last_word_end_ms, None);
         assert_eq!(track.lines[1].words[1].start_ms, 13_500);
+    }
+
+    #[test]
+    fn preserves_adjacent_syllable_ranges_without_trailing_spaces() {
+        let input = "[00:01.00]<00:01.00>hel<00:01.20>lo <00:01.50>world\n";
+        let track = parse_lrc(input, None).unwrap();
+        let line = &track.lines[0];
+
+        assert_eq!(line.text, "hello world");
+        assert_eq!(line.words.len(), 3);
+        assert_eq!(line.words[0].byte_range, (0, 3));
+        assert_eq!(line.words[1].byte_range, (3, 5));
+        assert_eq!(line.words[2].byte_range, (6, 11));
     }
 
     #[test]

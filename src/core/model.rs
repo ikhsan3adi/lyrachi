@@ -10,12 +10,12 @@ pub struct CanonicalTrackKey {
     pub duration_bucket_sec: Option<u32>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 pub enum SyncGranularity {
-    Syllable,
-    Word,
-    Line,
     Unsynced,
+    Line,
+    Word,
+    Syllable,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -116,6 +116,13 @@ mod tests {
     #[test]
     fn parser_version_tracks_the_syllable_ir() {
         assert_eq!(PARSER_VERSION, 2);
+    }
+
+    #[test]
+    fn granularity_orders_syllable_above_word_line_and_unsynced() {
+        assert!(SyncGranularity::Syllable > SyncGranularity::Word);
+        assert!(SyncGranularity::Word > SyncGranularity::Line);
+        assert!(SyncGranularity::Line > SyncGranularity::Unsynced);
     }
 
     #[test]

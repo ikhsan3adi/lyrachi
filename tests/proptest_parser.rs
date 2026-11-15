@@ -15,6 +15,8 @@ fn assert_track_invariants(track: &SyncedTrack) {
             assert!(end <= line.text.len());
             assert!(line.text.is_char_boundary(start));
             assert!(line.text.is_char_boundary(end));
+            let slice = &line.text[start..end];
+            assert_eq!(slice.trim(), slice);
             assert!(word.start_ms <= word.end_ms);
             assert!(word.start_ms >= line.start_ms);
             assert!(word.end_ms <= line.end_ms);

@@ -5,7 +5,7 @@ use crate::core::model::{
     WordToken, is_intra_word_join,
 };
 use crate::core::parse::{ParsedLine, ParsedTrack, ParsedWord};
-use crate::core::text::{clamp_estimate, display_width, grapheme_count};
+use crate::core::text::{clamp_estimate, display_width, grapheme_count, trim_range};
 
 const ANNOTATION_WINDOW_MS: u64 = 20;
 const INSTRUMENTAL_GAP_MS: u64 = 8_000;
@@ -443,7 +443,8 @@ fn word_end_hint(line: &MergedLine) -> Option<u64> {
                 && line.text.is_char_boundary(start)
                 && line.text.is_char_boundary(end)
             {
-                grapheme_count(&line.text[start..end])
+                let (trimmed_start, trimmed_end) = trim_range(&line.text, start, end);
+                grapheme_count(&line.text[trimmed_start..trimmed_end])
             } else {
                 0
             };
@@ -464,10 +465,10 @@ fn resolve_words(line: &MergedLine, line_end_ms: u64) -> Vec<WordToken> {
         return Vec::new();
     }
 
-    let valid_words: Vec<&ParsedWord> = line
+    let valid_words: Vec<(usize, usize, &ParsedWord)> = line
         .words
         .iter()
-        .filter(|word| {
+        .filter_map(|word| {
             let (start, end) = word.byte_range;
             if start >= end
                 || end > line.text.len()
@@ -475,25 +476,24 @@ fn resolve_words(line: &MergedLine, line_end_ms: u64) -> Vec<WordToken> {
                 || !line.text.is_char_boundary(end)
             {
                 warn!(start, end, "skipping invalid word byte range");
-                false
-            } else {
-                true
+                return None;
             }
+            let (trimmed_start, trimmed_end) = trim_range(&line.text, start, end);
+            (trimmed_start < trimmed_end).then_some((trimmed_start, trimmed_end, word))
         })
         .collect();
 
     let mut tokens = Vec::with_capacity(valid_words.len());
     let mut cursor_ms = line.start_ms;
 
-    for (index, word) in valid_words.iter().enumerate() {
-        let (start, end) = word.byte_range;
+    for (index, &(start, end, word)) in valid_words.iter().enumerate() {
         let word_start = word
             .start_ms
             .max(cursor_ms)
             .clamp(line.start_ms, line_end_ms);
         let word_end = if let Some(end_ms) = word.end_ms {
             end_ms.max(word_start)
-        } else if let Some(next) = valid_words.get(index + 1) {
+        } else if let Some(&(_, _, next)) = valid_words.get(index + 1) {
             next.start_ms.max(word_start)
         } else if let Some(explicit_end_ms) = line.explicit_last_word_end_ms {
             explicit_end_ms.max(word_start)
@@ -509,9 +509,11 @@ fn resolve_words(line: &MergedLine, line_end_ms: u64) -> Vec<WordToken> {
                 ))
                 .min(line_end_ms)
         };
-        let max_word_end = valid_words.get(index + 1).map_or(line_end_ms, |next| {
-            next.start_ms.max(word_start).min(line_end_ms)
-        });
+        let max_word_end = valid_words
+            .get(index + 1)
+            .map_or(line_end_ms, |&(_, _, next)| {
+                next.start_ms.max(word_start).min(line_end_ms)
+            });
         let word_end = word_end.clamp(word_start, max_word_end);
         cursor_ms = word_end;
 

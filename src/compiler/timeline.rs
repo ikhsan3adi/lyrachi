@@ -318,4 +318,68 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn compiles_and_evaluates_syllable_tokens_without_splitting_words() {
+        let syllable_track = SyncedTrack {
+            source_provider: "test".to_string(),
+            source_track_id: None,
+            parser_version: 2,
+            is_instrumental: false,
+            granularity: SyncGranularity::Syllable,
+            intrinsic_offset_ms: 0,
+            user_offset_ms: 0,
+            match_confidence: 1.0,
+            lines: vec![LyricLine {
+                start_ms: 1_000,
+                end_ms: 2_000,
+                role: LineRole::Primary,
+                text: "hello wonderful".to_string(),
+                words: vec![
+                    WordToken {
+                        byte_range: (0, 3),
+                        start_ms: 1_000,
+                        end_ms: 1_200,
+                        display_width: 3,
+                    },
+                    WordToken {
+                        byte_range: (3, 5),
+                        start_ms: 1_200,
+                        end_ms: 1_400,
+                        display_width: 2,
+                    },
+                    WordToken {
+                        byte_range: (6, 12),
+                        start_ms: 1_400,
+                        end_ms: 1_700,
+                        display_width: 6,
+                    },
+                    WordToken {
+                        byte_range: (12, 15),
+                        start_ms: 1_700,
+                        end_ms: 2_000,
+                        display_width: 3,
+                    },
+                ],
+                annotations: Vec::new(),
+            }],
+        };
+
+        let timeline = CompiledTimeline::compile(&syllable_track, 14);
+        assert_eq!(timeline.granularity, SyncGranularity::Syllable);
+        assert_eq!(
+            timeline.lines[0]
+                .wrapped_main
+                .iter()
+                .map(|sub| sub.text.as_str())
+                .collect::<Vec<_>>(),
+            vec!["hello", "wonderful"]
+        );
+
+        let second_syllable = timeline.evaluate(1_300);
+        assert_eq!(second_syllable.active_line_idx, Some(0));
+        assert_eq!(second_syllable.active_word_idx, Some(1));
+        assert!((second_syllable.progress - 0.5).abs() < 0.0001);
+        assert_eq!(timeline.next_boundary_ms(1_300), Some(1_400));
+    }
 }
