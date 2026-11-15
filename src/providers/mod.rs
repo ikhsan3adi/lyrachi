@@ -23,11 +23,27 @@ pub enum Provider {
 }
 
 impl Provider {
+    pub const fn all() -> [Self; 2] {
+        [Self::Local, Self::Lrclib]
+    }
+
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Lrclib => "lrclib",
         }
+    }
+
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "local" => Some(Self::Local),
+            "lrclib" => Some(Self::Lrclib),
+            _ => None,
+        }
+    }
+
+    pub const fn valid_config_names() -> &'static str {
+        "local, lrclib"
     }
 }
 

@@ -32,8 +32,8 @@ pub async fn run(terminal: &mut DefaultTerminal, args: Args) -> color_eyre::Resu
         }
     };
     let mut state = UiState::new();
-    state.global_offset_ms = args.offset_ms;
-    state.lookahead_ms = args.lookahead_ms;
+    state.global_offset_ms = args.offset_ms.unwrap_or(0);
+    state.lookahead_ms = args.lookahead_ms.unwrap_or(0);
     let mut clock = PlaybackClock::new();
     let mut coordinator = ResolveCoordinator::new();
     let mut events = EventStream::new();
