@@ -64,6 +64,7 @@ fn extra_status(state: &UiState) -> Option<String> {
         return Some("instrumental".to_string());
     }
     match track.granularity {
+        SyncGranularity::Syllable => Some("syllable".to_string()),
         SyncGranularity::Word => Some("word".to_string()),
         SyncGranularity::Line => Some("line".to_string()),
         SyncGranularity::Unsynced => {
@@ -116,6 +117,12 @@ mod tests {
 
         state.set_player(Some("mpv".to_string()));
         state.playback = PlaybackStatus::Playing;
+        state.set_lyrics(sample_track(SyncGranularity::Syllable, false));
+        assert_eq!(
+            status_line(&state).to_string(),
+            "mpv | playing | lrclib | +0 ms | 90% | syllable"
+        );
+
         state.set_lyrics(sample_track(SyncGranularity::Word, false));
         assert_eq!(
             status_line(&state).to_string(),

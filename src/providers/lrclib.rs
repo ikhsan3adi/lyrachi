@@ -248,7 +248,11 @@ impl LrclibClient {
                         query.user_offset_ms,
                     )
                     .map_err(|error| ProviderError::Invalid(error.to_string()))?;
-                    if (track.is_instrumental || track.granularity == SyncGranularity::Word)
+                    if (track.is_instrumental
+                        || matches!(
+                            track.granularity,
+                            SyncGranularity::Syllable | SyncGranularity::Word
+                        ))
                         && !track.lines.is_empty()
                     {
                         return Ok(Some(track));
@@ -485,6 +489,26 @@ mod tests {
         assert_eq!(track.source_provider, "lrclib");
         assert_eq!(track.granularity, SyncGranularity::Word);
         assert_eq!(track.lines[0].text, "Look at the stars");
+    }
+
+    #[test]
+    fn builds_syllable_synced_track_from_lyricsfile() {
+        let record = LrclibRecord {
+            id: 15,
+            has_word_sync: true,
+            lyricsfile: Some(
+                "version: '1.0'\nlines:\n- text: hello world\n  start_ms: 1000\n  words:\n  - text: hel\n    start_ms: 1000\n  - text: 'lo '\n    start_ms: 1200\n  - text: world\n    start_ms: 1500\n"
+                    .to_string(),
+            ),
+            ..LrclibRecord::default()
+        };
+        let track = LrclibClient::record_to_track(&record, 0.9, &query())
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.source_provider, "lrclib");
+        assert_eq!(track.granularity, SyncGranularity::Syllable);
+        assert_eq!(track.lines[0].text, "hello world");
     }
 
     #[test]

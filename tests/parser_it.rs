@@ -1,4 +1,6 @@
-use lyrachi::core::model::{AnnotationKind, LineRole, SyncGranularity, SyncedTrack};
+use lyrachi::core::model::{
+    AnnotationKind, LineRole, PARSER_VERSION, SyncGranularity, SyncedTrack, is_intra_word_join,
+};
 use lyrachi::core::normalize::normalize_track;
 use lyrachi::core::parse::lrc::parse_lrc;
 use lyrachi::core::parse::lyricsfile::parse_lyricsfile;
@@ -6,6 +8,7 @@ use lyrachi::core::text::{display_width, grapheme_count};
 
 const STANDARD: &str = include_str!("fixtures/standard_multi_tag.lrc");
 const ELRC: &str = include_str!("fixtures/enhanced_karaoke.elrc");
+const SYLLABLE_ELRC: &str = include_str!("fixtures/syllable_karaoke.elrc");
 const MULTILINGUAL: &str = include_str!("fixtures/multilingual_cjk_emoji.lrc");
 const YELLOW: &str = include_str!("fixtures/lrclib_yellow_wordsync.json");
 
@@ -110,6 +113,62 @@ fn elrc_resolves_word_end_from_next_word_or_trailing_tag() {
     assert_eq!(track.lines[0].words[0].end_ms, 10_400);
     assert_eq!(track.lines[0].words[3].end_ms, 12_100);
     assert_eq!(track.lines[2].words.last().unwrap().end_ms, 16_000);
+    assert_track_invariants(&track);
+}
+
+#[test]
+fn elrc_intra_word_tags_produce_syllable_granularity() {
+    let track = normalize_track(
+        parse_lrc(SYLLABLE_ELRC, None).unwrap(),
+        "fixture",
+        None,
+        1.0,
+        None,
+        0,
+    );
+
+    let line = &track.lines[0];
+    assert_eq!(track.parser_version, PARSER_VERSION);
+    assert_eq!(track.granularity, SyncGranularity::Syllable);
+    assert_eq!(line.text, "hello world");
+    assert_eq!(line.words.len(), 3);
+    assert!(is_intra_word_join(
+        &line.text,
+        &line.words[0],
+        &line.words[1]
+    ));
+    assert!(!is_intra_word_join(
+        &line.text,
+        &line.words[1],
+        &line.words[2]
+    ));
+    assert_track_invariants(&track);
+}
+
+#[test]
+fn elrc_space_separated_tags_produce_word_granularity() {
+    let track = normalize_track(
+        parse_lrc(
+            "[00:01.00]<00:01.00>hel <00:01.20>lo <00:01.50>world\n",
+            None,
+        )
+        .unwrap(),
+        "fixture",
+        None,
+        1.0,
+        None,
+        0,
+    );
+
+    let line = &track.lines[0];
+    assert_eq!(track.granularity, SyncGranularity::Word);
+    assert_eq!(line.text, "hel lo world");
+    assert_eq!(line.words.len(), 3);
+    assert!(!is_intra_word_join(
+        &line.text,
+        &line.words[0],
+        &line.words[1]
+    ));
     assert_track_invariants(&track);
 }
 

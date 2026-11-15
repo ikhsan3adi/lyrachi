@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-pub const PARSER_VERSION: u16 = 1;
+pub const PARSER_VERSION: u16 = 2;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct CanonicalTrackKey {
@@ -12,6 +12,7 @@ pub struct CanonicalTrackKey {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum SyncGranularity {
+    Syllable,
     Word,
     Line,
     Unsynced,
@@ -31,6 +32,36 @@ pub struct WordToken {
     pub start_ms: u64,
     pub end_ms: u64,
     pub display_width: u16,
+}
+
+pub fn is_intra_word_join(line_text: &str, prev: &WordToken, next: &WordToken) -> bool {
+    let (prev_start, boundary) = prev.byte_range;
+    let (next_start, next_end) = next.byte_range;
+
+    if prev_start >= boundary
+        || boundary != next_start
+        || next_start >= next_end
+        || next_end > line_text.len()
+        || !line_text.is_char_boundary(prev_start)
+        || !line_text.is_char_boundary(next_end)
+    {
+        return false;
+    }
+
+    let Some(before) = line_text.get(..boundary) else {
+        return false;
+    };
+    let Some(after) = line_text.get(boundary..) else {
+        return false;
+    };
+    let Some(before) = before.chars().next_back() else {
+        return false;
+    };
+    let Some(after) = after.chars().next() else {
+        return false;
+    };
+
+    !before.is_whitespace() && !after.is_whitespace()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -67,4 +98,38 @@ pub struct SyncedTrack {
     pub user_offset_ms: i64,
     pub match_confidence: f32,
     pub lines: Vec<LyricLine>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn word(byte_range: (usize, usize)) -> WordToken {
+        WordToken {
+            byte_range,
+            start_ms: 0,
+            end_ms: 0,
+            display_width: 0,
+        }
+    }
+
+    #[test]
+    fn parser_version_tracks_the_syllable_ir() {
+        assert_eq!(PARSER_VERSION, 2);
+    }
+
+    #[test]
+    fn detects_only_adjacent_non_whitespace_word_ranges() {
+        assert!(is_intra_word_join("hello", &word((0, 3)), &word((3, 5))));
+        assert!(!is_intra_word_join("hel lo", &word((0, 3)), &word((4, 6))));
+        assert!(!is_intra_word_join("hel lo", &word((0, 4)), &word((4, 6))));
+        assert!(!is_intra_word_join("hello", &word((0, 3)), &word((4, 5))));
+    }
+
+    #[test]
+    fn rejects_empty_or_out_of_bounds_word_ranges() {
+        assert!(!is_intra_word_join("hello", &word((0, 0)), &word((0, 5))));
+        assert!(!is_intra_word_join("hello", &word((0, 3)), &word((3, 9))));
+        assert!(!is_intra_word_join("hello", &word((0, 3)), &word((3, 3))));
+    }
 }

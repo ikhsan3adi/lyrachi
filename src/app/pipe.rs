@@ -302,6 +302,7 @@ fn class_name(track: &SyncedTrack) -> String {
         return "instrumental".to_string();
     }
     match track.granularity {
+        SyncGranularity::Syllable => "syllable",
         SyncGranularity::Word => "word",
         SyncGranularity::Line => "line",
         SyncGranularity::Unsynced => "unsynced",

@@ -75,7 +75,9 @@ proptest! {
                         0u64..10,
                         0u64..60,
                         0u64..100,
-                        proptest::sample::select(vec!["hello ", "世界 ", "✨ ", "", "end"]),
+                        proptest::sample::select(vec![
+                            "hello ", "世界 ", "✨ ", "hel", "lo ", "世", "界 ", "", "end",
+                        ]),
                     ),
                     1..8,
                 ),

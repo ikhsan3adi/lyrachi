@@ -2,7 +2,7 @@ use tracing::warn;
 
 use crate::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, PARSER_VERSION, SyncGranularity, SyncedTrack,
-    WordToken,
+    WordToken, is_intra_word_join,
 };
 use crate::core::parse::{ParsedLine, ParsedTrack, ParsedWord};
 use crate::core::text::{clamp_estimate, display_width, grapheme_count};
@@ -190,7 +190,13 @@ fn normalize_track_unchecked(
         }
     }
 
-    let granularity = if lines.iter().any(|line| !line.words.is_empty()) {
+    let granularity = if lines.iter().any(|line| {
+        line.words
+            .windows(2)
+            .any(|pair| is_intra_word_join(&line.text, &pair[0], &pair[1]))
+    }) {
+        SyncGranularity::Syllable
+    } else if lines.iter().any(|line| !line.words.is_empty()) {
         SyncGranularity::Word
     } else {
         SyncGranularity::Line

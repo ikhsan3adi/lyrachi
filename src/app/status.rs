@@ -337,6 +337,7 @@ fn playback_name(status: PlaybackStatus) -> &'static str {
 
 fn granularity_name(granularity: SyncGranularity) -> &'static str {
     match granularity {
+        SyncGranularity::Syllable => "syllable",
         SyncGranularity::Word => "word",
         SyncGranularity::Line => "line",
         SyncGranularity::Unsynced => "unsynced",
@@ -354,5 +355,15 @@ impl From<&SyncedTrack> for StatusLyrics {
                 0.0
             },
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn names_syllable_granularity_for_status_output() {
+        assert_eq!(granularity_name(SyncGranularity::Syllable), "syllable");
     }
 }
