@@ -206,6 +206,14 @@ impl ResolveCoordinator {
         Some(Some(track))
     }
 
+    pub fn seed_user_offset(&mut self, key: CanonicalTrackKey, user_offset_ms: i64) {
+        if user_offset_ms == 0 {
+            self.user_offsets.remove(&key);
+        } else {
+            self.user_offsets.insert(key, user_offset_ms);
+        }
+    }
+
     pub fn record_user_offset(&mut self, user_offset_ms: i64) {
         let Some(key) = self.active_key.clone() else {
             return;
@@ -268,6 +276,7 @@ mod tests {
             album: Some("Album".to_string()),
             duration_ms: Some(200_000),
             track_id: None,
+            url: None,
         }
     }
 

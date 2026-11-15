@@ -9,6 +9,7 @@ pub mod config;
 pub mod core;
 pub mod logging;
 pub mod media;
+pub mod offsets;
 pub mod paths;
 pub mod providers;
 pub mod ui;

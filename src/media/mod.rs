@@ -97,6 +97,7 @@ pub struct TrackMeta {
     pub album: Option<String>,
     pub duration_ms: Option<u64>,
     pub track_id: Option<String>,
+    pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]

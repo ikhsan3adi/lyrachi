@@ -1,4 +1,5 @@
 use std::io::Write as _;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -12,8 +13,9 @@ use tracing::{debug, debug_span, warn};
 use crate::{
     config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
-    media::{MediaEvent, mpris::arbiter},
-    providers::{ProviderError, ProviderResolver},
+    media::{MediaEvent, TrackMeta, mpris::arbiter},
+    offsets::{DebouncedOffsetWriter, OffsetStore},
+    providers::{ProviderError, ProviderResolver, TrackQuery},
     ui::{UiState, render},
 };
 
@@ -27,6 +29,7 @@ pub async fn run(
     terminal: &mut DefaultTerminal,
     config: RuntimeConfig,
     warnings: Vec<String>,
+    offsets_file: PathBuf,
 ) -> color_eyre::Result<()> {
     let resolver = match ProviderResolver::with_config(
         config.local_dirs.clone(),
@@ -66,49 +69,74 @@ pub async fn run(
         }
     };
     drop(media_tx);
+    let mut offsets = DebouncedOffsetWriter::new(OffsetStore::load(&offsets_file));
 
-    loop {
-        draw_frame(terminal, &mut state, &clock)?;
+    let loop_result: color_eyre::Result<()> = async {
+        loop {
+            let now = Instant::now();
+            if let Err(error) = offsets.poll(now) {
+                warn!(%error, "failed to persist lyric offset");
+            }
 
-        let wait = next_wait(&state, &clock, Instant::now());
+            draw_frame(terminal, &mut state, &clock)?;
 
-        tokio::select! {
-            event = events.next() => {
-                let Some(event) = event else {
-                    break;
-                };
-                let event = event?;
-                if handle_input(&mut state, &mut coordinator, event) {
-                    break;
+            let wait = next_wait(&state, &clock, now);
+            let wait = offsets
+                .time_until_flush(now)
+                .map_or(wait, |flush_wait| wait.min(flush_wait));
+
+            tokio::select! {
+                event = events.next() => {
+                    let Some(event) = event else {
+                        break;
+                    };
+                    let event = event?;
+                    if handle_input(&mut state, &mut coordinator, &mut offsets, event) {
+                        break;
+                    }
                 }
+                Some(event) = media_rx.recv() => {
+                    if let MediaEvent::TrackChanged(meta) = &event {
+                        let key = TrackQuery::from_meta(meta, 0).canonical;
+                        let stored_offset = offsets.offset_for(&key);
+                        coordinator.seed_user_offset(key, stored_offset);
+                    }
+                    handle_media(
+                        event,
+                        &mut state,
+                        &mut clock,
+                        &mut coordinator,
+                        &app_tx,
+                        resolver.as_ref(),
+                        Instant::now(),
+                    );
+                }
+                Some(event) = app_rx.recv() => {
+                    let AppEvent::Resolved {
+                        epoch: resolved_epoch,
+                        result,
+                    } = event;
+                    handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
+                }
+                _ = tokio::time::sleep(wait) => {}
             }
-            Some(event) = media_rx.recv() => {
-                handle_media(
-                    event,
-                    &mut state,
-                    &mut clock,
-                    &mut coordinator,
-                    &app_tx,
-                    resolver.as_ref(),
-                    Instant::now(),
-                );
-            }
-            Some(event) = app_rx.recv() => {
-                let AppEvent::Resolved {
-                    epoch: resolved_epoch,
-                    result,
-                } = event;
-                handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
-            }
-            _ = tokio::time::sleep(wait) => {}
         }
+
+        Ok(())
     }
+    .await;
 
     coordinator.cancel_active();
     cancel.cancel();
     if let Some(monitor) = monitor {
         monitor.abort();
         let _ = monitor.await;
+    }
+
+    let flush_result = offsets.flush();
+    loop_result?;
+    if let Err(error) = flush_result {
+        warn!(%error, "failed to persist lyric offset on exit");
     }
 
     Ok(())
@@ -304,7 +332,12 @@ pub fn handle_resolved(
     }
 }
 
-fn handle_input(state: &mut UiState, coordinator: &mut ResolveCoordinator, event: Event) -> bool {
+fn handle_input(
+    state: &mut UiState,
+    coordinator: &mut ResolveCoordinator,
+    offsets: &mut DebouncedOffsetWriter,
+    event: Event,
+) -> bool {
     let Event::Key(key) = event else {
         return false;
     };
@@ -317,17 +350,17 @@ fn handle_input(state: &mut UiState, coordinator: &mut ResolveCoordinator, event
         KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
         KeyCode::Char('[') => {
             state.adjust_offset(-100);
-            coordinator.record_user_offset(state.user_offset_ms);
+            record_offset(state, coordinator, offsets);
             false
         }
         KeyCode::Char(']') => {
             state.adjust_offset(100);
-            coordinator.record_user_offset(state.user_offset_ms);
+            record_offset(state, coordinator, offsets);
             false
         }
         KeyCode::Char('\\') => {
             state.reset_offset();
-            coordinator.record_user_offset(0);
+            record_offset(state, coordinator, offsets);
             false
         }
         KeyCode::Up => {
@@ -339,6 +372,25 @@ fn handle_input(state: &mut UiState, coordinator: &mut ResolveCoordinator, event
             false
         }
         _ => false,
+    }
+}
+
+fn record_offset(
+    state: &UiState,
+    coordinator: &ResolveCoordinator,
+    offsets: &mut DebouncedOffsetWriter,
+) {
+    let (Some(track), Some(key)) = (state.track.as_ref(), coordinator.active_key()) else {
+        return;
+    };
+    offsets.set(key, &track_label(track), state.user_offset_ms);
+}
+
+fn track_label(track: &TrackMeta) -> String {
+    if track.artist.is_empty() {
+        track.title.clone()
+    } else {
+        format!("{} - {}", track.artist, track.title)
     }
 }
 
@@ -470,6 +522,7 @@ mod tests {
                 album: None,
                 duration_ms: None,
                 track_id: None,
+                url: None,
             }),
             &mut state,
             &mut clock,
@@ -525,6 +578,7 @@ mod tests {
                 album: Some("Parachutes".to_string()),
                 duration_ms: Some(240_000),
                 track_id: Some(format!("/track/{index}")),
+                url: None,
             };
             state.set_track(meta.clone());
 

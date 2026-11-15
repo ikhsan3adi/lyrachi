@@ -95,6 +95,7 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
             album: Some("Parachutes".to_string()),
             duration_ms: Some(180_000),
             track_id: Some(format!("/org/mpris/MediaPlayer2/Track/{step}")),
+            url: None,
         };
         state.set_track(meta.clone());
 
@@ -184,6 +185,7 @@ fn dod_4_browser_music_video_with_duration_diff_and_merged_artist_resolves_lyric
         album: None,
         duration_ms: Some(272_000),
         track_id: None,
+        url: None,
     };
     let query = TrackQuery::from_meta(&browser_meta, 0);
     assert_eq!(query.artist, "Coldplay");

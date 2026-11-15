@@ -385,6 +385,15 @@ mod tests {
     }
 
     fn query(title: &str, artist: &str, album: Option<&str>) -> TrackQuery {
+        query_with_url(title, artist, album, None)
+    }
+
+    fn query_with_url(
+        title: &str,
+        artist: &str,
+        album: Option<&str>,
+        url: Option<String>,
+    ) -> TrackQuery {
         TrackQuery::from_meta(
             &TrackMeta {
                 title: title.to_string(),
@@ -392,6 +401,7 @@ mod tests {
                 album: album.map(str::to_string),
                 duration_ms: None,
                 track_id: None,
+                url,
             },
             0,
         )

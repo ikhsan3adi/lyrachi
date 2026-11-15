@@ -56,6 +56,7 @@ pub fn extract_track_meta(
         .and_then(value_string)
         .filter(|album| !album.is_empty());
     let duration_ms = metadata.get("mpris:length").and_then(value_duration_ms);
+    let url = metadata.get("xesam:url").and_then(value_string);
 
     Some(TrackMeta {
         title,
@@ -63,6 +64,7 @@ pub fn extract_track_meta(
         album,
         duration_ms,
         track_id,
+        url,
     })
 }
 
@@ -158,6 +160,10 @@ mod tests {
                 "mpris:trackid",
                 object_path("/org/mpris/MediaPlayer2/Track/1"),
             ),
+            (
+                "xesam:url",
+                text("file:///music/Coldplay%20-%20Yellow.flac"),
+            ),
         ]);
 
         let track = extract_track_meta(&metadata, PlayerKind::Native).unwrap();
@@ -169,6 +175,10 @@ mod tests {
         assert_eq!(
             track.track_id.as_deref(),
             Some("/org/mpris/MediaPlayer2/Track/1")
+        );
+        assert_eq!(
+            track.url.as_deref(),
+            Some("file:///music/Coldplay%20-%20Yellow.flac")
         );
     }
 

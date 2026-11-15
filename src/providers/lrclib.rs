@@ -347,6 +347,7 @@ mod tests {
                 album: None,
                 duration_ms: Some(267_000),
                 track_id: None,
+                url: None,
             },
             0,
         )
@@ -451,6 +452,7 @@ mod tests {
                 album: Some("Album".to_string()),
                 duration_ms: Some(400),
                 track_id: None,
+                url: None,
             },
             0,
         );

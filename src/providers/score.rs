@@ -136,6 +136,7 @@ mod tests {
                 album: None,
                 duration_ms: Some(267_000),
                 track_id: None,
+                url: None,
             },
             0,
         )

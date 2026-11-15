@@ -67,6 +67,7 @@ pub struct TrackQuery {
     pub title: String,
     pub album: Option<String>,
     pub duration_ms: Option<u64>,
+    pub track_url: Option<String>,
     pub user_offset_ms: i64,
     pub canonical: CanonicalTrackKey,
 }
@@ -104,6 +105,7 @@ impl TrackQuery {
             title,
             album,
             duration_ms: meta.duration_ms,
+            track_url: meta.url.clone(),
             user_offset_ms,
             canonical,
         }
@@ -231,6 +233,7 @@ mod tests {
             album: album.map(str::to_string),
             duration_ms,
             track_id: None,
+            url: None,
         }
     }
 

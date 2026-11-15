@@ -5,6 +5,7 @@ use crate::compiler::timeline::CompiledTimeline;
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
+use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 
 const HEADER_ROWS: u16 = 1;
 const STATUS_ROWS: u16 = 1;
@@ -115,7 +116,10 @@ impl UiState {
     }
 
     pub fn adjust_offset(&mut self, delta_ms: i64) {
-        self.user_offset_ms = self.user_offset_ms.saturating_add(delta_ms);
+        self.user_offset_ms = self
+            .user_offset_ms
+            .saturating_add(delta_ms)
+            .clamp(MIN_OFFSET_MS, MAX_OFFSET_MS);
     }
 
     pub fn reset_offset(&mut self) {
@@ -307,6 +311,7 @@ mod tests {
             album: None,
             duration_ms: None,
             track_id: None,
+            url: None,
         });
         assert_eq!(state.user_offset_ms, 0);
         assert_eq!(state.effective_offset_ms(), 50);

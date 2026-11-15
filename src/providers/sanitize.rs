@@ -93,6 +93,24 @@ pub fn normalize_for_match(input: &str) -> String {
         .join(" ")
 }
 
+pub fn encode_offset_key(key: &CanonicalTrackKey) -> String {
+    let album = key.norm_album.as_deref().unwrap_or("");
+    let bucket = key
+        .duration_bucket_sec
+        .map(|bucket| bucket.to_string())
+        .unwrap_or_default();
+    format!(
+        "{}:{}|{}:{}|{}:{}|{}",
+        key.norm_artist.len(),
+        key.norm_artist,
+        key.norm_title.len(),
+        key.norm_title,
+        album.len(),
+        album,
+        bucket
+    )
+}
+
 pub fn canonical_key(
     artist: &str,
     title: &str,
@@ -197,5 +215,25 @@ mod tests {
         assert_eq!(key.norm_title, "yellow");
         assert_eq!(key.norm_album.as_deref(), Some("parachutes"));
         assert_eq!(key.duration_bucket_sec, Some(268));
+    }
+
+    #[test]
+    fn offset_key_is_length_prefixed_and_collision_free() {
+        let first = CanonicalTrackKey {
+            norm_artist: "a|b".to_string(),
+            norm_title: "c:d".to_string(),
+            norm_album: Some("e|f".to_string()),
+            duration_bucket_sec: Some(200),
+        };
+        let second = CanonicalTrackKey {
+            norm_artist: "a".to_string(),
+            norm_title: "b|c".to_string(),
+            norm_album: Some("d|e".to_string()),
+            duration_bucket_sec: Some(200),
+        };
+
+        assert_eq!(encode_offset_key(&first), "3:a|b|3:c:d|3:e|f|200");
+        assert_eq!(encode_offset_key(&second), "1:a|3:b|c|3:d|e|200");
+        assert_ne!(encode_offset_key(&first), encode_offset_key(&second));
     }
 }

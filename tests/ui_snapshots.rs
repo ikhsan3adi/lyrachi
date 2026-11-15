@@ -17,6 +17,7 @@ fn meta() -> TrackMeta {
         album: Some("Parachutes".to_string()),
         duration_ms: Some(267_000),
         track_id: Some("/org/mpris/MediaPlayer2/Track/1".to_string()),
+        url: None,
     }
 }
 

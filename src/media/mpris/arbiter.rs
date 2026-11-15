@@ -43,6 +43,7 @@ impl ActivePlayer {
 #[derive(PartialEq, Eq)]
 struct TrackIdentity {
     track_id: Option<String>,
+    url: Option<String>,
     title: String,
     artist: String,
     album: Option<String>,
@@ -53,6 +54,7 @@ impl From<&TrackMeta> for TrackIdentity {
     fn from(track: &TrackMeta) -> Self {
         Self {
             track_id: track.track_id.clone(),
+            url: track.url.clone(),
             title: track.title.clone(),
             artist: track.artist.clone(),
             album: track.album.clone(),
@@ -686,5 +688,66 @@ mod tests {
             select_player(&with_native, None).unwrap().bus,
             "org.mpris.MediaPlayer2.mpv"
         );
+    }
+
+    #[tokio::test]
+    async fn late_duration_and_url_updates_emit_track_changed() {
+        let mut metadata = HashMap::new();
+        metadata.insert(
+            "xesam:title".to_string(),
+            OwnedVariant::try_from(zbus::Variant::from("Song")).unwrap(),
+        );
+        metadata.insert(
+            "xesam:url".to_string(),
+            OwnedVariant::try_from(zbus::Variant::from("file:///music/song.flac")).unwrap(),
+        );
+
+        let (tx, mut rx) = tokio::sync::mpsc::channel(4);
+        let mut identity = None;
+        let mut no_track_sent = false;
+
+        assert!(
+            update_track(
+                &tx,
+                &metadata,
+                PlayerKind::Native,
+                &mut identity,
+                &mut no_track_sent,
+            )
+            .await
+        );
+        assert!(matches!(rx.recv().await, Some(MediaEvent::TrackChanged(_))));
+
+        metadata.insert(
+            "mpris:length".to_string(),
+            OwnedVariant::from(240_000_000_i64),
+        );
+        assert!(
+            update_track(
+                &tx,
+                &metadata,
+                PlayerKind::Native,
+                &mut identity,
+                &mut no_track_sent,
+            )
+            .await
+        );
+        assert!(matches!(rx.recv().await, Some(MediaEvent::TrackChanged(_))));
+
+        metadata.insert(
+            "xesam:url".to_string(),
+            OwnedVariant::try_from(zbus::Variant::from("file:///music/other.flac")).unwrap(),
+        );
+        assert!(
+            update_track(
+                &tx,
+                &metadata,
+                PlayerKind::Native,
+                &mut identity,
+                &mut no_track_sent,
+            )
+            .await
+        );
+        assert!(matches!(rx.recv().await, Some(MediaEvent::TrackChanged(_))));
     }
 }
