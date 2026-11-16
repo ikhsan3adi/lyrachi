@@ -71,7 +71,7 @@ pub enum AnnotationKind {
     Secondary,
 }
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Annotation {
     pub kind: AnnotationKind,
     pub text: String,

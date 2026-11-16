@@ -4,6 +4,7 @@ use tracing::warn;
 use super::{
     ParseError, ParsedLine, ParsedMetadata, ParsedTrack, ParsedWord, trim_line_with_words,
 };
+use crate::core::model::LineRole;
 
 #[derive(Debug, Deserialize)]
 struct LyricsFile {
@@ -79,8 +80,10 @@ pub fn parse_lyricsfile(input: &str) -> Result<ParsedTrack, ParseError> {
         track.lines.push(ParsedLine {
             start_ms: line.start_ms,
             end_ms: line.end_ms,
+            role: LineRole::Primary,
             text,
             words,
+            annotations: Vec::new(),
             explicit_last_word_end_ms: None,
         });
     }

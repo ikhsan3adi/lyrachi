@@ -1,4 +1,5 @@
 use super::{ParseError, ParsedLine, ParsedTrack, ParsedWord, trim_line_with_words};
+use crate::core::model::LineRole;
 use tracing::warn;
 
 pub fn parse_lrc(input: &str, track_duration_ms: Option<u64>) -> Result<ParsedTrack, ParseError> {
@@ -53,8 +54,10 @@ pub fn parse_lrc(input: &str, track_duration_ms: Option<u64>) -> Result<ParsedTr
             track.lines.push(ParsedLine {
                 start_ms: line_start_ms,
                 end_ms: None,
+                role: LineRole::Primary,
                 text,
                 words,
+                annotations: Vec::new(),
                 explicit_last_word_end_ms,
             });
             continue;
@@ -82,8 +85,10 @@ pub fn parse_lrc(input: &str, track_duration_ms: Option<u64>) -> Result<ParsedTr
             track.lines.push(ParsedLine {
                 start_ms,
                 end_ms: None,
+                role: LineRole::Primary,
                 text: text.clone(),
                 words: shifted_words,
+                annotations: Vec::new(),
                 explicit_last_word_end_ms: shifted_explicit,
             });
         }

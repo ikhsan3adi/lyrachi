@@ -69,6 +69,7 @@ fn empty_track(
 struct MergedLine {
     start_ms: u64,
     end_ms: Option<u64>,
+    role: LineRole,
     text: String,
     words: Vec<ParsedWord>,
     annotations: Vec<Annotation>,
@@ -175,7 +176,7 @@ fn normalize_track_unchecked(
         lines.push(LyricLine {
             start_ms: line.start_ms,
             end_ms,
-            role: LineRole::Primary,
+            role: line.role,
             text: line.text.clone(),
             words,
             annotations: line.annotations.clone(),
@@ -340,7 +341,7 @@ fn merge_annotations(mut lines: Vec<ParsedLine>) -> Vec<MergedLine> {
         }
 
         let mut end_ms = current.end_ms;
-        let mut annotations = Vec::new();
+        let mut annotations = current.annotations.clone();
         let mut next_index = index + 1;
 
         while next_index < lines.len()
@@ -375,6 +376,7 @@ fn merge_annotations(mut lines: Vec<ParsedLine>) -> Vec<MergedLine> {
         merged.push(MergedLine {
             start_ms: current.start_ms,
             end_ms,
+            role: current.role,
             text: current.text.clone(),
             words: current.words.clone(),
             annotations,
@@ -588,8 +590,10 @@ mod tests {
         ParsedLine {
             start_ms,
             end_ms: None,
+            role: LineRole::Primary,
             text: text.to_string(),
             words: Vec::new(),
+            annotations: Vec::new(),
             explicit_last_word_end_ms: None,
         }
     }
@@ -727,6 +731,7 @@ mod tests {
         let line = ParsedLine {
             start_ms: 1_000,
             end_ms: None,
+            role: LineRole::Primary,
             text: "ab cd".to_string(),
             words: vec![
                 ParsedWord {
@@ -740,6 +745,7 @@ mod tests {
                     end_ms: None,
                 },
             ],
+            annotations: Vec::new(),
             explicit_last_word_end_ms: None,
         };
         let track = normalize_lines(vec![line], Some(5_000));
@@ -754,6 +760,7 @@ mod tests {
         let line = ParsedLine {
             start_ms: 1_000,
             end_ms: None,
+            role: LineRole::Primary,
             text: "hi there".to_string(),
             words: vec![
                 ParsedWord {
@@ -767,6 +774,7 @@ mod tests {
                     end_ms: None,
                 },
             ],
+            annotations: Vec::new(),
             explicit_last_word_end_ms: Some(5_500),
         };
         let track = normalize_lines(vec![line, parsed_line(20_000, "After break")], Some(30_000));

@@ -4,6 +4,7 @@ use lyrachi::core::model::{
 use lyrachi::core::normalize::normalize_track;
 use lyrachi::core::parse::lrc::parse_lrc;
 use lyrachi::core::parse::lyricsfile::parse_lyricsfile;
+use lyrachi::core::parse::ttml::parse_ttml;
 use lyrachi::core::text::{display_width, grapheme_count};
 
 const STANDARD: &str = include_str!("fixtures/standard_multi_tag.lrc");
@@ -11,6 +12,7 @@ const ELRC: &str = include_str!("fixtures/enhanced_karaoke.elrc");
 const SYLLABLE_ELRC: &str = include_str!("fixtures/syllable_karaoke.elrc");
 const MULTILINGUAL: &str = include_str!("fixtures/multilingual_cjk_emoji.lrc");
 const YELLOW: &str = include_str!("fixtures/lrclib_yellow_wordsync.json");
+const SAMPLE_TTML: &str = include_str!("fixtures/sample_syllable.ttml");
 
 fn assert_track_invariants(track: &SyncedTrack) {
     for line in &track.lines {
@@ -236,4 +238,37 @@ fn multilingual_lines_merge_into_typed_annotations() {
     assert_eq!(grapheme_count("👩🏽‍💻"), 1);
     assert_eq!(display_width("世界"), 4);
     assert_track_invariants(&track);
+}
+
+#[test]
+fn real_sample_syllable_ttml_parses_with_syllable_granularity() {
+    let track = parse_ttml(SAMPLE_TTML, "ttml-fixture").unwrap();
+
+    assert_eq!(track.source_provider, "ttml-fixture");
+    assert_eq!(track.granularity, SyncGranularity::Syllable);
+    assert_track_invariants(&track);
+    assert_eq!(track.lines.len(), 4);
+
+    let first = &track.lines[0];
+    assert_eq!(first.text, "Hello");
+    assert_eq!(first.role, LineRole::Primary);
+    assert!(is_intra_word_join(
+        &first.text,
+        &first.words[0],
+        &first.words[1]
+    ));
+    assert!(first.annotations.iter().any(|annotation| {
+        annotation.kind == AnnotationKind::Translation && annotation.text == "Halo"
+    }));
+    assert!(first.annotations.iter().any(|annotation| {
+        annotation.kind == AnnotationKind::Romanization && annotation.text == "Herro"
+    }));
+
+    assert_eq!(track.lines[1].role, LineRole::DuetSecondary);
+    assert_eq!(track.lines[1].text, "Second voice");
+    assert!(track.lines[2].annotations.iter().any(|annotation| {
+        annotation.kind == AnnotationKind::Secondary && annotation.text == "background"
+    }));
+    assert_eq!(track.lines[3].role, LineRole::BackgroundVocal);
+    assert_eq!(track.lines[3].text, "Echo");
 }

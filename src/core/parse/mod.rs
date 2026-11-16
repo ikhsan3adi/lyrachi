@@ -1,5 +1,8 @@
 pub mod lrc;
 pub mod lyricsfile;
+pub mod ttml;
+
+use crate::core::model::{Annotation, LineRole};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ParsedMetadata {
@@ -20,8 +23,10 @@ pub struct ParsedWord {
 pub struct ParsedLine {
     pub start_ms: u64,
     pub end_ms: Option<u64>,
+    pub role: LineRole,
     pub text: String,
     pub words: Vec<ParsedWord>,
+    pub annotations: Vec<Annotation>,
     pub explicit_last_word_end_ms: Option<u64>,
 }
 
