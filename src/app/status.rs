@@ -52,6 +52,12 @@ pub struct StatusOffset {
     pub effective_ms: i64,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct StatusCircuitBreaker {
+    pub provider: String,
+    pub status: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StatusReport {
     pub player: Option<StatusPlayer>,
@@ -62,6 +68,7 @@ pub struct StatusReport {
     pub lyrics_error: Option<String>,
     pub canonical_key: Option<String>,
     pub offset: StatusOffset,
+    pub circuit_breakers: Vec<StatusCircuitBreaker>,
 }
 
 pub async fn run(
@@ -126,8 +133,29 @@ pub async fn collect_report_with_cache(
     let track_ms = query
         .as_ref()
         .map_or(0, |query| offsets.offset_for(&query.canonical));
+    let resolver = ProviderResolver::with_config(
+        config.local_dirs.clone(),
+        config.provider_order.clone(),
+        config.network,
+    )
+    .ok();
+    let circuit_breakers = resolver
+        .as_ref()
+        .map(|resolver| {
+            resolver
+                .circuit_breaker_statuses()
+                .into_iter()
+                .map(|(provider, status)| StatusCircuitBreaker {
+                    provider: provider.as_str().to_string(),
+                    status: status.to_string(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
     let (lyrics, lyrics_error) = match snapshot.track.as_ref() {
-        Some(track) if query.is_some() => resolve_lyrics(track, track_ms, config, cache).await,
+        Some(track) if query.is_some() => {
+            resolve_lyrics(track, track_ms, resolver.as_ref(), cache).await
+        }
         _ => (None, None),
     };
     let effective_ms = config.global_offset_ms.saturating_add(track_ms);
@@ -145,26 +173,25 @@ pub async fn collect_report_with_cache(
             track_ms,
             effective_ms,
         },
+        circuit_breakers,
     }
 }
 
 async fn resolve_lyrics(
     track: &TrackMeta,
     track_ms: i64,
-    config: &RuntimeConfig,
+    resolver: Option<&ProviderResolver>,
     cache: Option<&CacheHandle>,
 ) -> (Option<StatusLyrics>, Option<String>) {
-    let resolver = match ProviderResolver::with_config(
-        config.local_dirs.clone(),
-        config.provider_order.clone(),
-        config.network,
-    ) {
-        Ok(resolver) => resolver,
-        Err(error) => return (None, Some(error.to_string())),
+    let Some(resolver) = resolver else {
+        return (
+            None,
+            Some("failed to initialize provider resolver".to_string()),
+        );
     };
 
     let query = TrackQuery::from_meta(track, track_ms);
-    match resolve_with_cache(&resolver, cache, &query, &CancellationToken::new()).await {
+    match resolve_with_cache(resolver, cache, &query, &CancellationToken::new()).await {
         Ok(Some(answer)) => (Some(StatusLyrics::from(&answer)), None),
         Ok(None) => (None, None),
         Err(error) => (None, Some(error.to_string())),
@@ -325,6 +352,13 @@ pub fn render_text(report: &StatusReport) -> String {
         "offset_effective_ms",
         report.offset.effective_ms,
     );
+    for cb in &report.circuit_breakers {
+        push_line(
+            &mut output,
+            &format!("circuit_breaker_{}", cb.provider),
+            &cb.status,
+        );
+    }
 
     output
 }

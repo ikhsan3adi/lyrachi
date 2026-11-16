@@ -5,6 +5,10 @@ pub mod lrclib;
 pub mod sanitize;
 pub mod score;
 
+pub use engine::{
+    CircuitBreaker, CircuitBreakers, CircuitState, RateLimiters, TokenBucketRateLimiter,
+};
+
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -48,6 +52,10 @@ impl Provider {
 
     pub const fn valid_config_names() -> &'static str {
         "local, lrclib"
+    }
+
+    pub const fn is_tier2(self) -> bool {
+        false
     }
 }
 
@@ -184,6 +192,8 @@ pub struct ProviderResolver {
     lrclib: Arc<LrclibClient>,
     order: Vec<Provider>,
     network: bool,
+    breakers: Arc<engine::CircuitBreakers>,
+    limiters: Arc<engine::RateLimiters>,
 }
 
 impl ProviderResolver {
@@ -202,6 +212,8 @@ impl ProviderResolver {
             lrclib: Arc::new(lrclib),
             order,
             network,
+            breakers: Arc::new(engine::CircuitBreakers::default()),
+            limiters: Arc::new(engine::RateLimiters::default()),
         })
     }
 
@@ -217,11 +229,50 @@ impl ProviderResolver {
             lrclib: Arc::new(LrclibClient::with_base_url(base_url)?),
             order,
             network,
+            breakers: Arc::new(engine::CircuitBreakers::default()),
+            limiters: Arc::new(engine::RateLimiters::default()),
+        })
+    }
+
+    #[cfg(test)]
+    pub fn with_config_and_breakers(
+        local_dirs: Vec<PathBuf>,
+        order: Vec<Provider>,
+        network: bool,
+        breakers: Arc<engine::CircuitBreakers>,
+    ) -> Result<Self, ProviderError> {
+        let lrclib = LrclibClient::new()?;
+        Ok(Self {
+            local: LocalProvider::new(local_dirs),
+            lrclib: Arc::new(lrclib),
+            order,
+            network,
+            breakers,
+            limiters: Arc::new(engine::RateLimiters::default()),
         })
     }
 
     pub fn network_enabled(&self) -> bool {
         self.network
+    }
+
+    pub fn breakers(&self) -> &Arc<engine::CircuitBreakers> {
+        &self.breakers
+    }
+
+    pub fn limiters(&self) -> &Arc<engine::RateLimiters> {
+        &self.limiters
+    }
+
+    pub fn circuit_breaker_statuses(&self) -> Vec<(Provider, &'static str)> {
+        let mut seen = HashSet::new();
+        let now = tokio::time::Instant::now();
+        self.order
+            .iter()
+            .copied()
+            .filter(|p| *p != Provider::Local && seen.insert(*p))
+            .map(|p| (p, self.breakers.status(p, now)))
+            .collect()
     }
 
     pub(crate) fn network_specs(&self) -> Vec<engine::NetworkSpec> {
@@ -240,10 +291,16 @@ impl ProviderResolver {
                     Provider::Local => return None,
                     Provider::Lrclib => self.lrclib.clone(),
                 };
+                let limiter = if provider.is_tier2() {
+                    Some(self.limiters.get_or_create(*provider))
+                } else {
+                    None
+                };
                 Some(engine::NetworkSpec {
                     provider: *provider,
                     priority,
                     source,
+                    limiter,
                 })
             })
             .collect()
