@@ -64,6 +64,21 @@ impl Candidate {
 #[derive(Debug)]
 struct RaceOutcome {
     answer: Option<ProviderAnswer>,
+    negative_providers: Vec<Provider>,
+    error: Option<ProviderError>,
+    had_error: bool,
+}
+
+impl RaceOutcome {
+    fn result(&self) -> Result<Option<ProviderAnswer>, ProviderError> {
+        match &self.answer {
+            Some(answer) => Ok(Some(answer.clone())),
+            None => match &self.error {
+                Some(error) => Err(error.clone()),
+                None => Ok(None),
+            },
+        }
+    }
 }
 
 pub async fn resolve(
@@ -93,39 +108,108 @@ pub async fn resolve(
         }
     }
 
-    if let Some(cache) = cache {
-        let lookup = cache.lookup(&query.canonical);
-        tokio::select! {
-            biased;
-            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-            result = lookup => match result {
-                Ok(cached) => {
-                    if let Some(answer) = cached.answer {
-                        emit(updates, Ok(Some(answer)), true);
-                        return Ok(());
+    let specs = resolver.network_specs();
+    resolve_with_specs(specs, cache, query, cancel, updates).await
+}
+
+async fn resolve_with_specs(
+    specs: Vec<NetworkSpec>,
+    cache: Option<&CacheHandle>,
+    query: &TrackQuery,
+    cancel: &CancellationToken,
+    updates: &mpsc::UnboundedSender<EngineUpdate>,
+) -> Result<(), ProviderError> {
+    let lookup = match cache {
+        Some(cache) => {
+            let lookup = cache.lookup(&query.canonical);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                result = lookup => match result {
+                    Ok(lookup) => lookup,
+                    Err(error) => {
+                        warn!(%error, "failed to read lyric cache");
+                        Default::default()
                     }
                 }
-                Err(error) => warn!(%error, "failed to read lyric cache"),
             }
         }
+        None => Default::default(),
+    };
+    let available: Vec<NetworkSpec> = specs
+        .into_iter()
+        .filter(|spec| !lookup.negative_providers.contains(&spec.provider))
+        .collect();
+
+    if let Some(cached) = lookup.answer {
+        if !lookup.needs_upgrade || available.is_empty() {
+            emit(updates, Ok(Some(cached)), true);
+            return Ok(());
+        }
+
+        emit(updates, Ok(Some(cached.clone())), false);
+        let outcome = race_network(available, query, cancel, updates, Some(cached.tier)).await?;
+        record_negatives(cache, &query.canonical, &outcome.negative_providers).await;
+
+        if let Some(answer) = outcome.answer.filter(|answer| answer.tier > cached.tier) {
+            store_answer(cache, query, &answer).await;
+            emit(updates, Ok(Some(answer)), true);
+            return Ok(());
+        }
+
+        if let Some(error) = &outcome.error {
+            debug!(%error, "background lyric upgrade failed");
+        }
+        if !outcome.had_error
+            && let Some(cache) = cache
+            && let Err(error) = cache
+                .mark_upgrade_attempted(&query.canonical, cached.provider)
+                .await
+        {
+            warn!(%error, "failed to mark lyric upgrade as attempted");
+        }
+        emit(updates, Ok(Some(cached)), true);
+        return Ok(());
     }
 
-    let specs = resolver.network_specs();
-    if specs.is_empty() {
+    if available.is_empty() {
         emit(updates, Ok(None), true);
         return Ok(());
     }
 
-    let outcome = race_network(specs, query, cancel, updates).await?;
-    if let Some(answer) = &outcome.answer
-        && let Some(cache) = cache
-    {
-        let label = query_label(query);
-        if let Err(error) = cache.store(&query.canonical, label, answer).await {
-            warn!(%error, "failed to store lyric cache entry");
+    let outcome = race_network(available, query, cancel, updates, None).await?;
+    record_negatives(cache, &query.canonical, &outcome.negative_providers).await;
+    if let Some(answer) = &outcome.answer {
+        store_answer(cache, query, answer).await;
+    }
+    let result = outcome.result();
+    emit(updates, result, true);
+    Ok(())
+}
+
+async fn store_answer(cache: Option<&CacheHandle>, query: &TrackQuery, answer: &ProviderAnswer) {
+    let Some(cache) = cache else {
+        return;
+    };
+    let label = query_label(query);
+    if let Err(error) = cache.store(&query.canonical, label, answer).await {
+        warn!(%error, "failed to store lyric cache entry");
+    }
+}
+
+async fn record_negatives(
+    cache: Option<&CacheHandle>,
+    key: &crate::core::model::CanonicalTrackKey,
+    providers: &[Provider],
+) {
+    let Some(cache) = cache else {
+        return;
+    };
+    for provider in providers {
+        if let Err(error) = cache.record_negative(key, *provider).await {
+            warn!(%error, provider = provider.as_str(), "failed to record negative cache entry");
         }
     }
-    Ok(())
 }
 
 pub async fn resolve_final(
@@ -155,6 +239,7 @@ async fn race_network(
     query: &TrackQuery,
     cancel: &CancellationToken,
     updates: &mpsc::UnboundedSender<EngineUpdate>,
+    min_stand_in_tier: Option<Tier>,
 ) -> Result<RaceOutcome, ProviderError> {
     let start = Instant::now();
     let grace = start + SYNC_GRACE;
@@ -177,6 +262,8 @@ async fn race_network(
 
     let mut best: Option<Candidate> = None;
     let mut first_error: Option<(usize, ProviderError)> = None;
+    let mut negative_providers = Vec::new();
+    let mut had_error = false;
     let mut grace_elapsed = false;
     let mut stand_in_sent = false;
 
@@ -215,10 +302,15 @@ async fn race_network(
                             improved = true;
                         }
                     }
-                    Ok(None) => {}
+                    Ok(None) => {
+                        if !negative_providers.contains(&provider) {
+                            negative_providers.push(provider);
+                        }
+                    }
                     Err(ProviderError::Cancelled) => {}
                     Err(error) => {
                         debug!(provider = provider.as_str(), %error, "network provider failed");
+                        had_error = true;
                         if first_error
                             .as_ref()
                             .is_none_or(|(existing, _)| priority < *existing)
@@ -239,6 +331,7 @@ async fn race_network(
                     && !tasks.is_empty()
                     && let Some(candidate) = &best
                     && (!stand_in_sent || improved)
+                    && min_stand_in_tier.is_none_or(|min| candidate.answer.tier > min)
                 {
                     emit(updates, Ok(Some(candidate.answer.clone())), false);
                     stand_in_sent = true;
@@ -248,6 +341,7 @@ async fn race_network(
                 grace_elapsed = true;
                 if let Some(candidate) = &best
                     && !tasks.is_empty()
+                    && min_stand_in_tier.is_none_or(|min| candidate.answer.tier > min)
                 {
                     emit(updates, Ok(Some(candidate.answer.clone())), false);
                     stand_in_sent = true;
@@ -261,15 +355,17 @@ async fn race_network(
     }
 
     let answer = best.as_ref().map(|candidate| candidate.answer.clone());
-    let result = match best {
-        Some(candidate) => Ok(Some(candidate.answer)),
-        None => match first_error {
-            Some((_, error)) => Err(error),
-            None => Ok(None),
-        },
+    let error = if answer.is_none() {
+        first_error.map(|(_, error)| error)
+    } else {
+        None
     };
-    emit(updates, result, true);
-    Ok(RaceOutcome { answer })
+    Ok(RaceOutcome {
+        answer,
+        negative_providers,
+        error,
+        had_error,
+    })
 }
 
 fn pending_can_beat(best: &Candidate, pending: &[usize]) -> bool {
@@ -297,17 +393,24 @@ fn query_label(query: &TrackQuery) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
     use super::*;
+    use crate::cache::{CACHE_UPGRADE_INTERVAL_SECS, CacheHandle, now_secs};
     use crate::core::model::{LineRole, LyricLine, SyncGranularity, SyncedTrack};
     use crate::media::TrackMeta;
 
     struct FakeProvider {
+        provider: Provider,
         latency: Duration,
         tier: Option<Tier>,
         id: &'static str,
         started: Option<Arc<tokio::sync::Notify>>,
+        calls: Option<Arc<AtomicUsize>>,
+        fails: bool,
     }
 
     impl NetworkProvider for FakeProvider {
@@ -317,6 +420,9 @@ mod tests {
             cancel: &'a CancellationToken,
         ) -> ProviderFuture<'a> {
             Box::pin(async move {
+                if let Some(calls) = &self.calls {
+                    calls.fetch_add(1, Ordering::SeqCst);
+                }
                 if let Some(started) = &self.started {
                     started.notify_one();
                 }
@@ -324,8 +430,11 @@ mod tests {
                     biased;
                     _ = cancel.cancelled() => Err(ProviderError::Cancelled),
                     _ = tokio::time::sleep(self.latency) => {
+                        if self.fails {
+                            return Err(ProviderError::Unavailable("mock failure".to_string()));
+                        }
                         Ok(self.tier.map(|tier| {
-                            ProviderAnswer::new(Provider::Lrclib, track(tier, self.id))
+                            ProviderAnswer::new(self.provider, track(tier, self.id))
                         }))
                     }
                 }
@@ -376,16 +485,75 @@ mod tests {
     }
 
     fn spec(priority: usize, latency_ms: u64, tier: Option<Tier>, id: &'static str) -> NetworkSpec {
+        spec_for(
+            Provider::Lrclib,
+            priority,
+            latency_ms,
+            tier,
+            id,
+            None,
+            false,
+        )
+    }
+
+    fn spec_for(
+        provider: Provider,
+        priority: usize,
+        latency_ms: u64,
+        tier: Option<Tier>,
+        id: &'static str,
+        calls: Option<Arc<AtomicUsize>>,
+        fails: bool,
+    ) -> NetworkSpec {
         NetworkSpec {
-            provider: Provider::Lrclib,
+            provider,
             priority,
             source: Arc::new(FakeProvider {
+                provider,
                 latency: Duration::from_millis(latency_ms),
                 tier,
                 id,
                 started: None,
+                calls,
+                fails,
             }),
         }
+    }
+
+    fn temp_cache_path(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "lyrachi-engine-cache-{name}-{}-{stamp}.db",
+            std::process::id()
+        ))
+    }
+
+    fn cleanup_cache(path: &Path) {
+        let _ = fs::remove_file(path);
+        for suffix in ["-wal", "-shm"] {
+            let mut name = path.file_name().unwrap().to_os_string();
+            name.push(suffix);
+            let _ = fs::remove_file(path.with_file_name(name));
+        }
+    }
+
+    async fn run_resolution(
+        specs: Vec<NetworkSpec>,
+        cache: Option<&CacheHandle>,
+        query: &TrackQuery,
+    ) -> (Result<(), ProviderError>, Vec<EngineUpdate>) {
+        let cancel = CancellationToken::new();
+        let (updates, mut receiver) = mpsc::unbounded_channel();
+        let result = resolve_with_specs(specs, cache, query, &cancel, &updates).await;
+        drop(updates);
+        let mut messages = Vec::new();
+        while let Some(update) = receiver.recv().await {
+            messages.push(update);
+        }
+        (result, messages)
     }
 
     fn start_race(
@@ -399,8 +567,13 @@ mod tests {
         let race_cancel = cancel.clone();
         let (updates, receiver) = mpsc::unbounded_channel();
         let query = query();
-        let handle =
-            tokio::spawn(async move { race_network(specs, &query, &race_cancel, &updates).await });
+        let handle = tokio::spawn(async move {
+            let result = race_network(specs, &query, &race_cancel, &updates, None).await;
+            if let Ok(outcome) = &result {
+                emit(&updates, outcome.result(), true);
+            }
+            result
+        });
         (handle, receiver, cancel)
     }
 
@@ -488,10 +661,13 @@ mod tests {
                 provider: Provider::Lrclib,
                 priority: 0,
                 source: Arc::new(FakeProvider {
+                    provider: Provider::Lrclib,
                     latency: Duration::from_millis(1_000),
                     tier: Some(Tier::Line),
                     id: "line",
                     started: Some(started.clone()),
+                    calls: None,
+                    fails: false,
                 }),
             },
             spec(1, 2_000, Some(Tier::Syllable), "syllable"),
@@ -519,5 +695,281 @@ mod tests {
         assert!(update.is_final);
         assert!(matches!(update.result, Ok(None)));
         handle.await.unwrap().unwrap();
+    }
+
+    #[tokio::test]
+    async fn negative_cache_skips_only_the_provider_that_returned_none() {
+        tokio::time::pause();
+        let path = temp_cache_path("partial-negative");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        let specs = vec![
+            spec_for(Provider::Lrclib, 0, 100, None, "none", None, false),
+            spec_for(
+                Provider::Local,
+                1,
+                100,
+                Some(Tier::Word),
+                "remaining",
+                None,
+                false,
+            ),
+        ];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(updates.len(), 1);
+        let answer = final_answer(updates.into_iter().next().unwrap());
+        assert_eq!(answer.provider, Provider::Local);
+        assert_eq!(answer.tier, Tier::Word);
+
+        let lookup = cache.lookup_at(&query.canonical, now).await.unwrap();
+        assert!(lookup.negative_providers.contains(&Provider::Lrclib));
+        assert!(!lookup.negative_providers.contains(&Provider::Local));
+        assert_eq!(lookup.answer.unwrap().provider, Provider::Local);
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
+    }
+
+    #[tokio::test]
+    async fn all_negative_providers_skip_the_network() {
+        tokio::time::pause();
+        let path = temp_cache_path("all-negative");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        cache
+            .record_negative_at(&query.canonical, Provider::Lrclib, now)
+            .await
+            .unwrap();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let specs = vec![spec_for(
+            Provider::Lrclib,
+            0,
+            100,
+            Some(Tier::Syllable),
+            "network",
+            Some(calls.clone()),
+            false,
+        )];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert_eq!(updates.len(), 1);
+        let update = updates.into_iter().next().unwrap();
+        assert!(update.is_final);
+        assert!(matches!(update.result, Ok(None)));
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
+    }
+
+    #[tokio::test]
+    async fn provider_errors_do_not_create_negative_cache_entries() {
+        tokio::time::pause();
+        let path = temp_cache_path("error-negative");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        let specs = vec![spec_for(
+            Provider::Lrclib,
+            0,
+            100,
+            Some(Tier::Line),
+            "error",
+            None,
+            true,
+        )];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(updates.len(), 1);
+        let update = updates.into_iter().next().unwrap();
+        assert!(update.is_final);
+        assert!(matches!(update.result, Err(ProviderError::Unavailable(_))));
+        assert!(
+            cache
+                .lookup_at(&query.canonical, now)
+                .await
+                .unwrap()
+                .negative_providers
+                .is_empty()
+        );
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
+    }
+
+    #[tokio::test]
+    async fn background_upgrade_replaces_a_stale_line_entry() {
+        tokio::time::pause();
+        let path = temp_cache_path("upgrade");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        let old = now.saturating_sub(CACHE_UPGRADE_INTERVAL_SECS + 1);
+        let line = ProviderAnswer::new(Provider::Lrclib, track(Tier::Line, "cached-line"));
+        cache
+            .store_at(&query.canonical, "Artist - Song".to_string(), &line, old)
+            .await
+            .unwrap();
+        let specs = vec![spec_for(
+            Provider::Lrclib,
+            0,
+            100,
+            Some(Tier::Syllable),
+            "upgraded",
+            None,
+            false,
+        )];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(updates.len(), 2);
+        let mut updates = updates.into_iter();
+        let stand_in = updates.next().unwrap();
+        assert!(!stand_in.is_final);
+        assert_eq!(
+            stand_in
+                .result
+                .unwrap()
+                .unwrap()
+                .track
+                .source_track_id
+                .as_deref(),
+            Some("cached-line")
+        );
+        let final_answer = final_answer(updates.next().unwrap());
+        assert_eq!(final_answer.tier, Tier::Syllable);
+        assert_eq!(
+            final_answer.track.source_track_id.as_deref(),
+            Some("upgraded")
+        );
+        assert!(updates.next().is_none());
+
+        let lookup = cache.lookup_at(&query.canonical, now).await.unwrap();
+        assert_eq!(lookup.answer.unwrap().tier, Tier::Syllable);
+        assert!(!lookup.needs_upgrade);
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
+    }
+
+    #[tokio::test]
+    async fn failed_background_upgrade_keeps_line_and_clears_upgrade_marker() {
+        tokio::time::pause();
+        let path = temp_cache_path("upgrade-failed");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        let old = now.saturating_sub(CACHE_UPGRADE_INTERVAL_SECS + 1);
+        let line = ProviderAnswer::new(Provider::Lrclib, track(Tier::Line, "cached-line"));
+        cache
+            .store_at(&query.canonical, "Artist - Song".to_string(), &line, old)
+            .await
+            .unwrap();
+        let specs = vec![spec_for(
+            Provider::Lrclib,
+            0,
+            100,
+            None,
+            "none",
+            None,
+            false,
+        )];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(updates.len(), 2);
+        let mut updates = updates.into_iter();
+        let stand_in = updates.next().unwrap();
+        assert!(!stand_in.is_final);
+        assert_eq!(
+            stand_in
+                .result
+                .unwrap()
+                .unwrap()
+                .track
+                .source_track_id
+                .as_deref(),
+            Some("cached-line")
+        );
+        let final_answer = final_answer(updates.next().unwrap());
+        assert_eq!(final_answer.tier, Tier::Line);
+        assert_eq!(
+            final_answer.track.source_track_id.as_deref(),
+            Some("cached-line")
+        );
+
+        let lookup = cache.lookup_at(&query.canonical, now).await.unwrap();
+        assert_eq!(lookup.answer.unwrap().tier, Tier::Line);
+        assert!(!lookup.needs_upgrade);
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
+    }
+
+    #[tokio::test]
+    async fn background_upgrade_does_not_emit_lower_or_same_tier_stand_in() {
+        tokio::time::pause();
+        let path = temp_cache_path("upgrade-stand-in");
+        let cache = CacheHandle::open(&path).unwrap();
+        let now = now_secs();
+        let query = query();
+        let old = now.saturating_sub(CACHE_UPGRADE_INTERVAL_SECS + 1);
+        let line = ProviderAnswer::new(Provider::Lrclib, track(Tier::Line, "cached-line"));
+        cache
+            .store_at(&query.canonical, "Artist - Song".to_string(), &line, old)
+            .await
+            .unwrap();
+        let specs = vec![
+            spec_for(
+                Provider::Lrclib,
+                0,
+                500,
+                Some(Tier::Plain),
+                "worse-plain",
+                None,
+                false,
+            ),
+            spec_for(
+                Provider::Local,
+                1,
+                3_500,
+                Some(Tier::Syllable),
+                "better-syllable",
+                None,
+                false,
+            ),
+        ];
+
+        let (result, updates) = run_resolution(specs, Some(&cache), &query).await;
+        assert!(result.is_ok());
+        assert_eq!(updates.len(), 2);
+        let mut updates = updates.into_iter();
+        let stand_in = updates.next().unwrap();
+        assert!(!stand_in.is_final);
+        assert_eq!(
+            stand_in
+                .result
+                .unwrap()
+                .unwrap()
+                .track
+                .source_track_id
+                .as_deref(),
+            Some("cached-line")
+        );
+        let final_answer = final_answer(updates.next().unwrap());
+        assert_eq!(final_answer.tier, Tier::Syllable);
+        assert_eq!(
+            final_answer.track.source_track_id.as_deref(),
+            Some("better-syllable")
+        );
+
+        cache.shutdown().await.unwrap();
+        cleanup_cache(&path);
     }
 }

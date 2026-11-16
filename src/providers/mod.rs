@@ -95,7 +95,7 @@ impl ProviderAnswer {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
+#[derive(Debug, Clone, thiserror::Error)]
 pub enum ProviderError {
     #[error("provider unavailable: {0}")]
     Unavailable(String),

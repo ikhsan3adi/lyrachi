@@ -1,11 +1,12 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 
 use serde_json::Error as JsonError;
 use tokio::sync::{mpsc, oneshot};
 
 use crate::core::model::CanonicalTrackKey;
-use crate::providers::ProviderAnswer;
 use crate::providers::sanitize::blake3_track_key;
+use crate::providers::{Provider, ProviderAnswer};
 
 mod schema;
 mod worker;
@@ -13,6 +14,10 @@ mod worker;
 pub const CACHE_CHANNEL_CAPACITY: usize = 64;
 pub const CACHE_TOUCH_DEBOUNCE_SECS: i64 = 60 * 60;
 pub const CACHE_MAX_ENTRY_AGE_SECS: i64 = 90 * 24 * 60 * 60;
+pub const CACHE_NEGATIVE_TTL_SECS: i64 = 14 * 24 * 60 * 60;
+pub const CACHE_UPGRADE_INTERVAL_SECS: i64 = 14 * 24 * 60 * 60;
+pub const CACHE_PRUNE_INTERVAL_SECS: i64 = 24 * 60 * 60;
+pub const CACHE_PRUNE_CHECK_SECS: i64 = 60 * 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -28,9 +33,11 @@ pub enum CacheError {
     WorkerStopped,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct CacheLookup {
     pub answer: Option<ProviderAnswer>,
+    pub needs_upgrade: bool,
+    pub negative_providers: HashSet<Provider>,
 }
 
 #[derive(Debug, Clone)]
@@ -47,7 +54,7 @@ impl CacheHandle {
         self.lookup_at(key, now_secs()).await
     }
 
-    async fn lookup_at(
+    pub(crate) async fn lookup_at(
         &self,
         key: &CanonicalTrackKey,
         now: i64,
@@ -73,7 +80,7 @@ impl CacheHandle {
         self.store_at(key, label.into(), answer, now_secs()).await
     }
 
-    async fn store_at(
+    pub(crate) async fn store_at(
         &self,
         key: &CanonicalTrackKey,
         label: String,
@@ -87,6 +94,50 @@ impl CacheHandle {
                 label,
                 answer: answer.clone(),
                 now,
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn record_negative(
+        &self,
+        key: &CanonicalTrackKey,
+        provider: Provider,
+    ) -> Result<(), CacheError> {
+        self.record_negative_at(key, provider, now_secs()).await
+    }
+
+    pub(crate) async fn record_negative_at(
+        &self,
+        key: &CanonicalTrackKey,
+        provider: Provider,
+        now: i64,
+    ) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::RecordNegative {
+                track_key: blake3_track_key(key),
+                provider,
+                now,
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn mark_upgrade_attempted(
+        &self,
+        key: &CanonicalTrackKey,
+        provider: Provider,
+    ) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::MarkUpgradeAttempted {
+                track_key: blake3_track_key(key),
+                provider,
                 reply,
             })
             .await

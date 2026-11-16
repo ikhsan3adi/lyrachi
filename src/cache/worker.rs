@@ -1,14 +1,15 @@
 use std::cmp::Ordering;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
-use rusqlite::{Connection, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use tokio::sync::{mpsc, oneshot};
 use tracing::warn;
 
 use super::{
-    CACHE_CHANNEL_CAPACITY, CACHE_MAX_ENTRY_AGE_SECS, CACHE_TOUCH_DEBOUNCE_SECS, CacheError,
-    CacheHandle, CacheLookup, now_secs, schema,
+    CACHE_CHANNEL_CAPACITY, CACHE_MAX_ENTRY_AGE_SECS, CACHE_NEGATIVE_TTL_SECS,
+    CACHE_PRUNE_CHECK_SECS, CACHE_PRUNE_INTERVAL_SECS, CACHE_TOUCH_DEBOUNCE_SECS,
+    CACHE_UPGRADE_INTERVAL_SECS, CacheError, CacheHandle, CacheLookup, now_secs, schema,
 };
 use crate::core::model::{PARSER_VERSION, SyncGranularity, SyncedTrack};
 use crate::providers::{Provider, ProviderAnswer, Tier};
@@ -28,10 +29,33 @@ pub(super) enum CacheCommand {
         now: i64,
         reply: oneshot::Sender<Result<(), CacheError>>,
     },
+    RecordNegative {
+        track_key: TrackKey,
+        provider: Provider,
+        now: i64,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
+    MarkUpgradeAttempted {
+        track_key: TrackKey,
+        provider: Provider,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
     Shutdown {
         now: i64,
         reply: oneshot::Sender<Result<(), CacheError>>,
     },
+}
+
+impl CacheCommand {
+    fn now(&self) -> i64 {
+        match self {
+            Self::Lookup { now, .. }
+            | Self::Store { now, .. }
+            | Self::RecordNegative { now, .. }
+            | Self::Shutdown { now, .. } => *now,
+            Self::MarkUpgradeAttempted { .. } => now_secs(),
+        }
+    }
 }
 
 pub(super) fn spawn(path: PathBuf) -> Result<CacheHandle, CacheError> {
@@ -58,6 +82,7 @@ struct Worker {
     connection: Connection,
     last_touch: HashMap<(TrackKey, Provider), i64>,
     pending_touch: HashMap<(TrackKey, Provider), i64>,
+    last_prune_check: Option<i64>,
 }
 
 impl Worker {
@@ -66,11 +91,19 @@ impl Worker {
             connection,
             last_touch: HashMap::new(),
             pending_touch: HashMap::new(),
+            last_prune_check: None,
         }
     }
 
     fn run(mut self, rx: &mut mpsc::Receiver<CacheCommand>) {
+        let started = now_secs();
+        self.last_prune_check = Some(started);
+        if let Err(error) = self.prune_if_due(started) {
+            warn!(%error, "failed to prune lyric cache");
+        }
+
         while let Some(command) = rx.blocking_recv() {
+            let command_now = command.now();
             match command {
                 CacheCommand::Lookup {
                     track_key,
@@ -88,20 +121,65 @@ impl Worker {
                 } => {
                     let _ = reply.send(self.store(&track_key, &label, &answer, now));
                 }
+                CacheCommand::RecordNegative {
+                    track_key,
+                    provider,
+                    now,
+                    reply,
+                } => {
+                    let _ = reply.send(self.record_negative(&track_key, provider, now));
+                }
+                CacheCommand::MarkUpgradeAttempted {
+                    track_key,
+                    provider,
+                    reply,
+                } => {
+                    let _ = reply.send(self.mark_upgrade_attempted(&track_key, provider));
+                }
                 CacheCommand::Shutdown { now, reply } => {
                     let _ = reply.send(self.flush_touches(now));
                     break;
                 }
             }
+            if let Err(error) = self.maybe_prune(command_now) {
+                warn!(%error, "failed to prune lyric cache");
+            }
         }
         let _ = self.flush_touches(now_secs());
+        if let Err(error) = self.maybe_prune(now_secs()) {
+            warn!(%error, "failed to prune lyric cache");
+        }
     }
 
     fn lookup(&mut self, track_key: &TrackKey, now: i64) -> Result<CacheLookup, CacheError> {
+        let negative_providers = {
+            let mut statement = self.connection.prepare(
+                "SELECT provider FROM negative_cache
+                 WHERE track_key = ?1 AND expires_at > ?2",
+            )?;
+            let rows = statement.query_map(params![track_key.as_slice(), now], |row| {
+                row.get::<_, String>(0)
+            })?;
+            let mut providers = HashSet::new();
+            for row in rows {
+                let provider_name = match row {
+                    Ok(name) => name,
+                    Err(error) => {
+                        warn!(%error, "failed to read negative cache row");
+                        continue;
+                    }
+                };
+                if let Some(provider) = Provider::from_config_name(&provider_name) {
+                    providers.insert(provider);
+                }
+            }
+            providers
+        };
+
         let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
         let best = {
             let mut statement = self.connection.prepare(
-                "SELECT provider, parser_version, confidence, payload_json, last_accessed_at
+                "SELECT provider, parser_version, confidence, payload_json, last_accessed_at, upgrade_after
                  FROM lyric_entries
                  WHERE track_key = ?1",
             )?;
@@ -112,19 +190,26 @@ impl Worker {
                     row.get::<_, f64>(2)?,
                     row.get::<_, Vec<u8>>(3)?,
                     row.get::<_, i64>(4)?,
+                    row.get::<_, Option<i64>>(5)?,
                 ))
             })?;
 
-            let mut best: Option<(ProviderAnswer, i64)> = None;
+            let mut best: Option<(ProviderAnswer, i64, Option<i64>)> = None;
             for row in rows {
-                let (provider_name, parser_version, confidence, payload, last_accessed_at) =
-                    match row {
-                        Ok(row) => row,
-                        Err(error) => {
-                            warn!(%error, "failed to read cached lyric row");
-                            continue;
-                        }
-                    };
+                let (
+                    provider_name,
+                    parser_version,
+                    confidence,
+                    payload,
+                    last_accessed_at,
+                    upgrade_after,
+                ) = match row {
+                    Ok(row) => row,
+                    Err(error) => {
+                        warn!(%error, "failed to read cached lyric row");
+                        continue;
+                    }
+                };
 
                 if parser_version != i64::from(PARSER_VERSION) || last_accessed_at < cutoff {
                     continue;
@@ -153,19 +238,27 @@ impl Worker {
                     confidence,
                     track,
                 };
-                if is_better(&answer, best.as_ref().map(|(answer, _)| answer)) {
-                    best = Some((answer, last_accessed_at));
+                if is_better(&answer, best.as_ref().map(|(answer, _, _)| answer)) {
+                    best = Some((answer, last_accessed_at, upgrade_after));
                 }
             }
             best
         };
 
-        let Some((answer, last_accessed_at)) = best else {
-            return Ok(CacheLookup { answer: None });
+        let Some((answer, last_accessed_at, upgrade_after)) = best else {
+            return Ok(CacheLookup {
+                answer: None,
+                needs_upgrade: false,
+                negative_providers,
+            });
         };
         self.touch(track_key, answer.provider, now, last_accessed_at)?;
+        let needs_upgrade =
+            answer.tier == Tier::Line && upgrade_after.is_some_and(|stamp| now >= stamp);
         Ok(CacheLookup {
             answer: Some(answer),
+            needs_upgrade,
+            negative_providers,
         })
     }
 
@@ -180,12 +273,15 @@ impl Worker {
         track.user_offset_ms = 0;
         let payload = serde_json::to_vec(&track)?;
         let provider = answer.provider;
+        let upgrade_after =
+            (answer.tier == Tier::Line).then(|| now.saturating_add(CACHE_UPGRADE_INTERVAL_SECS));
 
-        self.connection.execute(
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
             "INSERT INTO lyric_entries (
                 track_key, provider, label, granularity, parser_version, confidence,
                 payload_json, fetched_at, last_accessed_at, upgrade_after
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, NULL)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(track_key, provider) DO UPDATE SET
                 label = excluded.label,
                 granularity = excluded.granularity,
@@ -205,8 +301,14 @@ impl Worker {
                 payload,
                 now,
                 now,
+                upgrade_after,
             ],
         )?;
+        transaction.execute(
+            "DELETE FROM negative_cache WHERE track_key = ?1 AND provider = ?2",
+            params![track_key.as_slice(), provider.as_str()],
+        )?;
+        transaction.commit()?;
 
         let id = (*track_key, provider);
         self.last_touch.insert(id, now);
@@ -240,6 +342,82 @@ impl Worker {
         } else {
             self.pending_touch.insert(id, now);
         }
+        Ok(())
+    }
+
+    fn record_negative(
+        &mut self,
+        track_key: &TrackKey,
+        provider: Provider,
+        now: i64,
+    ) -> Result<(), CacheError> {
+        let expires_at = now.saturating_add(CACHE_NEGATIVE_TTL_SECS);
+        self.connection.execute(
+            "INSERT INTO negative_cache (track_key, provider, expires_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(track_key, provider) DO UPDATE SET expires_at = excluded.expires_at",
+            params![track_key.as_slice(), provider.as_str(), expires_at],
+        )?;
+        Ok(())
+    }
+
+    fn mark_upgrade_attempted(
+        &mut self,
+        track_key: &TrackKey,
+        provider: Provider,
+    ) -> Result<(), CacheError> {
+        self.connection.execute(
+            "UPDATE lyric_entries
+             SET upgrade_after = NULL
+             WHERE track_key = ?1 AND provider = ?2",
+            params![track_key.as_slice(), provider.as_str()],
+        )?;
+        Ok(())
+    }
+
+    fn maybe_prune(&mut self, now: i64) -> Result<(), CacheError> {
+        if self
+            .last_prune_check
+            .is_some_and(|last| now.saturating_sub(last) < CACHE_PRUNE_CHECK_SECS)
+        {
+            return Ok(());
+        }
+        self.last_prune_check = Some(now);
+        self.prune_if_due(now)
+    }
+
+    fn prune_if_due(&mut self, now: i64) -> Result<(), CacheError> {
+        let last_prune = self
+            .connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'last_prune'",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()?;
+        let due = last_prune
+            .and_then(|value| value.parse::<i64>().ok())
+            .is_none_or(|last| now.saturating_sub(last) >= CACHE_PRUNE_INTERVAL_SECS);
+        if !due {
+            return Ok(());
+        }
+
+        let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM lyric_entries WHERE last_accessed_at < ?1",
+            params![cutoff],
+        )?;
+        transaction.execute(
+            "DELETE FROM negative_cache WHERE expires_at <= ?1",
+            params![now],
+        )?;
+        transaction.execute(
+            "INSERT INTO meta (key, value) VALUES ('last_prune', ?1)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            params![now.to_string()],
+        )?;
+        transaction.commit()?;
         Ok(())
     }
 
@@ -403,6 +581,63 @@ mod tests {
             .unwrap();
     }
 
+    fn insert_negative_row(path: &Path, key: &TrackKey, provider: Provider, expires_at: i64) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO negative_cache (track_key, provider, expires_at)
+                 VALUES (?1, ?2, ?3)",
+                params![key.as_slice(), provider.as_str(), expires_at],
+            )
+            .unwrap();
+    }
+
+    fn read_upgrade_after(path: &Path, key: &TrackKey, provider: Provider) -> Option<i64> {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT upgrade_after FROM lyric_entries
+                 WHERE track_key = ?1 AND provider = ?2",
+                params![key.as_slice(), provider.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn count_rows(path: &Path, table: &str, key: &TrackKey, provider: Provider) -> i64 {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .query_row(
+                &format!("SELECT COUNT(*) FROM {table} WHERE track_key = ?1 AND provider = ?2"),
+                params![key.as_slice(), provider.as_str()],
+                |row| row.get(0),
+            )
+            .unwrap()
+    }
+
+    fn read_meta(path: &Path, key: &str) -> Option<String> {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .query_row(
+                "SELECT value FROM meta WHERE key = ?1",
+                params![key],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    fn write_last_prune(path: &Path, value: i64) {
+        let connection = Connection::open(path).unwrap();
+        connection
+            .execute(
+                "INSERT INTO meta (key, value) VALUES ('last_prune', ?1)
+                 ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+                params![value.to_string()],
+            )
+            .unwrap();
+    }
+
     #[test]
     fn debounces_touches_in_memory_and_flushes_on_shutdown() {
         let path = temp_path("touch");
@@ -527,6 +762,203 @@ mod tests {
             .unwrap();
         let answer = worker.lookup_at(&track_key, 2_000).unwrap().answer.unwrap();
         assert_eq!(answer.track.user_offset_ms, 0);
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn negative_entries_are_per_provider_and_expire() {
+        let path = temp_path("negative");
+        let key = sample_key("Artist", "Title");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+        let now = 1_000_000;
+
+        worker
+            .record_negative(&track_key, Provider::Lrclib, now)
+            .unwrap();
+        let lookup = worker.lookup_at(&track_key, now).unwrap();
+        assert!(lookup.answer.is_none());
+        assert_eq!(lookup.negative_providers.len(), 1);
+        assert!(lookup.negative_providers.contains(&Provider::Lrclib));
+
+        let lookup = worker
+            .lookup_at(&track_key, now + CACHE_NEGATIVE_TTL_SECS)
+            .unwrap();
+        assert!(lookup.negative_providers.is_empty());
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn positive_store_clears_the_matching_negative_entry() {
+        let path = temp_path("negative-clear");
+        let key = sample_key("Artist", "Title");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+        let now = 1_000_000;
+        let answer = sample_answer(Provider::Lrclib, "line", SyncGranularity::Line);
+
+        worker
+            .record_negative(&track_key, Provider::Lrclib, now)
+            .unwrap();
+        worker
+            .store(&track_key, "Artist - Title", &answer, now)
+            .unwrap();
+
+        let lookup = worker.lookup_at(&track_key, now).unwrap();
+        assert!(lookup.negative_providers.is_empty());
+        assert!(lookup.answer.is_some());
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn line_entries_schedule_an_upgrade_after_fourteen_days() {
+        let path = temp_path("upgrade");
+        let key = sample_key("Artist", "Title");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+        let now = 1_000_000;
+        let answer = sample_answer(Provider::Lrclib, "line", SyncGranularity::Line);
+
+        worker
+            .store(&track_key, "Artist - Title", &answer, now)
+            .unwrap();
+        assert_eq!(
+            read_upgrade_after(&path, &track_key, Provider::Lrclib),
+            Some(now + CACHE_UPGRADE_INTERVAL_SECS)
+        );
+        assert!(!worker.lookup_at(&track_key, now).unwrap().needs_upgrade);
+
+        let due = now + CACHE_UPGRADE_INTERVAL_SECS;
+        let lookup = worker.lookup_at(&track_key, due).unwrap();
+        assert!(lookup.needs_upgrade);
+        assert_eq!(lookup.answer.unwrap().tier, Tier::Line);
+
+        worker
+            .mark_upgrade_attempted(&track_key, Provider::Lrclib)
+            .unwrap();
+        assert_eq!(
+            read_upgrade_after(&path, &track_key, Provider::Lrclib),
+            None
+        );
+        let lookup = worker.lookup_at(&track_key, due).unwrap();
+        assert!(!lookup.needs_upgrade);
+        assert_eq!(lookup.answer.unwrap().tier, Tier::Line);
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn word_entries_do_not_schedule_an_upgrade() {
+        let path = temp_path("upgrade-word");
+        let key = sample_key("Artist", "Title");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+        let now = 1_000_000;
+        let answer = sample_answer(Provider::Lrclib, "word", SyncGranularity::Word);
+
+        worker
+            .store(&track_key, "Artist - Title", &answer, now)
+            .unwrap();
+        assert_eq!(
+            read_upgrade_after(&path, &track_key, Provider::Lrclib),
+            None
+        );
+        assert!(
+            !worker
+                .lookup_at(&track_key, now + CACHE_UPGRADE_INTERVAL_SECS)
+                .unwrap()
+                .needs_upgrade
+        );
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn prune_removes_stale_entries_once_per_day() {
+        let path = temp_path("prune");
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+        let now = 10_000_000;
+        let old_key = sample_key("Old", "Track");
+        let fresh_key = sample_key("Fresh", "Track");
+        let expired_key = sample_key("Expired", "Negative");
+        let active_key = sample_key("Active", "Negative");
+        let old_track_key = crate::providers::sanitize::blake3_track_key(&old_key);
+        let fresh_track_key = crate::providers::sanitize::blake3_track_key(&fresh_key);
+        let expired_track_key = crate::providers::sanitize::blake3_track_key(&expired_key);
+        let active_track_key = crate::providers::sanitize::blake3_track_key(&active_key);
+        let answer = sample_answer(Provider::Lrclib, "line", SyncGranularity::Line);
+
+        insert_row(
+            &path,
+            &old_track_key,
+            Provider::Lrclib,
+            i64::from(PARSER_VERSION),
+            now - CACHE_MAX_ENTRY_AGE_SECS - 1,
+            &answer.track,
+        );
+        insert_row(
+            &path,
+            &fresh_track_key,
+            Provider::Lrclib,
+            i64::from(PARSER_VERSION),
+            now,
+            &answer.track,
+        );
+        insert_negative_row(&path, &expired_track_key, Provider::Lrclib, now - 1);
+        insert_negative_row(&path, &active_track_key, Provider::Lrclib, now + 1);
+        write_last_prune(&path, now - CACHE_PRUNE_INTERVAL_SECS - 1);
+
+        worker.prune_if_due(now).unwrap();
+
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &old_track_key, Provider::Lrclib),
+            0
+        );
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &fresh_track_key, Provider::Lrclib),
+            1
+        );
+        assert_eq!(
+            count_rows(
+                &path,
+                "negative_cache",
+                &expired_track_key,
+                Provider::Lrclib
+            ),
+            0
+        );
+        assert_eq!(
+            count_rows(&path, "negative_cache", &active_track_key, Provider::Lrclib),
+            1
+        );
+        assert_eq!(read_meta(&path, "last_prune"), Some(now.to_string()));
+
+        insert_row(
+            &path,
+            &old_track_key,
+            Provider::Lrclib,
+            i64::from(PARSER_VERSION),
+            now - CACHE_MAX_ENTRY_AGE_SECS - 1,
+            &answer.track,
+        );
+        worker.prune_if_due(now + 100).unwrap();
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &old_track_key, Provider::Lrclib),
+            1
+        );
 
         drop(worker);
         std::fs::remove_file(path).unwrap();
