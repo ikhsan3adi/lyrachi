@@ -145,6 +145,18 @@ impl CacheHandle {
         response.await.map_err(|_| CacheError::WorkerStopped)?
     }
 
+    pub async fn invalidate_track(&self, key: &CanonicalTrackKey) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::InvalidateTrack {
+                track_key: blake3_track_key(key),
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
     pub async fn shutdown(&self) -> Result<(), CacheError> {
         let (reply, response) = oneshot::channel();
         self.tx
@@ -267,6 +279,35 @@ mod tests {
         assert_eq!(cached.track.lines[0].text, "Look at the stars");
         assert_eq!(cached.track.user_offset_ms, 0);
         second.shutdown().await.unwrap();
+
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn invalidate_track_clears_positive_and_negative_entries() {
+        let path = temp_path("invalidate");
+        let key = sample_key();
+        let answer = sample_answer();
+        let handle = CacheHandle::open(&path).unwrap();
+
+        handle
+            .store(&key, "Coldplay - Yellow", &answer)
+            .await
+            .unwrap();
+        handle
+            .record_negative(&key, Provider::LyricsPlus)
+            .await
+            .unwrap();
+        let cached = handle.lookup(&key).await.unwrap();
+        assert!(cached.answer.is_some());
+        assert!(cached.negative_providers.contains(&Provider::LyricsPlus));
+
+        handle.invalidate_track(&key).await.unwrap();
+
+        let cleared = handle.lookup(&key).await.unwrap();
+        assert!(cleared.answer.is_none());
+        assert!(cleared.negative_providers.is_empty());
+        handle.shutdown().await.unwrap();
 
         cleanup(&path);
     }

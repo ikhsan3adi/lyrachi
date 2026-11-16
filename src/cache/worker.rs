@@ -40,6 +40,10 @@ pub(super) enum CacheCommand {
         provider: Provider,
         reply: oneshot::Sender<Result<(), CacheError>>,
     },
+    InvalidateTrack {
+        track_key: TrackKey,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
     Shutdown {
         now: i64,
         reply: oneshot::Sender<Result<(), CacheError>>,
@@ -53,7 +57,7 @@ impl CacheCommand {
             | Self::Store { now, .. }
             | Self::RecordNegative { now, .. }
             | Self::Shutdown { now, .. } => *now,
-            Self::MarkUpgradeAttempted { .. } => now_secs(),
+            Self::MarkUpgradeAttempted { .. } | Self::InvalidateTrack { .. } => now_secs(),
         }
     }
 }
@@ -135,6 +139,9 @@ impl Worker {
                     reply,
                 } => {
                     let _ = reply.send(self.mark_upgrade_attempted(&track_key, provider));
+                }
+                CacheCommand::InvalidateTrack { track_key, reply } => {
+                    let _ = reply.send(self.invalidate_track(&track_key));
                 }
                 CacheCommand::Shutdown { now, reply } => {
                     let _ = reply.send(self.flush_touches(now));
@@ -372,6 +379,23 @@ impl Worker {
              WHERE track_key = ?1 AND provider = ?2",
             params![track_key.as_slice(), provider.as_str()],
         )?;
+        Ok(())
+    }
+
+    fn invalidate_track(&mut self, track_key: &TrackKey) -> Result<(), CacheError> {
+        let transaction = self.connection.transaction()?;
+        transaction.execute(
+            "DELETE FROM lyric_entries WHERE track_key = ?1",
+            params![track_key.as_slice()],
+        )?;
+        transaction.execute(
+            "DELETE FROM negative_cache WHERE track_key = ?1",
+            params![track_key.as_slice()],
+        )?;
+        transaction.commit()?;
+
+        self.last_touch.retain(|(key, _), _| key != track_key);
+        self.pending_touch.retain(|(key, _), _| key != track_key);
         Ok(())
     }
 
@@ -739,6 +763,61 @@ mod tests {
         let answer = worker.lookup_at(&track_key, 2_000).unwrap().answer.unwrap();
         assert_eq!(answer.provider, Provider::Local);
         assert_eq!(answer.tier, Tier::Syllable);
+
+        drop(worker);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn invalidates_positive_and_negative_rows_for_one_track() {
+        let path = temp_path("invalidate");
+        let key = sample_key("Artist", "Title");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let other_key = sample_key("Artist", "Other");
+        let other_track_key = crate::providers::sanitize::blake3_track_key(&other_key);
+        let connection = schema::open(&path).unwrap();
+        let mut worker = Worker::new(connection);
+
+        worker
+            .store(
+                &track_key,
+                "Artist - Title",
+                &sample_answer(Provider::Lrclib, "line", SyncGranularity::Line),
+                1_000,
+            )
+            .unwrap();
+        worker
+            .record_negative(&track_key, Provider::LyricsPlus, 1_000)
+            .unwrap();
+        worker
+            .store(
+                &other_track_key,
+                "Artist - Other",
+                &sample_answer(Provider::Local, "other", SyncGranularity::Line),
+                1_000,
+            )
+            .unwrap();
+        worker
+            .record_negative(&other_track_key, Provider::LyricsPlus, 1_000)
+            .unwrap();
+
+        worker.invalidate_track(&track_key).unwrap();
+
+        let lookup = worker.lookup_at(&track_key, 2_000).unwrap();
+        assert!(lookup.answer.is_none());
+        assert!(lookup.negative_providers.is_empty());
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &track_key, Provider::Lrclib),
+            0
+        );
+        assert_eq!(
+            count_rows(&path, "negative_cache", &track_key, Provider::LyricsPlus),
+            0
+        );
+
+        let other = worker.lookup_at(&other_track_key, 2_000).unwrap();
+        assert_eq!(other.answer.unwrap().provider, Provider::Local);
+        assert!(other.negative_providers.contains(&Provider::LyricsPlus));
 
         drop(worker);
         std::fs::remove_file(path).unwrap();

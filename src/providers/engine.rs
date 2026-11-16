@@ -382,6 +382,7 @@ pub async fn resolve(
     query: &TrackQuery,
     cancel: &CancellationToken,
     updates: &mpsc::UnboundedSender<EngineUpdate>,
+    bypass_cache: bool,
 ) -> Result<(), ProviderError> {
     if cancel.is_cancelled() {
         return Err(ProviderError::Cancelled);
@@ -412,6 +413,7 @@ pub async fn resolve(
         query,
         cancel,
         updates,
+        bypass_cache,
     )
     .await
 }
@@ -423,9 +425,10 @@ async fn resolve_with_specs(
     query: &TrackQuery,
     cancel: &CancellationToken,
     updates: &mpsc::UnboundedSender<EngineUpdate>,
+    bypass_cache: bool,
 ) -> Result<(), ProviderError> {
     let lookup = match cache {
-        Some(cache) => {
+        Some(cache) if !bypass_cache => {
             let lookup = cache.lookup(&query.canonical);
             tokio::select! {
                 biased;
@@ -439,7 +442,7 @@ async fn resolve_with_specs(
                 }
             }
         }
-        None => Default::default(),
+        _ => Default::default(),
     };
     let now = Instant::now();
     let available: Vec<NetworkSpec> = specs
@@ -534,7 +537,7 @@ pub async fn resolve_final(
     cancel: &CancellationToken,
 ) -> Result<Option<ProviderAnswer>, ProviderError> {
     let (updates, mut receiver) = mpsc::unbounded_channel();
-    resolve(resolver, cache, query, cancel, &updates).await?;
+    resolve(resolver, cache, query, cancel, &updates, false).await?;
     drop(updates);
 
     let mut final_result = None;
@@ -887,7 +890,8 @@ mod tests {
     ) -> (Result<(), ProviderError>, Vec<EngineUpdate>) {
         let cancel = CancellationToken::new();
         let (updates, mut receiver) = mpsc::unbounded_channel();
-        let result = resolve_with_specs(specs, cache, breakers, query, &cancel, &updates).await;
+        let result =
+            resolve_with_specs(specs, cache, breakers, query, &cancel, &updates, false).await;
         drop(updates);
         let mut messages = Vec::new();
         while let Some(update) = receiver.recv().await {
@@ -1525,5 +1529,70 @@ mod tests {
         let answer = final_answer(updates.into_iter().next().unwrap());
         assert_eq!(answer.provider, Provider::Local);
         assert_eq!(answer.tier, Tier::Line);
+    }
+
+    fn temp_path(name: &str) -> std::path::PathBuf {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "lyrachi-engine-test-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
+
+    fn cleanup(path: &std::path::Path) {
+        let _ = std::fs::remove_dir_all(path);
+    }
+
+    #[tokio::test]
+    async fn bypass_cache_ignores_cached_answer_and_runs_race() {
+        let root = temp_path("bypass");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let cache = CacheHandle::open(&db).unwrap();
+        let query = query();
+
+        cache
+            .store(
+                &query.canonical,
+                "Coldplay - Yellow",
+                &ProviderAnswer::new(Provider::Lrclib, track(Tier::Line, "cached-line")),
+            )
+            .await
+            .unwrap();
+
+        let specs = vec![spec_for(
+            Provider::LyricsPlus,
+            0,
+            10,
+            Some(Tier::Syllable),
+            "fresh-syllable",
+            None,
+            false,
+        )];
+
+        let cancel = CancellationToken::new();
+        let (updates, mut receiver) = mpsc::unbounded_channel();
+        let result =
+            resolve_with_specs(specs, Some(&cache), None, &query, &cancel, &updates, true).await;
+
+        assert!(result.is_ok());
+        drop(updates);
+        let mut messages = Vec::new();
+        while let Some(update) = receiver.recv().await {
+            messages.push(update);
+        }
+
+        assert_eq!(messages.len(), 1);
+        let final_ans = messages[0].result.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(
+            final_ans.track.source_track_id.as_deref(),
+            Some("fresh-syllable")
+        );
+
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
     }
 }

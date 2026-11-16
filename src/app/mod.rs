@@ -36,6 +36,28 @@ pub struct Resolution<'a> {
     pub cache: Option<&'a CacheHandle>,
 }
 
+#[derive(Debug, Default)]
+struct InputOutcome {
+    quit: bool,
+    refetch: Option<TrackPlan>,
+}
+
+impl InputOutcome {
+    fn quit() -> Self {
+        Self {
+            quit: true,
+            refetch: None,
+        }
+    }
+
+    fn refetch(plan: TrackPlan) -> Self {
+        Self {
+            quit: false,
+            refetch: Some(plan),
+        }
+    }
+}
+
 pub async fn run(
     terminal: &mut DefaultTerminal,
     config: RuntimeConfig,
@@ -109,15 +131,27 @@ pub async fn run(
                         break;
                     };
                     let event = event?;
-                    if handle_input(
+                    let outcome = handle_input(
                         &mut state,
                         &mut coordinator,
                         &mut offsets,
                         Some(&config_file),
                         Instant::now(),
                         event,
-                    ) {
+                    );
+                    if outcome.quit {
                         break;
+                    }
+                    if let Some(plan) = outcome.refetch {
+                        apply_plan(
+                            plan,
+                            &mut state,
+                            &app_tx,
+                            Resolution {
+                                resolver: resolver.as_ref(),
+                                cache: cache.as_ref(),
+                            },
+                        );
                     }
                 }
                 Some(event) = media_rx.recv() => {
@@ -258,6 +292,104 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
     Ok(())
 }
 
+fn apply_plan(
+    plan: TrackPlan,
+    state: &mut UiState,
+    app_tx: &mpsc::Sender<AppEvent>,
+    resolution: Resolution<'_>,
+) {
+    match plan {
+        TrackPlan::Unusable { user_offset_ms, .. } => {
+            state.user_offset_ms = user_offset_ms;
+            state.refetching = false;
+            state.set_not_found();
+        }
+        TrackPlan::Cached {
+            user_offset_ms,
+            answer,
+            ..
+        } => {
+            state.user_offset_ms = user_offset_ms;
+            state.refetching = false;
+            state.set_lyrics(answer.track);
+        }
+        TrackPlan::Fetch {
+            epoch: request_epoch,
+            user_offset_ms,
+            query,
+            cancel: request_cancel,
+            bypass_cache,
+        } => {
+            state.user_offset_ms = user_offset_ms;
+            start_fetch(
+                state,
+                app_tx,
+                resolution,
+                request_epoch,
+                query,
+                request_cancel,
+                bypass_cache,
+            );
+        }
+    }
+}
+
+fn start_fetch(
+    state: &mut UiState,
+    app_tx: &mpsc::Sender<AppEvent>,
+    resolution: Resolution<'_>,
+    request_epoch: u64,
+    query: TrackQuery,
+    request_cancel: CancellationToken,
+    bypass_cache: bool,
+) {
+    let Some(resolver) = resolution.resolver else {
+        state.refetching = false;
+        state.set_error("Lyrics providers unavailable.".to_string());
+        return;
+    };
+    let resolver = Arc::clone(resolver);
+    let cache = resolution.cache.cloned();
+    let app_tx = app_tx.clone();
+    tokio::spawn(async move {
+        if bypass_cache
+            && let Some(cache) = cache.as_ref()
+            && let Err(error) = cache.invalidate_track(&query.canonical).await
+        {
+            warn!(%error, "failed to invalidate cached lyrics for refetch");
+        }
+
+        let (updates_tx, mut updates_rx) = mpsc::unbounded_channel::<EngineUpdate>();
+        let forward_tx = app_tx.clone();
+        let forward = tokio::spawn(async move {
+            while let Some(update) = updates_rx.recv().await {
+                if forward_tx
+                    .send(AppEvent::Lyrics {
+                        epoch: request_epoch,
+                        result: update.result,
+                        is_final: update.is_final,
+                    })
+                    .await
+                    .is_err()
+                {
+                    break;
+                }
+            }
+        });
+        let _ = resolve_with_updates(
+            &resolver,
+            cache.as_ref(),
+            &query,
+            &request_cancel,
+            &updates_tx,
+            bypass_cache,
+        )
+        .await;
+        drop(updates_tx);
+        let _ = forward.await;
+    });
+}
+
 pub fn handle_media(
     event: MediaEvent,
     state: &mut UiState,
@@ -279,64 +411,8 @@ pub fn handle_media(
         MediaEvent::TrackChanged(meta) => {
             clock.on_seeked(0, now);
             state.set_track(meta.clone());
-            match coordinator.prepare_track(&meta) {
-                TrackPlan::Unusable { .. } => {
-                    state.set_not_found();
-                }
-                TrackPlan::Cached {
-                    user_offset_ms,
-                    answer,
-                    ..
-                } => {
-                    state.user_offset_ms = user_offset_ms;
-                    state.set_lyrics(answer.track);
-                }
-                TrackPlan::Fetch {
-                    epoch: request_epoch,
-                    user_offset_ms,
-                    query,
-                    cancel: request_cancel,
-                } => {
-                    state.user_offset_ms = user_offset_ms;
-                    let Some(resolver) = resolution.resolver else {
-                        state.set_error("Lyrics providers unavailable.".to_string());
-                        return;
-                    };
-                    let resolver = Arc::clone(resolver);
-                    let cache = resolution.cache.cloned();
-                    let app_tx = app_tx.clone();
-                    tokio::spawn(async move {
-                        let (updates_tx, mut updates_rx) =
-                            mpsc::unbounded_channel::<EngineUpdate>();
-                        let forward_tx = app_tx.clone();
-                        let forward = tokio::spawn(async move {
-                            while let Some(update) = updates_rx.recv().await {
-                                if forward_tx
-                                    .send(AppEvent::Lyrics {
-                                        epoch: request_epoch,
-                                        result: update.result,
-                                        is_final: update.is_final,
-                                    })
-                                    .await
-                                    .is_err()
-                                {
-                                    break;
-                                }
-                            }
-                        });
-                        let _ = resolve_with_updates(
-                            &resolver,
-                            cache.as_ref(),
-                            &query,
-                            &request_cancel,
-                            &updates_tx,
-                        )
-                        .await;
-                        drop(updates_tx);
-                        let _ = forward.await;
-                    });
-                }
-            }
+            let plan = coordinator.prepare_track(&meta);
+            apply_plan(plan, state, app_tx, resolution);
         }
         MediaEvent::NoTrack => {
             coordinator.cancel_active();
@@ -374,26 +450,29 @@ pub fn handle_resolved(
 ) {
     match result {
         Ok(answer) => {
-            if let Some(outcome) = coordinator.complete_epoch(resolved_epoch, answer, is_final) {
-                match outcome {
-                    Some(answer) => {
-                        let next_tier = answer.tier;
-                        let current = state.lyrics_track();
-                        let current_tier = current.map(Tier::from_track);
-                        let unchanged = current == Some(&answer.track);
-                        let replace = !unchanged
-                            && current_tier.is_none_or(|tier| {
-                                next_tier > tier || (is_final && next_tier == tier)
-                            });
-                        if replace {
-                            state.user_offset_ms = answer.track.user_offset_ms;
-                            state.set_lyrics(answer.track);
-                        }
+            let Some(outcome) = coordinator.complete_epoch(resolved_epoch, answer, is_final) else {
+                return;
+            };
+            if is_final {
+                state.refetching = false;
+            }
+            match outcome {
+                Some(answer) => {
+                    let next_tier = answer.tier;
+                    let current = state.lyrics_track();
+                    let current_tier = current.map(Tier::from_track);
+                    let unchanged = current == Some(&answer.track);
+                    let replace = !unchanged
+                        && current_tier
+                            .is_none_or(|tier| next_tier > tier || (is_final && next_tier == tier));
+                    if replace {
+                        state.user_offset_ms = answer.track.user_offset_ms;
+                        state.set_lyrics(answer.track);
                     }
-                    None => {
-                        if is_final {
-                            state.set_not_found();
-                        }
+                }
+                None => {
+                    if is_final {
+                        state.set_not_found();
                     }
                 }
             }
@@ -404,6 +483,7 @@ pub fn handle_resolved(
                 .complete_epoch(resolved_epoch, None, true)
                 .is_some()
             {
+                state.refetching = false;
                 state.set_error(error.to_string());
             }
         }
@@ -417,56 +497,66 @@ fn handle_input(
     config_file: Option<&Path>,
     now: Instant,
     event: Event,
-) -> bool {
+) -> InputOutcome {
     let Event::Key(key) = event else {
-        return false;
+        return InputOutcome::default();
     };
     if key.kind != KeyEventKind::Press {
-        return false;
+        return InputOutcome::default();
     }
 
     match key.code {
-        KeyCode::Char('q') => true,
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => true,
+        KeyCode::Char('q') => InputOutcome::quit(),
+        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => InputOutcome::quit(),
+        KeyCode::Char('r') => match coordinator.force_refetch_current_track() {
+            Some(plan) => {
+                state.refetching = true;
+                InputOutcome::refetch(plan)
+            }
+            None => {
+                state.show_banner("No track to refetch", now);
+                InputOutcome::default()
+            }
+        },
         KeyCode::Char('f') => {
             state.toggle_fullscreen();
             persist_layout(state, config_file, now);
-            false
+            InputOutcome::default()
         }
         KeyCode::Char('t') => {
             state.toggle_header();
             persist_layout(state, config_file, now);
-            false
+            InputOutcome::default()
         }
         KeyCode::Char('s') => {
             state.toggle_status();
             persist_layout(state, config_file, now);
-            false
+            InputOutcome::default()
         }
         KeyCode::Char('[') => {
             state.adjust_offset(-100);
             record_offset(state, coordinator, offsets);
-            false
+            InputOutcome::default()
         }
         KeyCode::Char(']') => {
             state.adjust_offset(100);
             record_offset(state, coordinator, offsets);
-            false
+            InputOutcome::default()
         }
         KeyCode::Char('\\') => {
             state.reset_offset();
             record_offset(state, coordinator, offsets);
-            false
+            InputOutcome::default()
         }
         KeyCode::Up => {
             state.scroll_up();
-            false
+            InputOutcome::default()
         }
         KeyCode::Down => {
             state.scroll_down();
-            false
+            InputOutcome::default()
         }
-        _ => false,
+        _ => InputOutcome::default(),
     }
 }
 
@@ -950,14 +1040,17 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        assert!(!handle_input(
-            &mut state,
-            &mut coordinator,
-            &mut offsets,
-            None,
-            Instant::now(),
-            key_event
-        ));
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                key_event
+            )
+            .quit
+        );
         assert_eq!(state.user_offset_ms, -100);
 
         let canonical = coordinator.active_key().unwrap().clone();
@@ -978,16 +1071,201 @@ mod tests {
             kind: KeyEventKind::Press,
             state: KeyEventState::NONE,
         });
-        assert!(!handle_input(
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                reset_event
+            )
+            .quit
+        );
+        assert_eq!(state.user_offset_ms, 0);
+        assert_eq!(offsets.offset_for(&canonical), 0);
+    }
+
+    #[test]
+    fn refetch_key_clears_l1_and_preserves_user_offset() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let meta = crate::media::TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: Some("Parachutes".to_string()),
+            duration_ms: Some(268_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let epoch = match coordinator.prepare_track(&meta) {
+            TrackPlan::Fetch { epoch, .. } => epoch,
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        coordinator.record_user_offset(-200);
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            epoch,
+            Ok(Some(ProviderAnswer::new(Provider::Local, track()))),
+            true,
+        );
+        assert_eq!(coordinator.cache().len(), 1);
+        assert_eq!(state.user_offset_ms, -200);
+
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+        let outcome = handle_input(
             &mut state,
             &mut coordinator,
             &mut offsets,
             None,
             Instant::now(),
-            reset_event
-        ));
-        assert_eq!(state.user_offset_ms, 0);
-        assert_eq!(offsets.offset_for(&canonical), 0);
+            event,
+        );
+
+        assert!(!outcome.quit);
+        assert!(state.refetching);
+        assert!(coordinator.cache().is_empty());
+        let refetch_epoch = match outcome.refetch.expect("r should produce a refetch plan") {
+            TrackPlan::Fetch {
+                epoch: refetch_epoch,
+                user_offset_ms,
+                query,
+                cancel,
+                bypass_cache,
+            } => {
+                assert_eq!(refetch_epoch, epoch + 1);
+                assert_eq!(user_offset_ms, -200);
+                assert_eq!(query.canonical, coordinator.active_key().unwrap().clone());
+                assert!(!cancel.is_cancelled());
+                assert!(bypass_cache);
+                refetch_epoch
+            }
+            other => panic!("expected refetch plan, got {other:?}"),
+        };
+
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            refetch_epoch,
+            Ok(Some(ProviderAnswer::new(Provider::Local, track()))),
+            true,
+        );
+        assert!(!state.refetching);
+        assert_eq!(coordinator.cache().len(), 1);
+    }
+
+    #[test]
+    fn refetch_key_without_active_track_shows_banner_and_does_not_refetch() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let now = Instant::now();
+
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+
+        let outcome = handle_input(&mut state, &mut coordinator, &mut offsets, None, now, event);
+
+        assert!(!outcome.quit);
+        assert!(!state.refetching);
+        assert!(outcome.refetch.is_none());
+        assert_eq!(state.banner_message(), Some("No track to refetch"));
+    }
+
+    #[test]
+    fn rapid_refetch_cancels_previous_refetch_epoch() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let meta = crate::media::TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: Some("Parachutes".to_string()),
+            duration_ms: Some(268_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let _ = coordinator.prepare_track(&meta);
+        coordinator.record_user_offset(150);
+
+        let event = Event::Key(KeyEvent {
+            code: KeyCode::Char('r'),
+            modifiers: KeyModifiers::NONE,
+            kind: KeyEventKind::Press,
+            state: KeyEventState::NONE,
+        });
+
+        let outcome_1 = handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            Instant::now(),
+            event.clone(),
+        );
+        let (epoch_1, token_1) = match outcome_1.refetch.unwrap() {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        assert!(!token_1.is_cancelled());
+        assert!(state.refetching);
+
+        let outcome_2 = handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            Instant::now(),
+            event,
+        );
+        let (epoch_2, token_2) = match outcome_2.refetch.unwrap() {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        assert!(token_1.is_cancelled());
+        assert!(!token_2.is_cancelled());
+        assert_eq!(epoch_2, epoch_1 + 1);
+        assert!(state.refetching);
+
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            epoch_1,
+            Ok(Some(ProviderAnswer::new(Provider::Local, track()))),
+            true,
+        );
+        assert!(state.refetching);
+        assert!(coordinator.cache().is_empty());
+
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            epoch_2,
+            Ok(Some(ProviderAnswer::new(Provider::Local, track()))),
+            true,
+        );
+        assert!(!state.refetching);
+        assert_eq!(coordinator.cache().len(), 1);
+        assert_eq!(state.user_offset_ms, 150);
     }
 
     #[test]
@@ -1018,14 +1296,17 @@ mod tests {
                 kind: KeyEventKind::Press,
                 state: KeyEventState::NONE,
             });
-            assert!(!handle_input(
-                state,
-                coordinator,
-                offsets,
-                Some(&config_file),
-                Instant::now(),
-                event
-            ));
+            assert!(
+                !handle_input(
+                    state,
+                    coordinator,
+                    offsets,
+                    Some(&config_file),
+                    Instant::now(),
+                    event
+                )
+                .quit
+            );
         };
 
         press(&mut state, &mut coordinator, &mut offsets, 'f');

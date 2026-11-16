@@ -29,12 +29,16 @@ pub fn status_line(state: &UiState) -> Line<'static> {
         PlaybackStatus::Paused => "paused",
         PlaybackStatus::Playing => "playing",
     };
-    let source = match &state.lyrics {
-        LyricsView::Idle => "-",
-        LyricsView::Loading => "loading",
-        LyricsView::NotFound => "not found",
-        LyricsView::Error(_) => "error",
-        LyricsView::Loaded { track, .. } => track.source_provider.as_str(),
+    let source = if state.refetching {
+        "refetching..."
+    } else {
+        match &state.lyrics {
+            LyricsView::Idle => "-",
+            LyricsView::Loading => "loading",
+            LyricsView::NotFound => "not found",
+            LyricsView::Error(_) => "error",
+            LyricsView::Loaded { track, .. } => track.source_provider.as_str(),
+        }
     };
     let confidence = state
         .confidence()
@@ -139,6 +143,12 @@ mod tests {
         assert_eq!(
             status_line(&state).to_string(),
             "mpv | playing | lrclib | +0 ms | 90% | instrumental"
+        );
+
+        state.refetching = true;
+        assert_eq!(
+            status_line(&state).to_string(),
+            "mpv | playing | refetching... | +0 ms | 90% | instrumental"
         );
     }
 

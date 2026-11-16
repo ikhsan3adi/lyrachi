@@ -5,6 +5,7 @@ use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
 use super::http;
+use super::sanitize::{clean_artist, clean_title, normalize_for_match, split_artist_title};
 use super::score;
 use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
 use crate::core::model::LineRole;
@@ -12,6 +13,12 @@ use crate::core::normalize::{normalize_plain, normalize_track_checked};
 use crate::core::parse::{ParsedLine, ParsedMetadata, ParsedTrack};
 
 const BASE_URL: &str = "https://music.youtube.com/youtubei/v1";
+const WEB_CLIENT_NAME: &str = "WEB_REMIX";
+const WEB_CLIENT_VERSION: &str = "1.20240101.01.00";
+const WEB_CLIENT_ID: &str = "67";
+const SEARCH_CLIENT_NAME: &str = "TVHTML5_SIMPLY_EMBEDDED_PLAYER";
+const SEARCH_CLIENT_VERSION: &str = "2.0";
+const SEARCH_CLIENT_ID: &str = "85";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 
@@ -83,8 +90,8 @@ impl YtMusicProvider {
         let payload = serde_json::json!({
             "context": {
                 "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20240101.01.00",
+                    "clientName": SEARCH_CLIENT_NAME,
+                    "clientVersion": SEARCH_CLIENT_VERSION,
                     "hl": "en"
                 }
             },
@@ -95,8 +102,8 @@ impl YtMusicProvider {
             .client
             .post(format!("{}/search", self.base_url))
             .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", "67")
-            .header("X-YouTube-Client-Version", "1.20240101.01.00")
+            .header("X-YouTube-Client-Name", SEARCH_CLIENT_ID)
+            .header("X-YouTube-Client-Version", SEARCH_CLIENT_VERSION)
             .header("Referer", "https://music.youtube.com/")
             .json(&payload)
             .send();
@@ -142,6 +149,7 @@ impl YtMusicProvider {
 
         let mut items = Vec::new();
         find_music_responsive_items(&val, &mut items);
+        find_compact_video_items(&val, &mut items);
 
         if items.is_empty() {
             return Ok(None);
@@ -178,8 +186,8 @@ impl YtMusicProvider {
         let payload = serde_json::json!({
             "context": {
                 "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20240101.01.00",
+                    "clientName": WEB_CLIENT_NAME,
+                    "clientVersion": WEB_CLIENT_VERSION,
                     "hl": "en"
                 }
             },
@@ -190,8 +198,8 @@ impl YtMusicProvider {
             .client
             .post(format!("{}/next", self.base_url))
             .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", "67")
-            .header("X-YouTube-Client-Version", "1.20240101.01.00")
+            .header("X-YouTube-Client-Name", WEB_CLIENT_ID)
+            .header("X-YouTube-Client-Version", WEB_CLIENT_VERSION)
             .header("Referer", "https://music.youtube.com/")
             .json(&payload)
             .send();
@@ -286,8 +294,8 @@ impl YtMusicProvider {
         let payload = serde_json::json!({
             "context": {
                 "client": {
-                    "clientName": "WEB_REMIX",
-                    "clientVersion": "1.20240101.01.00",
+                    "clientName": WEB_CLIENT_NAME,
+                    "clientVersion": WEB_CLIENT_VERSION,
                     "hl": "en"
                 }
             },
@@ -298,8 +306,8 @@ impl YtMusicProvider {
             .client
             .post(format!("{}/browse", self.base_url))
             .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", "67")
-            .header("X-YouTube-Client-Version", "1.20240101.01.00")
+            .header("X-YouTube-Client-Name", WEB_CLIENT_ID)
+            .header("X-YouTube-Client-Version", WEB_CLIENT_VERSION)
             .header("Referer", "https://music.youtube.com/")
             .json(&payload)
             .send();
@@ -477,6 +485,22 @@ fn find_music_responsive_items<'a>(val: &'a Value, out: &mut Vec<&'a Value>) {
     }
 }
 
+fn find_compact_video_items<'a>(val: &'a Value, out: &mut Vec<&'a Value>) {
+    if let Some(obj) = val.as_object() {
+        if let Some(item) = obj.get("compactVideoRenderer") {
+            out.push(item);
+        } else {
+            for (_, v) in obj {
+                find_compact_video_items(v, out);
+            }
+        }
+    } else if let Some(arr) = val.as_array() {
+        for v in arr {
+            find_compact_video_items(v, out);
+        }
+    }
+}
+
 fn find_tabs<'a>(val: &'a Value, out: &mut Vec<&'a Value>) {
     if let Some(obj) = val.as_object() {
         if let Some(tab) = obj.get("tabRenderer") {
@@ -494,6 +518,11 @@ fn find_tabs<'a>(val: &'a Value, out: &mut Vec<&'a Value>) {
 }
 
 fn extract_item_video_id(item: &Value) -> Option<String> {
+    if let Some(id) = item.get("videoId").and_then(Value::as_str)
+        && is_valid_video_id(id)
+    {
+        return Some(id.to_string());
+    }
     if let Some(id) = item
         .pointer("/playlistItemData/videoId")
         .and_then(Value::as_str)
@@ -521,13 +550,16 @@ fn extract_item_video_id(item: &Value) -> Option<String> {
 fn extract_item_metadata(
     item: &Value,
 ) -> (Option<String>, Option<String>, Option<String>, Option<f64>) {
-    let flex_columns = item.get("flexColumns").and_then(Value::as_array);
+    let Some(cols) = item.get("flexColumns").and_then(Value::as_array) else {
+        return extract_compact_video_metadata(item);
+    };
+
     let mut title = None;
     let mut artist = None;
     let mut album = None;
     let mut duration_sec = None;
 
-    if let Some(cols) = flex_columns {
+    {
         if let Some(col0) = cols.first() {
             title = flex_column_runs_text(col0);
         }
@@ -554,6 +586,60 @@ fn extract_item_metadata(
     }
 
     (title, artist, album, duration_sec)
+}
+
+fn extract_compact_video_metadata(
+    item: &Value,
+) -> (Option<String>, Option<String>, Option<String>, Option<f64>) {
+    let raw_title = text_runs(item.pointer("/title/runs"));
+    let byline = text_runs(item.pointer("/longBylineText/runs"))
+        .or_else(|| text_runs(item.pointer("/shortBylineText/runs")))
+        .map(|artist| clean_artist(&artist))
+        .filter(|artist| !artist.is_empty());
+    let duration_sec = item
+        .pointer("/lengthText/runs/0/text")
+        .and_then(Value::as_str)
+        .and_then(parse_duration_str);
+
+    let Some(raw_title) = raw_title else {
+        return (None, byline, None, duration_sec);
+    };
+
+    let (title, artist) = match split_artist_title(&raw_title) {
+        Some((left, right)) => {
+            let left_artist = clean_artist(&left);
+            let right_title = clean_title(&right);
+            let artist_matches = byline.as_deref().is_some_and(|artist| {
+                normalize_for_match(artist) == normalize_for_match(&left_artist)
+            });
+            if !left_artist.is_empty()
+                && !right_title.is_empty()
+                && (byline.is_none() || artist_matches)
+            {
+                (Some(right_title), byline.or(Some(left_artist)))
+            } else {
+                (Some(clean_title(&raw_title)), byline)
+            }
+        }
+        None => (Some(clean_title(&raw_title)), byline),
+    };
+
+    (title, artist, None, duration_sec)
+}
+
+fn text_runs(runs: Option<&Value>) -> Option<String> {
+    let mut text = String::new();
+    for run in runs?.as_array()? {
+        if let Some(value) = run.get("text").and_then(Value::as_str) {
+            text.push_str(value);
+        }
+    }
+    let text = text.trim();
+    if text.is_empty() {
+        None
+    } else {
+        Some(text.to_string())
+    }
 }
 
 fn flex_column_runs(col: &Value) -> Vec<String> {
@@ -744,6 +830,47 @@ mod tests {
         assert_eq!(answer.track.lines[3].text, "Yeah, they were all yellow");
         assert_eq!(answer.track.source_provider, "ytmusic");
         assert_eq!(answer.track.source_track_id.as_deref(), Some("yKNxeF4KMsY"));
+    }
+
+    #[test]
+    fn search_parses_compact_video_renderer() {
+        let json = r#"{
+            "contents": {
+                "sectionListRenderer": {
+                    "contents": [
+                        {
+                            "itemSectionRenderer": {
+                                "contents": [
+                                    {
+                                        "compactVideoRenderer": {
+                                            "videoId": "yKNxeF4KMsY",
+                                            "title": {
+                                                "runs": [{ "text": "Coldplay - Yellow (Official Video)" }]
+                                            },
+                                            "longBylineText": {
+                                                "runs": [{ "text": "Coldplay" }]
+                                            },
+                                            "lengthText": {
+                                                "runs": [{ "text": "4:33" }]
+                                            }
+                                        }
+                                    }
+                                ]
+                            }
+                        }
+                    ]
+                }
+            }
+        }"#;
+
+        let provider = YtMusicProvider::with_base_url("http://127.0.0.1:1").unwrap();
+        let (video_id, confidence) = provider
+            .parse_search_response(json, &query())
+            .unwrap()
+            .expect("should select compact video result");
+
+        assert_eq!(video_id, "yKNxeF4KMsY");
+        assert!(confidence >= 0.65);
     }
 
     #[test]

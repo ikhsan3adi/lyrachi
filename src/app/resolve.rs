@@ -75,6 +75,14 @@ impl L1Cache {
         }
         self.entries.push_back((key, answer));
     }
+
+    pub fn remove(&mut self, key: &CanonicalTrackKey) -> Option<ProviderAnswer> {
+        let index = self
+            .entries
+            .iter()
+            .position(|(entry_key, _)| entry_key == key)?;
+        self.entries.remove(index).map(|(_, answer)| answer)
+    }
 }
 
 pub async fn resolve_with_cache(
@@ -92,8 +100,9 @@ pub async fn resolve_with_updates(
     query: &TrackQuery,
     cancel: &CancellationToken,
     updates: &mpsc::UnboundedSender<EngineUpdate>,
+    bypass_cache: bool,
 ) -> Result<(), ProviderError> {
-    engine::resolve(resolver, cache, query, cancel, updates).await
+    engine::resolve(resolver, cache, query, cancel, updates, bypass_cache).await
 }
 
 #[derive(Debug)]
@@ -108,6 +117,7 @@ pub enum TrackPlan {
         user_offset_ms: i64,
         query: TrackQuery,
         cancel: CancellationToken,
+        bypass_cache: bool,
     },
     Unusable {
         epoch: u64,
@@ -120,6 +130,7 @@ pub struct ResolveCoordinator {
     epoch: u64,
     active_token: Option<CancellationToken>,
     active_key: Option<CanonicalTrackKey>,
+    active_query: Option<TrackQuery>,
     cache: L1Cache,
     user_offsets: HashMap<CanonicalTrackKey, i64>,
 }
@@ -157,6 +168,7 @@ impl ResolveCoordinator {
             token.cancel();
         }
         self.active_key = None;
+        self.active_query = None;
         self.epoch = self.epoch.wrapping_add(1);
         self.epoch
     }
@@ -171,6 +183,7 @@ impl ResolveCoordinator {
         let mut query = TrackQuery::from_meta(meta, 0);
         if !query.is_usable() {
             self.active_key = None;
+            self.active_query = None;
             return TrackPlan::Unusable {
                 epoch,
                 user_offset_ms: 0,
@@ -184,6 +197,7 @@ impl ResolveCoordinator {
             .unwrap_or(0);
         query.user_offset_ms = user_offset_ms;
         self.active_key = Some(query.canonical.clone());
+        self.active_query = Some(query.clone());
 
         if let Some(mut answer) = self.cache.get(&query.canonical) {
             answer.track.user_offset_ms = user_offset_ms;
@@ -202,7 +216,34 @@ impl ResolveCoordinator {
             user_offset_ms,
             query,
             cancel: token,
+            bypass_cache: false,
         }
+    }
+
+    pub fn force_refetch_current_track(&mut self) -> Option<TrackPlan> {
+        let mut query = self.active_query.clone()?;
+        let key = query.canonical.clone();
+
+        if let Some(token) = self.active_token.take() {
+            token.cancel();
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+
+        self.cache.remove(&key);
+        let user_offset_ms = self.user_offsets.get(&key).copied().unwrap_or(0);
+        query.user_offset_ms = user_offset_ms;
+        self.active_key = Some(key);
+
+        let token = CancellationToken::new();
+        self.active_token = Some(token.clone());
+        Some(TrackPlan::Fetch {
+            epoch,
+            user_offset_ms,
+            query,
+            cancel: token,
+            bypass_cache: true,
+        })
     }
 
     pub fn complete_epoch(
@@ -362,6 +403,73 @@ mod tests {
     }
 
     #[test]
+    fn force_refetch_cancels_epoch_clears_l1_and_preserves_user_offset() {
+        let mut coordinator = ResolveCoordinator::new();
+        let meta = sample_meta("Song A", "Artist");
+
+        let (epoch_a, token_a) = match coordinator.prepare_track(&meta) {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        coordinator.record_user_offset(-250);
+
+        let plan = coordinator
+            .force_refetch_current_track()
+            .expect("active track should refetch");
+        assert!(token_a.is_cancelled());
+
+        let (epoch_b, query, user_offset_ms, token_b, bypass_cache) = match plan {
+            TrackPlan::Fetch {
+                epoch,
+                query,
+                user_offset_ms,
+                cancel,
+                bypass_cache,
+            } => (epoch, query, user_offset_ms, cancel, bypass_cache),
+            other => panic!("expected refetch plan, got {other:?}"),
+        };
+        assert_eq!(epoch_b, epoch_a + 1);
+        assert_eq!(user_offset_ms, -250);
+        assert!(!token_b.is_cancelled());
+        assert!(bypass_cache);
+        assert!(coordinator.cache().is_empty());
+
+        assert!(
+            coordinator
+                .complete_epoch(epoch_a, Some(sample_answer("old")), true)
+                .is_none()
+        );
+        let resolved = coordinator
+            .complete_epoch(epoch_b, Some(sample_answer("new")), true)
+            .expect("refetch epoch should resolve")
+            .expect("track should be present");
+        assert_eq!(resolved.track.source_track_id.as_deref(), Some("new"));
+        assert_eq!(resolved.track.user_offset_ms, -250);
+        assert_eq!(coordinator.cache().len(), 1);
+
+        let plan = coordinator
+            .force_refetch_current_track()
+            .expect("settled track should refetch again");
+        assert!(coordinator.cache().is_empty());
+        match plan {
+            TrackPlan::Fetch {
+                query: next_query,
+                user_offset_ms,
+                ..
+            } => {
+                assert_eq!(next_query.canonical, query.canonical);
+                assert_eq!(user_offset_ms, -250);
+            }
+            other => panic!("expected refetch plan, got {other:?}"),
+        }
+        assert!(
+            ResolveCoordinator::new()
+                .force_refetch_current_track()
+                .is_none()
+        );
+    }
+
+    #[test]
     fn coordinator_serves_l1_cache_and_preserves_per_track_user_offset() {
         let mut coordinator = ResolveCoordinator::new();
         let meta_a = sample_meta("Song A", "Artist");
@@ -516,6 +624,117 @@ mod cache_tests {
 
         assert_eq!(resolved.provider, Provider::Local);
         assert_eq!(resolved.track.lines[0].text, "local lyric");
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
+    }
+
+    #[tokio::test]
+    async fn refetch_invalidates_l2_and_bypasses_cache_preserving_offset() {
+        let root = temp_path("refetch");
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let cache = CacheHandle::open(&db).unwrap();
+
+        let mut coordinator = ResolveCoordinator::new();
+        let meta = meta();
+        let query = TrackQuery::from_meta(&meta, 0);
+
+        cache
+            .store(&query.canonical, "Artist - Song A", &answer("cached-v1"))
+            .await
+            .unwrap();
+
+        cache
+            .record_negative(&query.canonical, Provider::LyricsPlus)
+            .await
+            .unwrap();
+
+        let plan_1 = coordinator.prepare_track(&meta);
+        let epoch_1 = match plan_1 {
+            TrackPlan::Fetch {
+                epoch,
+                bypass_cache,
+                ..
+            } => {
+                assert!(!bypass_cache);
+                epoch
+            }
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        coordinator.record_user_offset(-350);
+
+        let resolver = ProviderResolver::with_config(
+            Vec::new(),
+            vec![Provider::Local, Provider::Lrclib],
+            false,
+        )
+        .unwrap();
+
+        let cached = resolve_with_cache(&resolver, Some(&cache), &query, &CancellationToken::new())
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(cached.track.source_track_id.as_deref(), Some("cached-v1"));
+
+        let completed = coordinator
+            .complete_epoch(epoch_1, Some(cached), true)
+            .unwrap()
+            .unwrap();
+        assert_eq!(completed.track.user_offset_ms, -350);
+        assert_eq!(coordinator.cache().len(), 1);
+
+        let refetch_plan = coordinator
+            .force_refetch_current_track()
+            .expect("should produce refetch plan");
+        let (refetch_epoch, user_offset_ms, bypass_cache, cancel) = match refetch_plan {
+            TrackPlan::Fetch {
+                epoch,
+                user_offset_ms,
+                bypass_cache,
+                cancel,
+                ..
+            } => (epoch, user_offset_ms, bypass_cache, cancel),
+            other => panic!("expected refetch plan, got {other:?}"),
+        };
+
+        assert_eq!(refetch_epoch, epoch_1 + 1);
+        assert_eq!(user_offset_ms, -350);
+        assert!(bypass_cache);
+        assert!(!cancel.is_cancelled());
+        assert!(coordinator.cache().is_empty());
+
+        cache.invalidate_track(&query.canonical).await.unwrap();
+
+        let lookup_after = cache.lookup(&query.canonical).await.unwrap();
+        assert!(lookup_after.answer.is_none());
+        assert!(lookup_after.negative_providers.is_empty());
+
+        let (updates_tx, mut updates_rx) = mpsc::unbounded_channel();
+        let cache_task = cache.clone();
+        let resolve_task = tokio::spawn(async move {
+            resolve_with_updates(
+                &resolver,
+                Some(&cache_task),
+                &query,
+                &cancel,
+                &updates_tx,
+                bypass_cache,
+            )
+            .await
+        });
+
+        resolve_task.await.unwrap().unwrap();
+        let mut final_answer = None;
+        while let Some(update) = updates_rx.recv().await {
+            if update.is_final {
+                final_answer = Some(update.result);
+            }
+        }
+        assert!(final_answer.is_some());
+
+        let result = coordinator.complete_epoch(refetch_epoch, None, true);
+        assert!(matches!(result, Some(None)));
+
         cache.shutdown().await.unwrap();
         cleanup(&root);
     }

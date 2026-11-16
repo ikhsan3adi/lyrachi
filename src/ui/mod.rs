@@ -29,6 +29,7 @@ pub struct UiState {
     pub playback: PlaybackStatus,
     pub track: Option<TrackMeta>,
     pub lyrics: LyricsView,
+    pub refetching: bool,
     pub global_offset_ms: i64,
     pub user_offset_ms: i64,
     pub lookahead_ms: u64,
@@ -56,6 +57,7 @@ impl UiState {
             playback: PlaybackStatus::Stopped,
             track: None,
             lyrics: LyricsView::Idle,
+            refetching: false,
             global_offset_ms: 0,
             user_offset_ms: 0,
             lookahead_ms: 0,
@@ -164,6 +166,7 @@ impl UiState {
         self.playback = PlaybackStatus::Stopped;
         self.track = None;
         self.lyrics = LyricsView::Idle;
+        self.refetching = false;
         self.user_offset_ms = 0;
         self.scroll = 0;
     }
@@ -175,6 +178,7 @@ impl UiState {
     pub fn set_track(&mut self, track: TrackMeta) {
         self.track = Some(track);
         self.lyrics = LyricsView::Loading;
+        self.refetching = false;
         self.user_offset_ms = 0;
         self.scroll = 0;
     }
@@ -182,6 +186,7 @@ impl UiState {
     pub fn set_no_track(&mut self) {
         self.track = None;
         self.lyrics = LyricsView::Idle;
+        self.refetching = false;
         self.user_offset_ms = 0;
         self.scroll = 0;
     }
