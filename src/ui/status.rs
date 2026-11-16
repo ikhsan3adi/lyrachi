@@ -3,7 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::core::{clock::PlaybackStatus, model::SyncGranularity};
+use crate::core::model::SyncGranularity;
 
 use super::{LyricsView, UiState};
 
@@ -24,11 +24,7 @@ pub fn footer_line(state: &UiState) -> Option<Line<'static>> {
 
 pub fn status_line(state: &UiState) -> Line<'static> {
     let player = state.player.as_deref().unwrap_or("no player");
-    let playback = match state.playback {
-        PlaybackStatus::Stopped => "stopped",
-        PlaybackStatus::Paused => "paused",
-        PlaybackStatus::Playing => "playing",
-    };
+    let playback = state.playback.as_str();
     let source = if state.refetching {
         "refetching..."
     } else {
@@ -64,30 +60,24 @@ pub fn status_line(state: &UiState) -> Line<'static> {
 
 fn extra_status(state: &UiState) -> Option<String> {
     let track = state.lyrics_track()?;
-    if track.is_instrumental {
-        return Some("instrumental".to_string());
-    }
-    match track.granularity {
-        SyncGranularity::Syllable => Some("syllable".to_string()),
-        SyncGranularity::Word => Some("word".to_string()),
-        SyncGranularity::Line => Some("line".to_string()),
-        SyncGranularity::Unsynced => {
-            if track.lines.is_empty() {
-                Some("unsynced".to_string())
-            } else {
-                Some(format!(
-                    "unsynced {}/{}",
-                    state.scroll + 1,
-                    track.lines.len()
-                ))
-            }
-        }
+    if track.granularity == SyncGranularity::Unsynced
+        && !track.is_instrumental
+        && !track.lines.is_empty()
+    {
+        Some(format!(
+            "unsynced {}/{}",
+            state.scroll + 1,
+            track.lines.len()
+        ))
+    } else {
+        Some(track.status_label().to_string())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::clock::PlaybackStatus;
     use crate::core::model::{LineRole, LyricLine, SyncedTrack};
 
     fn sample_track(granularity: SyncGranularity, is_instrumental: bool) -> SyncedTrack {

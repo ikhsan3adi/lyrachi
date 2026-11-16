@@ -5,6 +5,13 @@ use crate::core::clock::PlaybackStatus;
 pub mod fake;
 pub mod mpris;
 
+pub const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
+
+pub fn player_short_name(bus: &str) -> &str {
+    let short = bus.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(bus);
+    short.split('.').next().unwrap_or(short)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PlayerKind {
     Native,
@@ -14,12 +21,7 @@ pub enum PlayerKind {
 
 impl PlayerKind {
     pub fn from_bus(bus: &str) -> Self {
-        let short = bus.strip_prefix("org.mpris.MediaPlayer2.").unwrap_or(bus);
-        let raw_name = short
-            .split('.')
-            .next()
-            .unwrap_or(short)
-            .to_ascii_lowercase();
+        let raw_name = player_short_name(bus).to_ascii_lowercase();
         let name = raw_name
             .strip_suffix("-app")
             .or_else(|| raw_name.strip_suffix("-bin"))
@@ -82,6 +84,14 @@ impl PlayerKind {
         matches!(self, Self::Browser)
     }
 
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Native => "native",
+            Self::Browser => "browser",
+            Self::Unknown => "unknown",
+        }
+    }
+
     pub fn priority_rank(self) -> u8 {
         match self {
             Self::Native => 0,
@@ -135,5 +145,20 @@ impl Default for MediaSnapshot {
             playback: PlaybackStatus::Stopped,
             position_ms: 0,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strips_the_mpris_prefix_and_instance_suffix() {
+        assert_eq!(
+            player_short_name("org.mpris.MediaPlayer2.firefox.instance1"),
+            "firefox"
+        );
+        assert_eq!(player_short_name("org.mpris.MediaPlayer2.mpv"), "mpv");
+        assert_eq!(player_short_name("custom-player"), "custom-player");
     }
 }

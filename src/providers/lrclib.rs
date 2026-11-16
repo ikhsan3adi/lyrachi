@@ -15,11 +15,6 @@ use crate::core::parse::lyricsfile::parse_lyricsfile;
 
 const BASE_URL: &str = "https://lrclib.net";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(4);
-const USER_AGENT: &str = concat!(
-    "lyrachi/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/ikhsan3adi/lyrachi)"
-);
 const MAX_CANDIDATES: usize = 20;
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -77,10 +72,7 @@ impl LrclibClient {
         base_url: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        let client = http::client_builder()
-            .timeout(timeout)
-            .user_agent(USER_AGENT)
-            .build()?;
+        let client = http::client_builder().timeout(timeout).build()?;
         let base_url = base_url.into().trim_end_matches('/').to_string();
 
         Ok(Self { client, base_url })

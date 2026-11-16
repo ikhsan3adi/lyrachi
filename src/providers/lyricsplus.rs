@@ -18,11 +18,6 @@ use crate::core::parse::{
 
 const BASE_URL: &str = "https://lyricsplus.prjktla.my.id";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-const USER_AGENT: &str = concat!(
-    "lyrachi/",
-    env!("CARGO_PKG_VERSION"),
-    " (https://github.com/ikhsan3adi/lyrachi)"
-);
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
@@ -129,10 +124,7 @@ impl LyricsPlusProvider {
         base_url: impl Into<String>,
         timeout: Duration,
     ) -> Result<Self, ProviderError> {
-        let client = http::client_builder()
-            .timeout(timeout)
-            .user_agent(USER_AGENT)
-            .build()?;
+        let client = http::client_builder().timeout(timeout).build()?;
         let base_url = base_url.into().trim_end_matches('/').to_string();
 
         Ok(Self { client, base_url })

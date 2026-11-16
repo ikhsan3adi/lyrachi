@@ -20,7 +20,7 @@ const SEARCH_CLIENT_NAME: &str = "TVHTML5_SIMPLY_EMBEDDED_PLAYER";
 const SEARCH_CLIENT_VERSION: &str = "2.0";
 const SEARCH_CLIENT_ID: &str = "85";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
-const USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
+const REFERER: &str = "https://music.youtube.com/";
 
 #[derive(Clone)]
 pub struct YtMusicProvider {
@@ -34,12 +34,24 @@ impl YtMusicProvider {
     }
 
     pub fn with_base_url(base_url: impl Into<String>) -> Result<Self, ProviderError> {
-        let client = http::client_builder()
+        let client = http::browser_client_builder()
             .timeout(REQUEST_TIMEOUT)
-            .user_agent(USER_AGENT)
             .build()?;
         let base_url = base_url.into().trim_end_matches('/').to_string();
         Ok(Self { client, base_url })
+    }
+
+    fn api_post(
+        &self,
+        endpoint: &str,
+        client_id: &'static str,
+        client_version: &'static str,
+    ) -> reqwest::RequestBuilder {
+        self.client
+            .post(format!("{}/{endpoint}", self.base_url))
+            .header("X-YouTube-Client-Name", client_id)
+            .header("X-YouTube-Client-Version", client_version)
+            .header("Referer", REFERER)
     }
 
     pub async fn resolve(
@@ -99,12 +111,7 @@ impl YtMusicProvider {
         });
 
         let send_fut = self
-            .client
-            .post(format!("{}/search", self.base_url))
-            .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", SEARCH_CLIENT_ID)
-            .header("X-YouTube-Client-Version", SEARCH_CLIENT_VERSION)
-            .header("Referer", "https://music.youtube.com/")
+            .api_post("search", SEARCH_CLIENT_ID, SEARCH_CLIENT_VERSION)
             .json(&payload)
             .send();
 
@@ -195,12 +202,7 @@ impl YtMusicProvider {
         });
 
         let send_fut = self
-            .client
-            .post(format!("{}/next", self.base_url))
-            .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", WEB_CLIENT_ID)
-            .header("X-YouTube-Client-Version", WEB_CLIENT_VERSION)
-            .header("Referer", "https://music.youtube.com/")
+            .api_post("next", WEB_CLIENT_ID, WEB_CLIENT_VERSION)
             .json(&payload)
             .send();
 
@@ -303,12 +305,7 @@ impl YtMusicProvider {
         });
 
         let send_fut = self
-            .client
-            .post(format!("{}/browse", self.base_url))
-            .header("Content-Type", "application/json")
-            .header("X-YouTube-Client-Name", WEB_CLIENT_ID)
-            .header("X-YouTube-Client-Version", WEB_CLIENT_VERSION)
-            .header("Referer", "https://music.youtube.com/")
+            .api_post("browse", WEB_CLIENT_ID, WEB_CLIENT_VERSION)
             .json(&payload)
             .send();
 

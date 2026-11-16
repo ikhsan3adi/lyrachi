@@ -7,6 +7,16 @@ pub enum PlaybackStatus {
     Playing,
 }
 
+impl PlaybackStatus {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stopped => "stopped",
+            Self::Paused => "paused",
+            Self::Playing => "playing",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct EffectiveOffsets {
     pub intrinsic_ms: i64,
@@ -42,6 +52,16 @@ pub enum ClockState {
         last_polled_ms: Option<u64>,
         stale_poll_count: u8,
     },
+}
+
+impl ClockState {
+    pub const fn status(&self) -> PlaybackStatus {
+        match self {
+            Self::Stopped => PlaybackStatus::Stopped,
+            Self::Paused { .. } => PlaybackStatus::Paused,
+            Self::Playing { .. } => PlaybackStatus::Playing,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

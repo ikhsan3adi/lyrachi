@@ -13,12 +13,11 @@ use zbus::{Connection, OwnedVariant};
 use super::metadata::extract_track_meta;
 use super::proxy::{DBusProxy, PlayerProxy, micros_to_ms, parse_playback_status};
 use crate::core::clock::PlaybackStatus;
-use crate::media::{MediaEvent, PlayerKind, TrackMeta};
+use crate::media::{MPRIS_BUS_PREFIX, MediaEvent, PlayerKind, TrackMeta};
 
 const ARBITER_TICK_INTERVAL: Duration = Duration::from_secs(2);
 const POSITION_POLL_INTERVAL: Duration = Duration::from_secs(1);
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
-const MPRIS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerCandidate {
@@ -113,7 +112,7 @@ impl MprisSessionArbiter {
                     };
                     changed
                         .args()
-                        .is_ok_and(|args| args.name().as_str().starts_with(MPRIS_PREFIX))
+                        .is_ok_and(|args| args.name().as_str().starts_with(MPRIS_BUS_PREFIX))
                 }
                 _ = ticker.tick() => true,
             };
@@ -225,7 +224,7 @@ pub async fn discover_candidates(
     for name in names {
         let bus = name.as_str();
 
-        if !bus.starts_with(MPRIS_PREFIX) {
+        if !bus.starts_with(MPRIS_BUS_PREFIX) {
             continue;
         }
         match player_filter {
@@ -287,7 +286,7 @@ pub fn select_player<'a>(
 }
 
 pub fn is_ignored_bus(bus: &str) -> bool {
-    let short = bus.strip_prefix(MPRIS_PREFIX).unwrap_or(bus);
+    let short = bus.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(bus);
     let base = short.split('.').next().unwrap_or(short);
     base.eq_ignore_ascii_case("playerctld") || base.eq_ignore_ascii_case("kdeconnect")
 }
@@ -297,7 +296,7 @@ pub fn matches_filter(bus: &str, filter: &str) -> bool {
         return true;
     }
 
-    let short = bus.strip_prefix(MPRIS_PREFIX).unwrap_or(bus);
+    let short = bus.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(bus);
 
     short == filter
         || short

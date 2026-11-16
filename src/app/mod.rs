@@ -14,7 +14,7 @@ use crate::{
     cache::CacheHandle,
     config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
-    media::{MediaEvent, TrackMeta, mpris::arbiter},
+    media::{MediaEvent, TrackMeta, mpris::arbiter, player_short_name},
     offsets::{DebouncedOffsetWriter, OffsetStore},
     prefs::{self, UiPrefs},
     providers::engine::EngineUpdate,
@@ -401,7 +401,7 @@ pub fn handle_media(
 ) {
     match event {
         MediaEvent::PlayerChanged { bus, .. } => {
-            state.set_player(Some(player_label(&bus)));
+            state.set_player(Some(player_short_name(&bus).to_string()));
         }
         MediaEvent::NoPlayer => {
             coordinator.cancel_active();
@@ -655,11 +655,6 @@ fn effective_offsets(state: &UiState) -> EffectiveOffsets {
         user_ms: state.user_offset_ms,
         lookahead_ms: i64::try_from(state.lookahead_ms).unwrap_or(i64::MAX),
     }
-}
-
-fn player_label(bus: &str) -> String {
-    let short = bus.strip_prefix("org.mpris.MediaPlayer2.").unwrap_or(bus);
-    short.split('.').next().unwrap_or(short).to_string()
 }
 
 #[cfg(test)]
@@ -940,10 +935,10 @@ mod tests {
     #[test]
     fn player_labels_strip_bus_and_instance_suffix() {
         assert_eq!(
-            player_label("org.mpris.MediaPlayer2.firefox.instance1"),
+            player_short_name("org.mpris.MediaPlayer2.firefox.instance1"),
             "firefox"
         );
-        assert_eq!(player_label("limusic"), "limusic");
+        assert_eq!(player_short_name("limusic"), "limusic");
     }
 
     #[test]

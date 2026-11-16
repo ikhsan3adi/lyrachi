@@ -11,7 +11,7 @@ use super::{
     CACHE_PRUNE_CHECK_SECS, CACHE_PRUNE_INTERVAL_SECS, CACHE_TOUCH_DEBOUNCE_SECS,
     CACHE_UPGRADE_INTERVAL_SECS, CacheError, CacheHandle, CacheLookup, now_secs, schema,
 };
-use crate::core::model::{PARSER_VERSION, SyncGranularity, SyncedTrack};
+use crate::core::model::{PARSER_VERSION, SyncedTrack};
 use crate::providers::{Provider, ProviderAnswer, Tier};
 
 type TrackKey = [u8; 32];
@@ -302,7 +302,7 @@ impl Worker {
                 track_key.as_slice(),
                 provider.as_str(),
                 label,
-                granularity_name(track.granularity),
+                track.granularity.as_str(),
                 i64::from(track.parser_version),
                 f64::from(answer.confidence),
                 payload,
@@ -498,22 +498,13 @@ fn finite_confidence(confidence: f32) -> f32 {
     }
 }
 
-fn granularity_name(granularity: SyncGranularity) -> &'static str {
-    match granularity {
-        SyncGranularity::Syllable => "syllable",
-        SyncGranularity::Word => "word",
-        SyncGranularity::Line => "line",
-        SyncGranularity::Unsynced => "unsynced",
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::path::{Path, PathBuf};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::core::model::{LineRole, LyricLine};
+    use crate::core::model::{LineRole, LyricLine, SyncGranularity};
 
     fn temp_path(name: &str) -> PathBuf {
         let stamp = SystemTime::now()
@@ -594,7 +585,7 @@ mod tests {
                     key.as_slice(),
                     provider.as_str(),
                     "Artist - Title",
-                    granularity_name(track.granularity),
+                    track.granularity.as_str(),
                     parser_version,
                     f64::from(track.match_confidence),
                     serde_json::to_vec(track).unwrap(),

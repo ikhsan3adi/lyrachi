@@ -13,7 +13,7 @@ use crate::cache::CacheHandle;
 use crate::cli::PipeFormat;
 use crate::config::RuntimeConfig;
 use crate::core::clock::{ClockState, PlaybackClock};
-use crate::core::model::{SyncGranularity, SyncedTrack};
+use crate::core::model::SyncGranularity;
 use crate::core::text::truncate_to_width;
 use crate::media::MediaEvent;
 use crate::media::mpris::arbiter;
@@ -261,7 +261,7 @@ fn current_frame(
     now: Instant,
     max_width: Option<u16>,
 ) -> Option<PipeFrame> {
-    let alt = playback_name(clock.state()).to_string();
+    let alt = clock.state().status().as_str().to_string();
 
     match &state.lyrics {
         LyricsView::Loading => None,
@@ -308,7 +308,7 @@ fn current_frame(
             Some(PipeFrame {
                 text: fit_text(&line.text, max_width),
                 alt,
-                class: class_name(track),
+                class: track.status_label().to_string(),
                 progress,
             })
         }
@@ -327,27 +327,6 @@ fn status_frame(text: &str, alt: String, max_width: Option<u16>) -> PipeFrame {
 fn fit_text(text: &str, max_width: Option<u16>) -> String {
     let text = max_width.map_or(text, |max_width| truncate_to_width(text, max_width));
     text.trim_end().to_string()
-}
-
-fn class_name(track: &SyncedTrack) -> String {
-    if track.is_instrumental {
-        return "instrumental".to_string();
-    }
-    match track.granularity {
-        SyncGranularity::Syllable => "syllable",
-        SyncGranularity::Word => "word",
-        SyncGranularity::Line => "line",
-        SyncGranularity::Unsynced => "unsynced",
-    }
-    .to_string()
-}
-
-fn playback_name(state: &ClockState) -> &'static str {
-    match state {
-        ClockState::Playing { .. } => "playing",
-        ClockState::Paused { .. } => "paused",
-        ClockState::Stopped => "stopped",
-    }
 }
 
 fn pipe_wait(state: &UiState, clock: &PlaybackClock, now: Instant) -> Duration {

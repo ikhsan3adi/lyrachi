@@ -8,12 +8,11 @@ use tracing::{debug, warn};
 
 use crate::cache::CacheHandle;
 use crate::config::RuntimeConfig;
-use crate::core::clock::PlaybackStatus;
-use crate::core::model::{SyncGranularity, SyncedTrack};
+use crate::core::model::SyncedTrack;
 use crate::media::mpris::arbiter::{discover_candidates, select_player};
 use crate::media::mpris::metadata::extract_track_meta;
 use crate::media::mpris::proxy::{PlayerProxy, micros_to_ms};
-use crate::media::{MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta};
+use crate::media::{MediaSnapshot, PlayerSnapshot, TrackMeta, player_short_name};
 use crate::offsets::OffsetStore;
 use crate::providers::sanitize::encode_offset_key;
 use crate::providers::{ProviderAnswer, ProviderResolver, TrackQuery};
@@ -111,8 +110,8 @@ pub async fn collect_report_with_cache(
 ) -> StatusReport {
     let player = snapshot.player.as_ref().map(|player| StatusPlayer {
         bus: player.bus.clone(),
-        name: player_name(&player.bus),
-        kind: player_kind(player.kind),
+        name: player_short_name(&player.bus).to_string(),
+        kind: player.kind.as_str().to_string(),
     });
     let track = snapshot.track.as_ref().map(|track| StatusTrack {
         title: track.title.clone(),
@@ -162,7 +161,7 @@ pub async fn collect_report_with_cache(
 
     StatusReport {
         player,
-        playback: playback_name(snapshot.playback).to_string(),
+        playback: snapshot.playback.as_str().to_string(),
         track,
         position_ms: snapshot.position_ms,
         lyrics,
@@ -373,42 +372,11 @@ fn push_line(output: &mut String, label: &str, value: impl std::fmt::Display) {
     let _ = writeln!(output, "{label}: {value}");
 }
 
-fn player_name(bus: &str) -> String {
-    let short = bus.strip_prefix("org.mpris.MediaPlayer2.").unwrap_or(bus);
-    short.split('.').next().unwrap_or(short).to_string()
-}
-
-fn player_kind(kind: PlayerKind) -> String {
-    match kind {
-        PlayerKind::Native => "native",
-        PlayerKind::Browser => "browser",
-        PlayerKind::Unknown => "unknown",
-    }
-    .to_string()
-}
-
-fn playback_name(status: PlaybackStatus) -> &'static str {
-    match status {
-        PlaybackStatus::Playing => "playing",
-        PlaybackStatus::Paused => "paused",
-        PlaybackStatus::Stopped => "stopped",
-    }
-}
-
-fn granularity_name(granularity: SyncGranularity) -> &'static str {
-    match granularity {
-        SyncGranularity::Syllable => "syllable",
-        SyncGranularity::Word => "word",
-        SyncGranularity::Line => "line",
-        SyncGranularity::Unsynced => "unsynced",
-    }
-}
-
 impl From<&SyncedTrack> for StatusLyrics {
     fn from(track: &SyncedTrack) -> Self {
         Self {
             source: track.source_provider.clone(),
-            granularity: granularity_name(track.granularity).to_string(),
+            granularity: track.granularity.as_str().to_string(),
             confidence: if track.match_confidence.is_finite() {
                 track.match_confidence
             } else {
@@ -426,10 +394,11 @@ impl From<&ProviderAnswer> for StatusLyrics {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn names_syllable_granularity_for_status_output() {
-        assert_eq!(granularity_name(SyncGranularity::Syllable), "syllable");
+        assert_eq!(
+            crate::core::model::SyncGranularity::Syllable.as_str(),
+            "syllable"
+        );
     }
 }

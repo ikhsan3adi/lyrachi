@@ -6,10 +6,25 @@ use reqwest::redirect::Policy;
 use super::ProviderError;
 
 pub const MAX_HTTP_BODY_BYTES: usize = 512 * 1024;
+pub const APP_USER_AGENT: &str = concat!(
+    env!("CARGO_PKG_NAME"),
+    "/",
+    env!("CARGO_PKG_VERSION"),
+    " (https://github.com/ikhsan3adi/lyrachi)"
+);
+#[cfg(feature = "ytmusic")]
+pub const BROWSER_USER_AGENT: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36";
 const MAX_REDIRECTS: usize = 5;
 
 pub fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder().redirect(redirect_policy())
+    reqwest::Client::builder()
+        .redirect(redirect_policy())
+        .user_agent(APP_USER_AGENT)
+}
+
+#[cfg(feature = "ytmusic")]
+pub fn browser_client_builder() -> reqwest::ClientBuilder {
+    client_builder().user_agent(BROWSER_USER_AGENT)
 }
 
 pub fn redirect_policy() -> Policy {
@@ -125,6 +140,49 @@ mod tests {
                 socket.write_all(&response).await.unwrap();
             }
         })
+    }
+
+    async fn captured_user_agent(listener: TcpListener) -> String {
+        let (mut socket, _) = listener.accept().await.unwrap();
+        let mut request = [0_u8; 4096];
+        let read = socket.read(&mut request).await.unwrap();
+        let request = String::from_utf8_lossy(&request[..read]).to_ascii_lowercase();
+        socket
+            .write_all(&response("200 OK", &[], b"ok"))
+            .await
+            .unwrap();
+        request
+            .lines()
+            .find_map(|line| line.strip_prefix("user-agent: "))
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn uses_the_central_application_user_agent() {
+        let (listener, base) = listener().await;
+        let server = tokio::spawn(captured_user_agent(listener));
+
+        let response = client().get(format!("{base}/")).send().await.unwrap();
+        read_limited_text(response).await.unwrap();
+
+        assert_eq!(server.await.unwrap(), APP_USER_AGENT.to_ascii_lowercase());
+    }
+
+    #[cfg(feature = "ytmusic")]
+    #[tokio::test]
+    async fn uses_the_central_browser_user_agent() {
+        let (listener, base) = listener().await;
+        let server = tokio::spawn(captured_user_agent(listener));
+
+        let client = browser_client_builder().build().unwrap();
+        let response = client.get(format!("{base}/")).send().await.unwrap();
+        read_limited_text(response).await.unwrap();
+
+        assert_eq!(
+            server.await.unwrap(),
+            BROWSER_USER_AGENT.to_ascii_lowercase()
+        );
     }
 
     #[tokio::test]

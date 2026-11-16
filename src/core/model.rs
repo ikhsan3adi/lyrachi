@@ -18,6 +18,17 @@ pub enum SyncGranularity {
     Syllable,
 }
 
+impl SyncGranularity {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Unsynced => "unsynced",
+            Self::Line => "line",
+            Self::Word => "word",
+            Self::Syllable => "syllable",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum LineRole {
     Primary,
@@ -98,6 +109,16 @@ pub struct SyncedTrack {
     pub user_offset_ms: i64,
     pub match_confidence: f32,
     pub lines: Vec<LyricLine>,
+}
+
+impl SyncedTrack {
+    pub fn status_label(&self) -> &'static str {
+        if self.is_instrumental {
+            "instrumental"
+        } else {
+            self.granularity.as_str()
+        }
+    }
 }
 
 #[cfg(test)]
