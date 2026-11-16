@@ -12,6 +12,7 @@ fn defaults_are_empty_and_unset() {
     assert!(args.offset_ms.is_none());
     assert!(args.lookahead_ms.is_none());
     assert!(!args.offline);
+    assert!(!args.no_cache);
     assert!(args.config.is_none());
     assert!(args.log_file.is_none());
     assert!(!args.dump_events);
@@ -36,6 +37,17 @@ fn parses_dump_events_and_offsets() {
     assert_eq!(args.offset_ms, Some(-100));
     assert_eq!(args.lookahead_ms, Some(80));
     assert!(args.dump_events);
+}
+
+#[test]
+fn parses_no_cache_before_and_after_subcommand() {
+    let before = Args::try_parse_from(["lyrachi", "--no-cache", "status"]).expect("args");
+    assert!(before.no_cache);
+    assert_eq!(before.command, Some(Command::Status { json: false }));
+
+    let after = Args::try_parse_from(["lyrachi", "status", "--no-cache"]).expect("args");
+    assert!(after.no_cache);
+    assert_eq!(after.command, Some(Command::Status { json: false }));
 }
 
 #[test]
@@ -172,6 +184,43 @@ fn status_json_prints_one_object_without_tui_or_dbus() {
     assert!(value["player"].is_null());
     assert_eq!(value["playback"], "stopped");
     assert_eq!(value["offset"]["effective_ms"], 0);
+
+    std::fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn no_cache_status_does_not_create_the_database() {
+    let root = std::env::temp_dir().join(format!("lyrachi-status-nocache-{}", std::process::id()));
+    let config_home = root.join("config");
+    let data_home = root.join("data");
+    let cache_home = root.join("cache");
+    let state_home = root.join("state");
+    let home = root.join("home");
+    for dir in [&config_home, &data_home, &cache_home, &state_home, &home] {
+        std::fs::create_dir_all(dir).unwrap();
+    }
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args(["status", "--json", "--no-cache"])
+        .env("HOME", &home)
+        .env("XDG_CONFIG_HOME", &config_home)
+        .env("XDG_DATA_HOME", &data_home)
+        .env("XDG_CACHE_HOME", &cache_home)
+        .env("XDG_STATE_HOME", &state_home)
+        .env(
+            "DBUS_SESSION_BUS_ADDRESS",
+            format!("unix:path={}", root.join("no-bus").display()),
+        )
+        .env_remove("XDG_MUSIC_DIR")
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!cache_home.join("lyrachi").join("lyrics_v1.db").exists());
 
     std::fs::remove_dir_all(root).unwrap();
 }

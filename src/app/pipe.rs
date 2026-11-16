@@ -9,6 +9,7 @@ use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
+use crate::cache::CacheHandle;
 use crate::cli::PipeFormat;
 use crate::config::RuntimeConfig;
 use crate::core::clock::{ClockState, PlaybackClock};
@@ -21,7 +22,7 @@ use crate::providers::{ProviderResolver, TrackQuery};
 use crate::ui::{LyricsView, UiState};
 
 use super::event::AppEvent;
-use super::{effective_offsets, handle_media, handle_resolved};
+use super::{Resolution, effective_offsets, handle_media, handle_resolved};
 
 const IDLE_WAIT: Duration = Duration::from_secs(1);
 const MAX_WAIT_MS: u64 = 1_000;
@@ -50,7 +51,12 @@ impl PipeFrame {
     }
 }
 
-pub async fn run(config: RuntimeConfig, offsets_file: PathBuf, options: PipeOptions) -> Result<()> {
+pub async fn run(
+    config: RuntimeConfig,
+    offsets_file: PathBuf,
+    options: PipeOptions,
+    cache: Option<CacheHandle>,
+) -> Result<()> {
     let player_filter = config.player_filter.clone();
     let (tx, rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
@@ -65,7 +71,7 @@ pub async fn run(config: RuntimeConfig, offsets_file: PathBuf, options: PipeOpti
     let mut output = stdout.lock();
     let result = tokio::select! {
         _ = shutdown_signal() => Ok(()),
-        result = run_events(rx, config, offsets_file, &mut output, options) => result,
+        result = run_events_with_cache(rx, config, offsets_file, &mut output, options, cache) => result,
     };
 
     cancel.cancel();
@@ -76,11 +82,22 @@ pub async fn run(config: RuntimeConfig, offsets_file: PathBuf, options: PipeOpti
 }
 
 pub async fn run_events<W: Write>(
+    media_rx: mpsc::Receiver<MediaEvent>,
+    config: RuntimeConfig,
+    offsets_file: PathBuf,
+    output: W,
+    options: PipeOptions,
+) -> Result<()> {
+    run_events_with_cache(media_rx, config, offsets_file, output, options, None).await
+}
+
+async fn run_events_with_cache<W: Write>(
     mut media_rx: mpsc::Receiver<MediaEvent>,
     config: RuntimeConfig,
     offsets_file: PathBuf,
     mut output: W,
     options: PipeOptions,
+    cache: Option<CacheHandle>,
 ) -> Result<()> {
     let resolver = match ProviderResolver::with_config(
         config.local_dirs.clone(),
@@ -119,7 +136,10 @@ pub async fn run_events<W: Write>(
                     &mut clock,
                     &mut coordinator,
                     &app_tx,
-                    resolver.as_ref(),
+                    Resolution {
+                        resolver: resolver.as_ref(),
+                        cache: cache.as_ref(),
+                    },
                     &offsets,
                 );
                 while let Ok(event) = media_rx.try_recv() {
@@ -129,7 +149,10 @@ pub async fn run_events<W: Write>(
                         &mut clock,
                         &mut coordinator,
                         &app_tx,
-                        resolver.as_ref(),
+                        Resolution {
+                            resolver: resolver.as_ref(),
+                            cache: cache.as_ref(),
+                        },
                         &offsets,
                     );
                 }
@@ -154,6 +177,11 @@ pub async fn run_events<W: Write>(
     }
 
     coordinator.cancel_active();
+    if let Some(cache) = cache
+        && let Err(error) = cache.shutdown().await
+    {
+        warn!(%error, "failed to shut down lyric cache");
+    }
     Ok(())
 }
 
@@ -163,7 +191,7 @@ fn apply_media(
     clock: &mut PlaybackClock,
     coordinator: &mut super::resolve::ResolveCoordinator,
     app_tx: &mpsc::Sender<AppEvent>,
-    resolver: Option<&Arc<ProviderResolver>>,
+    resolution: Resolution<'_>,
     offsets: &OffsetStore,
 ) {
     if let MediaEvent::TrackChanged(meta) = &event {
@@ -179,7 +207,7 @@ fn apply_media(
         clock,
         coordinator,
         app_tx,
-        resolver,
+        resolution,
         Instant::now(),
     );
 }

@@ -1,10 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 
 use tokio_util::sync::CancellationToken;
+use tracing::warn;
 
+use crate::cache::CacheHandle;
 use crate::core::model::CanonicalTrackKey;
 use crate::media::TrackMeta;
-use crate::providers::{ProviderAnswer, TrackQuery};
+use crate::providers::{ProviderAnswer, ProviderError, ProviderResolver, TrackQuery};
 
 pub const L1_CACHE_CAPACITY: usize = 64;
 
@@ -71,6 +73,58 @@ impl L1Cache {
             self.entries.pop_front();
         }
         self.entries.push_back((key, answer));
+    }
+}
+
+pub async fn resolve_with_cache(
+    resolver: &ProviderResolver,
+    cache: Option<&CacheHandle>,
+    query: &TrackQuery,
+    cancel: &CancellationToken,
+) -> Result<Option<ProviderAnswer>, ProviderError> {
+    if cancel.is_cancelled() {
+        return Err(ProviderError::Cancelled);
+    }
+    if !query.is_usable() {
+        return Ok(None);
+    }
+
+    if let Some(answer) = resolver.resolve_local(query, cancel).await? {
+        return Ok(Some(answer));
+    }
+
+    if let Some(cache) = cache {
+        match cache.lookup(&query.canonical).await {
+            Ok(cached) => {
+                if let Some(answer) = cached.answer {
+                    return Ok(Some(answer));
+                }
+            }
+            Err(error) => {
+                warn!(%error, "failed to read lyric cache");
+            }
+        }
+    }
+
+    let Some(answer) = resolver.resolve_network(query, cancel).await? else {
+        return Ok(None);
+    };
+
+    if let Some(cache) = cache {
+        let label = query_label(query);
+        if let Err(error) = cache.store(&query.canonical, label, &answer).await {
+            warn!(%error, "failed to store lyric cache entry");
+        }
+    }
+
+    Ok(Some(answer))
+}
+
+fn query_label(query: &TrackQuery) -> String {
+    if query.artist.is_empty() {
+        query.title.clone()
+    } else {
+        format!("{} - {}", query.artist, query.title)
     }
 }
 
@@ -237,7 +291,7 @@ impl ResolveCoordinator {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::core::model::{LineRole, LyricLine, SyncGranularity, SyncedTrack};
+    use crate::core::model::{LineRole, LyricLine, PARSER_VERSION, SyncGranularity, SyncedTrack};
 
     fn sample_key(index: usize) -> CanonicalTrackKey {
         CanonicalTrackKey {
@@ -252,7 +306,7 @@ mod tests {
         SyncedTrack {
             source_provider: "lrclib".to_string(),
             source_track_id: Some(id.to_string()),
-            parser_version: 1,
+            parser_version: PARSER_VERSION,
             is_instrumental: false,
             granularity: SyncGranularity::Line,
             intrinsic_offset_ms: 0,
@@ -366,5 +420,130 @@ mod tests {
             }
             other => panic!("expected cached plan, got {other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod cache_tests {
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use tokio_util::sync::CancellationToken;
+
+    use super::*;
+    use crate::core::model::{LineRole, LyricLine, PARSER_VERSION, SyncGranularity, SyncedTrack};
+    use crate::providers::Provider;
+
+    fn temp_path(name: &str) -> PathBuf {
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!(
+            "lyrachi-cache-resolve-{name}-{}-{stamp}",
+            std::process::id()
+        ))
+    }
+
+    fn cleanup(path: &Path) {
+        let _ = fs::remove_dir_all(path);
+    }
+
+    fn meta() -> TrackMeta {
+        TrackMeta {
+            title: "Song A".to_string(),
+            artist: "Artist".to_string(),
+            album: Some("Album".to_string()),
+            duration_ms: Some(200_000),
+            track_id: None,
+            url: None,
+        }
+    }
+
+    fn answer(id: &str) -> ProviderAnswer {
+        ProviderAnswer::new(
+            Provider::Lrclib,
+            SyncedTrack {
+                source_provider: "lrclib".to_string(),
+                source_track_id: Some(id.to_string()),
+                parser_version: PARSER_VERSION,
+                is_instrumental: false,
+                granularity: SyncGranularity::Line,
+                intrinsic_offset_ms: 0,
+                user_offset_ms: 0,
+                match_confidence: 0.9,
+                lines: vec![LyricLine {
+                    start_ms: 1_000,
+                    end_ms: 2_000,
+                    role: LineRole::Primary,
+                    text: format!("lyric {id}"),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                }],
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn cache_hit_returns_answer_without_a_network_provider() {
+        let root = temp_path("hit");
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let query = TrackQuery::from_meta(&meta(), 0);
+        let cache = CacheHandle::open(&db).unwrap();
+        cache
+            .store(&query.canonical, "Artist - Song A", &answer("cached"))
+            .await
+            .unwrap();
+
+        let resolver = ProviderResolver::with_config(
+            Vec::new(),
+            vec![Provider::Local, Provider::Lrclib],
+            false,
+        )
+        .unwrap();
+        let resolved =
+            resolve_with_cache(&resolver, Some(&cache), &query, &CancellationToken::new())
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.provider, Provider::Lrclib);
+        assert_eq!(resolved.track.source_track_id.as_deref(), Some("cached"));
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
+    }
+
+    #[tokio::test]
+    async fn local_sidecar_wins_over_a_cached_network_answer() {
+        let root = temp_path("local");
+        let music = root.join("music");
+        fs::create_dir_all(&music).unwrap();
+        fs::write(music.join("Artist - Song A.lrc"), "[00:01.00]local lyric\n").unwrap();
+        let db = root.join("cache.db");
+        let query = TrackQuery::from_meta(&meta(), 0);
+        let cache = CacheHandle::open(&db).unwrap();
+        cache
+            .store(&query.canonical, "Artist - Song A", &answer("cached"))
+            .await
+            .unwrap();
+
+        let resolver = ProviderResolver::with_config(
+            vec![music],
+            vec![Provider::Local, Provider::Lrclib],
+            false,
+        )
+        .unwrap();
+        let resolved =
+            resolve_with_cache(&resolver, Some(&cache), &query, &CancellationToken::new())
+                .await
+                .unwrap()
+                .unwrap();
+
+        assert_eq!(resolved.provider, Provider::Local);
+        assert_eq!(resolved.track.lines[0].text, "local lyric");
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
     }
 }

@@ -29,6 +29,10 @@ pub struct Args {
     #[arg(long, global = true)]
     pub offline: bool,
 
+    /// Disable reading and writing the persistent lyric cache.
+    #[arg(long, global = true)]
+    pub no_cache: bool,
+
     /// Read configuration from this file.
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,

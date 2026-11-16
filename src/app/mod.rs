@@ -11,6 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, debug_span, warn};
 
 use crate::{
+    cache::CacheHandle,
     config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
     media::{MediaEvent, TrackMeta, mpris::arbiter},
@@ -26,7 +27,13 @@ pub mod resolve;
 pub mod status;
 
 use event::AppEvent;
-use resolve::{ResolveCoordinator, TrackPlan};
+use resolve::{ResolveCoordinator, TrackPlan, resolve_with_cache};
+
+#[derive(Clone, Copy)]
+pub struct Resolution<'a> {
+    pub resolver: Option<&'a Arc<ProviderResolver>>,
+    pub cache: Option<&'a CacheHandle>,
+}
 
 pub async fn run(
     terminal: &mut DefaultTerminal,
@@ -34,6 +41,7 @@ pub async fn run(
     warnings: Vec<String>,
     offsets_file: PathBuf,
     config_file: PathBuf,
+    cache: Option<CacheHandle>,
 ) -> color_eyre::Result<()> {
     let resolver = match ProviderResolver::with_config(
         config.local_dirs.clone(),
@@ -123,7 +131,10 @@ pub async fn run(
                         &mut clock,
                         &mut coordinator,
                         &app_tx,
-                        resolver.as_ref(),
+                        Resolution {
+                            resolver: resolver.as_ref(),
+                            cache: cache.as_ref(),
+                        },
                         Instant::now(),
                     );
                 }
@@ -148,6 +159,11 @@ pub async fn run(
     if let Some(monitor) = monitor {
         monitor.abort();
         let _ = monitor.await;
+    }
+    if let Some(cache) = cache
+        && let Err(error) = cache.shutdown().await
+    {
+        warn!(%error, "failed to shut down lyric cache");
     }
 
     let flush_result = offsets.flush();
@@ -241,7 +257,7 @@ pub fn handle_media(
     clock: &mut PlaybackClock,
     coordinator: &mut ResolveCoordinator,
     app_tx: &mpsc::Sender<AppEvent>,
-    resolver: Option<&Arc<ProviderResolver>>,
+    resolution: Resolution<'_>,
     now: Instant,
 ) {
     match event {
@@ -275,14 +291,17 @@ pub fn handle_media(
                     cancel: request_cancel,
                 } => {
                     state.user_offset_ms = user_offset_ms;
-                    let Some(resolver) = resolver else {
+                    let Some(resolver) = resolution.resolver else {
                         state.set_error("Lyrics providers unavailable.".to_string());
                         return;
                     };
                     let resolver = Arc::clone(resolver);
+                    let cache = resolution.cache.cloned();
                     let app_tx = app_tx.clone();
                     tokio::spawn(async move {
-                        let result = resolver.resolve_query(&query, &request_cancel).await;
+                        let result =
+                            resolve_with_cache(&resolver, cache.as_ref(), &query, &request_cancel)
+                                .await;
                         if matches!(result, Err(ProviderError::Cancelled)) {
                             return;
                         }
@@ -602,7 +621,10 @@ mod tests {
             &mut clock,
             &mut coordinator,
             &app_tx,
-            None,
+            Resolution {
+                resolver: None,
+                cache: None,
+            },
             later,
         );
         assert_eq!(coordinator.epoch(), 1);
@@ -615,7 +637,10 @@ mod tests {
             &mut clock,
             &mut coordinator,
             &app_tx,
-            None,
+            Resolution {
+                resolver: None,
+                cache: None,
+            },
             later,
         );
         assert_eq!(coordinator.epoch(), 2);
@@ -629,7 +654,10 @@ mod tests {
             &mut clock,
             &mut coordinator,
             &app_tx,
-            None,
+            Resolution {
+                resolver: None,
+                cache: None,
+            },
             later,
         );
         assert_eq!(coordinator.epoch(), 3);

@@ -1,7 +1,10 @@
+use std::path::PathBuf;
+
 use clap::Parser;
 use color_eyre::Result;
 use lyrachi::{
     app,
+    cache::CacheHandle,
     cli::{Args, Command},
     config::RuntimeConfig,
     logging,
@@ -32,14 +35,17 @@ async fn main() -> Result<()> {
     }
 
     if let Some(Command::Status { json }) = args.command {
-        return app::status::run(outcome.config, paths.offsets_file, json).await;
+        let cache = open_cache(paths.cache_db_file.clone(), args.no_cache);
+        return app::status::run(outcome.config, paths.offsets_file, json, cache).await;
     }
 
     if let Some(Command::Pipe { format, max_width }) = args.command {
+        let cache = open_cache(paths.cache_db_file.clone(), args.no_cache);
         return app::pipe::run(
             outcome.config,
             paths.offsets_file,
             app::pipe::PipeOptions { format, max_width },
+            cache,
         )
         .await;
     }
@@ -52,14 +58,29 @@ async fn main() -> Result<()> {
     if std::env::var_os("LYRACHI_TEST_PANIC").is_some() {
         panic!("forced panic for terminal restore test");
     }
+    let cache = open_cache(paths.cache_db_file.clone(), args.no_cache);
     let result = app::run(
         &mut terminal,
         outcome.config,
         outcome.warnings,
         paths.offsets_file,
         paths.config_file,
+        cache,
     )
     .await;
     ratatui::restore();
     result
+}
+
+fn open_cache(path: PathBuf, no_cache: bool) -> Option<CacheHandle> {
+    if no_cache {
+        return None;
+    }
+    match CacheHandle::open(path) {
+        Ok(cache) => Some(cache),
+        Err(error) => {
+            tracing::warn!(%error, "lyric cache unavailable");
+            None
+        }
+    }
 }

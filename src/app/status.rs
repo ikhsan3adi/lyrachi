@@ -3,8 +3,10 @@ use std::time::Duration;
 
 use color_eyre::Result;
 use serde::Serialize;
-use tracing::debug;
+use tokio_util::sync::CancellationToken;
+use tracing::{debug, warn};
 
+use crate::cache::CacheHandle;
 use crate::config::RuntimeConfig;
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
@@ -15,6 +17,8 @@ use crate::media::{MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta};
 use crate::offsets::OffsetStore;
 use crate::providers::sanitize::encode_offset_key;
 use crate::providers::{ProviderAnswer, ProviderResolver, TrackQuery};
+
+use super::resolve::resolve_with_cache;
 
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -60,14 +64,25 @@ pub struct StatusReport {
     pub offset: StatusOffset,
 }
 
-pub async fn run(config: RuntimeConfig, offsets_file: PathBuf, json: bool) -> Result<()> {
+pub async fn run(
+    config: RuntimeConfig,
+    offsets_file: PathBuf,
+    json: bool,
+    cache: Option<CacheHandle>,
+) -> Result<()> {
     let snapshot = probe_live(&config).await;
-    let report = collect_report(snapshot, &config, &offsets_file).await;
+    let report = collect_report_with_cache(snapshot, &config, &offsets_file, cache.as_ref()).await;
 
     if json {
         println!("{}", render_json(&report)?);
     } else {
         print!("{}", render_text(&report));
+    }
+
+    if let Some(cache) = cache
+        && let Err(error) = cache.shutdown().await
+    {
+        warn!(%error, "failed to shut down lyric cache");
     }
 
     Ok(())
@@ -77,6 +92,15 @@ pub async fn collect_report(
     snapshot: MediaSnapshot,
     config: &RuntimeConfig,
     offsets_file: &Path,
+) -> StatusReport {
+    collect_report_with_cache(snapshot, config, offsets_file, None).await
+}
+
+pub async fn collect_report_with_cache(
+    snapshot: MediaSnapshot,
+    config: &RuntimeConfig,
+    offsets_file: &Path,
+    cache: Option<&CacheHandle>,
 ) -> StatusReport {
     let player = snapshot.player.as_ref().map(|player| StatusPlayer {
         bus: player.bus.clone(),
@@ -103,7 +127,7 @@ pub async fn collect_report(
         .as_ref()
         .map_or(0, |query| offsets.offset_for(&query.canonical));
     let (lyrics, lyrics_error) = match snapshot.track.as_ref() {
-        Some(track) if query.is_some() => resolve_lyrics(track, track_ms, config).await,
+        Some(track) if query.is_some() => resolve_lyrics(track, track_ms, config, cache).await,
         _ => (None, None),
     };
     let effective_ms = config.global_offset_ms.saturating_add(track_ms);
@@ -128,6 +152,7 @@ async fn resolve_lyrics(
     track: &TrackMeta,
     track_ms: i64,
     config: &RuntimeConfig,
+    cache: Option<&CacheHandle>,
 ) -> (Option<StatusLyrics>, Option<String>) {
     let resolver = match ProviderResolver::with_config(
         config.local_dirs.clone(),
@@ -138,8 +163,9 @@ async fn resolve_lyrics(
         Err(error) => return (None, Some(error.to_string())),
     };
 
-    match resolver.resolve(track, track_ms).await {
-        Ok(Some(track)) => (Some(StatusLyrics::from(&track)), None),
+    let query = TrackQuery::from_meta(track, track_ms);
+    match resolve_with_cache(&resolver, cache, &query, &CancellationToken::new()).await {
+        Ok(Some(answer)) => (Some(StatusLyrics::from(&answer)), None),
         Ok(None) => (None, None),
         Err(error) => (None, Some(error.to_string())),
     }

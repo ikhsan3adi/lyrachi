@@ -93,6 +93,30 @@ pub fn normalize_for_match(input: &str) -> String {
         .join(" ")
 }
 
+pub fn blake3_track_key(key: &CanonicalTrackKey) -> [u8; 32] {
+    let mut hasher = blake3::Hasher::new();
+    hash_bytes(&mut hasher, key.norm_artist.as_bytes());
+    hash_bytes(&mut hasher, key.norm_title.as_bytes());
+    if let Some(album) = key.norm_album.as_deref() {
+        hasher.update(&[1]);
+        hash_bytes(&mut hasher, album.as_bytes());
+    } else {
+        hasher.update(&[0]);
+    }
+    if let Some(bucket) = key.duration_bucket_sec {
+        hasher.update(&[1]);
+        hasher.update(&bucket.to_le_bytes());
+    } else {
+        hasher.update(&[0]);
+    }
+    *hasher.finalize().as_bytes()
+}
+
+fn hash_bytes(hasher: &mut blake3::Hasher, bytes: &[u8]) {
+    hasher.update(&(bytes.len() as u64).to_le_bytes());
+    hasher.update(bytes);
+}
+
 pub fn encode_offset_key(key: &CanonicalTrackKey) -> String {
     let album = key.norm_album.as_deref().unwrap_or("");
     let bucket = key
@@ -215,6 +239,47 @@ mod tests {
         assert_eq!(key.norm_title, "yellow");
         assert_eq!(key.norm_album.as_deref(), Some("parachutes"));
         assert_eq!(key.duration_bucket_sec, Some(268));
+    }
+
+    #[test]
+    fn blake3_track_key_is_stable_and_field_separated() {
+        let key = canonical_key("Coldplay", "Yellow", Some("Parachutes"), Some(267_000));
+        let same = canonical_key("Coldplay", "Yellow", Some("Parachutes"), Some(267_000));
+        assert_eq!(blake3_track_key(&key), blake3_track_key(&same));
+        assert_eq!(blake3_track_key(&key).len(), 32);
+
+        let mut artist = key.clone();
+        artist.norm_artist.push('x');
+        let mut title = key.clone();
+        title.norm_title.push('x');
+        let mut album = key.clone();
+        album.norm_album = Some("other".to_string());
+        let mut duration = key.clone();
+        duration.duration_bucket_sec = Some(999);
+
+        for other in [artist, title, album, duration] {
+            assert_ne!(blake3_track_key(&key), blake3_track_key(&other));
+        }
+    }
+
+    #[test]
+    fn blake3_track_key_distinguishes_missing_optional_fields() {
+        let without_album = canonical_key("Coldplay", "Yellow", None, Some(267_000));
+        let empty_album = CanonicalTrackKey {
+            norm_album: Some(String::new()),
+            ..without_album.clone()
+        };
+        let without_duration = canonical_key("Coldplay", "Yellow", None, None);
+        let zero_duration = canonical_key("Coldplay", "Yellow", None, Some(0));
+
+        assert_ne!(
+            blake3_track_key(&without_album),
+            blake3_track_key(&empty_album)
+        );
+        assert_ne!(
+            blake3_track_key(&without_duration),
+            blake3_track_key(&zero_duration)
+        );
     }
 
     #[test]

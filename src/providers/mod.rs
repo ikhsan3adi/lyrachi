@@ -17,7 +17,7 @@ use sanitize::{
     strip_dash_qualifier,
 };
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
     Local,
     Lrclib,
@@ -228,6 +228,48 @@ impl ProviderResolver {
     ) -> Result<Option<ProviderAnswer>, ProviderError> {
         let query = TrackQuery::from_meta(meta, user_offset_ms);
         self.resolve_query(&query, &CancellationToken::new()).await
+    }
+
+    pub async fn resolve_local(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if !query.is_usable() || !self.order.contains(&Provider::Local) {
+            return Ok(None);
+        }
+        self.local.find_with_cancel(query, cancel).await
+    }
+
+    pub async fn resolve_network(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if !query.is_usable() || !self.network {
+            return Ok(None);
+        }
+
+        for provider in &self.order {
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            let answer = match provider {
+                Provider::Local => None,
+                Provider::Lrclib => self.lrclib.resolve_with_cancel(query, cancel).await?,
+            };
+            if answer.is_some() {
+                return Ok(answer);
+            }
+        }
+
+        Ok(None)
     }
 
     pub async fn resolve_query(
