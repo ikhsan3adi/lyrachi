@@ -17,7 +17,8 @@ use crate::{
     media::{MediaEvent, TrackMeta, mpris::arbiter},
     offsets::{DebouncedOffsetWriter, OffsetStore},
     prefs::{self, UiPrefs},
-    providers::{ProviderAnswer, ProviderError, ProviderResolver, TrackQuery},
+    providers::engine::EngineUpdate,
+    providers::{ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery},
     ui::{UiState, render},
 };
 
@@ -27,7 +28,7 @@ pub mod resolve;
 pub mod status;
 
 use event::AppEvent;
-use resolve::{ResolveCoordinator, TrackPlan, resolve_with_cache};
+use resolve::{ResolveCoordinator, TrackPlan, resolve_with_updates};
 
 #[derive(Clone, Copy)]
 pub struct Resolution<'a> {
@@ -142,9 +143,15 @@ pub async fn run(
                     let AppEvent::Lyrics {
                         epoch: resolved_epoch,
                         result,
-                        is_final: _,
+                        is_final,
                     } = event;
-                    handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
+                    handle_resolved(
+                        &mut state,
+                        &mut coordinator,
+                        resolved_epoch,
+                        result,
+                        is_final,
+                    );
                 }
                 _ = tokio::time::sleep(wait) => {}
             }
@@ -299,19 +306,34 @@ pub fn handle_media(
                     let cache = resolution.cache.cloned();
                     let app_tx = app_tx.clone();
                     tokio::spawn(async move {
-                        let result =
-                            resolve_with_cache(&resolver, cache.as_ref(), &query, &request_cancel)
-                                .await;
-                        if matches!(result, Err(ProviderError::Cancelled)) {
-                            return;
-                        }
-                        let _ = app_tx
-                            .send(AppEvent::Lyrics {
-                                epoch: request_epoch,
-                                result,
-                                is_final: true,
-                            })
-                            .await;
+                        let (updates_tx, mut updates_rx) =
+                            mpsc::unbounded_channel::<EngineUpdate>();
+                        let forward_tx = app_tx.clone();
+                        let forward = tokio::spawn(async move {
+                            while let Some(update) = updates_rx.recv().await {
+                                if forward_tx
+                                    .send(AppEvent::Lyrics {
+                                        epoch: request_epoch,
+                                        result: update.result,
+                                        is_final: update.is_final,
+                                    })
+                                    .await
+                                    .is_err()
+                                {
+                                    break;
+                                }
+                            }
+                        });
+                        let _ = resolve_with_updates(
+                            &resolver,
+                            cache.as_ref(),
+                            &query,
+                            &request_cancel,
+                            &updates_tx,
+                        )
+                        .await;
+                        drop(updates_tx);
+                        let _ = forward.await;
                     });
                 }
             }
@@ -348,22 +370,40 @@ pub fn handle_resolved(
     coordinator: &mut ResolveCoordinator,
     resolved_epoch: u64,
     result: Result<Option<ProviderAnswer>, ProviderError>,
+    is_final: bool,
 ) {
     match result {
         Ok(answer) => {
-            if let Some(outcome) = coordinator.complete_epoch(resolved_epoch, answer) {
+            if let Some(outcome) = coordinator.complete_epoch(resolved_epoch, answer, is_final) {
                 match outcome {
                     Some(answer) => {
-                        state.user_offset_ms = answer.track.user_offset_ms;
-                        state.set_lyrics(answer.track);
+                        let next_tier = answer.tier;
+                        let current = state.lyrics_track();
+                        let current_tier = current.map(Tier::from_track);
+                        let unchanged = current == Some(&answer.track);
+                        let replace = !unchanged
+                            && current_tier.is_none_or(|tier| {
+                                next_tier > tier || (is_final && next_tier == tier)
+                            });
+                        if replace {
+                            state.user_offset_ms = answer.track.user_offset_ms;
+                            state.set_lyrics(answer.track);
+                        }
                     }
-                    None => state.set_not_found(),
+                    None => {
+                        if is_final {
+                            state.set_not_found();
+                        }
+                    }
                 }
             }
         }
         Err(ProviderError::Cancelled) => {}
         Err(error) => {
-            if coordinator.complete_epoch(resolved_epoch, None).is_some() {
+            if coordinator
+                .complete_epoch(resolved_epoch, None, true)
+                .is_some()
+            {
                 state.set_error(error.to_string());
             }
         }
@@ -745,10 +785,16 @@ mod tests {
         while let Some(AppEvent::Lyrics {
             epoch: resolved_epoch,
             result,
-            is_final: _,
+            is_final,
         }) = app_rx.recv().await
         {
-            handle_resolved(&mut state, &mut coordinator, resolved_epoch, result);
+            handle_resolved(
+                &mut state,
+                &mut coordinator,
+                resolved_epoch,
+                result,
+                is_final,
+            );
         }
 
         // Even if a delayed response for epoch 1 arrives after epoch 5 resolved, it is ignored.
@@ -759,6 +805,7 @@ mod tests {
             &mut coordinator,
             1,
             Ok(Some(ProviderAnswer::new(Provider::Local, stale_track))),
+            true,
         );
 
         let loaded = state
@@ -810,6 +857,72 @@ mod tests {
     }
 
     #[test]
+    fn tier_upgrade_preserves_clock_and_user_offset() {
+        let base = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, base);
+        let mut state = UiState::new();
+        let meta = crate::media::TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: Some("Parachutes".to_string()),
+            duration_ms: Some(268_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let mut coordinator = ResolveCoordinator::new();
+        let (epoch, cancel) = match coordinator.prepare_track(&meta) {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        coordinator.record_user_offset(-250);
+
+        let mut line = track();
+        line.granularity = SyncGranularity::Line;
+        line.lines[0].words.clear();
+        line.source_track_id = Some("line".to_string());
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            epoch,
+            Ok(Some(ProviderAnswer::new(Provider::Lrclib, line))),
+            false,
+        );
+
+        assert_eq!(state.lyrics_track().map(Tier::from_track), Some(Tier::Line));
+        assert_eq!(state.user_offset_ms, -250);
+        assert_eq!(
+            clock.raw_position_at(base + Duration::from_millis(500)),
+            500
+        );
+        assert!(coordinator.cache().is_empty());
+
+        let mut syllable = track();
+        syllable.granularity = SyncGranularity::Syllable;
+        syllable.source_track_id = Some("syllable".to_string());
+        handle_resolved(
+            &mut state,
+            &mut coordinator,
+            epoch,
+            Ok(Some(ProviderAnswer::new(Provider::Lrclib, syllable))),
+            true,
+        );
+
+        assert_eq!(
+            state.lyrics_track().map(Tier::from_track),
+            Some(Tier::Syllable)
+        );
+        assert_eq!(state.user_offset_ms, -250);
+        assert_eq!(
+            clock.raw_position_at(base + Duration::from_millis(500)),
+            500
+        );
+        assert_eq!(coordinator.cache().len(), 1);
+        assert!(!cancel.is_cancelled());
+    }
+
+    #[test]
     fn handle_input_records_offset_in_coordinator_and_preserves_across_resolution() {
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
@@ -853,7 +966,7 @@ mod tests {
         let mut lrc = track();
         lrc.user_offset_ms = 0;
         let answer = ProviderAnswer::new(Provider::Local, lrc);
-        handle_resolved(&mut state, &mut coordinator, epoch, Ok(Some(answer)));
+        handle_resolved(&mut state, &mut coordinator, epoch, Ok(Some(answer)), true);
 
         assert_eq!(state.user_offset_ms, -100);
         let loaded = state.lyrics_track().expect("lyrics loaded");

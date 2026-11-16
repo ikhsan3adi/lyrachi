@@ -1,10 +1,13 @@
+pub mod engine;
 mod http;
 pub mod local;
 pub mod lrclib;
 pub mod sanitize;
 pub mod score;
 
+use std::collections::HashSet;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use tokio_util::sync::CancellationToken;
 
@@ -178,7 +181,7 @@ impl TrackQuery {
 
 pub struct ProviderResolver {
     local: LocalProvider,
-    lrclib: LrclibClient,
+    lrclib: Arc<LrclibClient>,
     order: Vec<Provider>,
     network: bool,
 }
@@ -196,7 +199,7 @@ impl ProviderResolver {
         let lrclib = LrclibClient::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
-            lrclib,
+            lrclib: Arc::new(lrclib),
             order,
             network,
         })
@@ -211,7 +214,7 @@ impl ProviderResolver {
     ) -> Result<Self, ProviderError> {
         Ok(Self {
             local: LocalProvider::new(local_dirs),
-            lrclib: LrclibClient::with_base_url(base_url)?,
+            lrclib: Arc::new(LrclibClient::with_base_url(base_url)?),
             order,
             network,
         })
@@ -219,6 +222,31 @@ impl ProviderResolver {
 
     pub fn network_enabled(&self) -> bool {
         self.network
+    }
+
+    pub(crate) fn network_specs(&self) -> Vec<engine::NetworkSpec> {
+        if !self.network {
+            return Vec::new();
+        }
+        let mut seen = HashSet::new();
+        self.order
+            .iter()
+            .enumerate()
+            .filter_map(|(priority, provider)| {
+                if !seen.insert(*provider) {
+                    return None;
+                }
+                let source: Arc<dyn engine::NetworkProvider> = match provider {
+                    Provider::Local => return None,
+                    Provider::Lrclib => self.lrclib.clone(),
+                };
+                Some(engine::NetworkSpec {
+                    provider: *provider,
+                    priority,
+                    source,
+                })
+            })
+            .collect()
     }
 
     pub async fn resolve(

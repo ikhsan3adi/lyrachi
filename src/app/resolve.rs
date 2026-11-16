@@ -1,11 +1,12 @@
 use std::collections::{HashMap, VecDeque};
 
+use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::warn;
 
 use crate::cache::CacheHandle;
 use crate::core::model::CanonicalTrackKey;
 use crate::media::TrackMeta;
+use crate::providers::engine::{self, EngineUpdate};
 use crate::providers::{ProviderAnswer, ProviderError, ProviderResolver, TrackQuery};
 
 pub const L1_CACHE_CAPACITY: usize = 64;
@@ -82,50 +83,17 @@ pub async fn resolve_with_cache(
     query: &TrackQuery,
     cancel: &CancellationToken,
 ) -> Result<Option<ProviderAnswer>, ProviderError> {
-    if cancel.is_cancelled() {
-        return Err(ProviderError::Cancelled);
-    }
-    if !query.is_usable() {
-        return Ok(None);
-    }
-
-    if let Some(answer) = resolver.resolve_local(query, cancel).await? {
-        return Ok(Some(answer));
-    }
-
-    if let Some(cache) = cache {
-        match cache.lookup(&query.canonical).await {
-            Ok(cached) => {
-                if let Some(answer) = cached.answer {
-                    return Ok(Some(answer));
-                }
-            }
-            Err(error) => {
-                warn!(%error, "failed to read lyric cache");
-            }
-        }
-    }
-
-    let Some(answer) = resolver.resolve_network(query, cancel).await? else {
-        return Ok(None);
-    };
-
-    if let Some(cache) = cache {
-        let label = query_label(query);
-        if let Err(error) = cache.store(&query.canonical, label, &answer).await {
-            warn!(%error, "failed to store lyric cache entry");
-        }
-    }
-
-    Ok(Some(answer))
+    engine::resolve_final(resolver, cache, query, cancel).await
 }
 
-fn query_label(query: &TrackQuery) -> String {
-    if query.artist.is_empty() {
-        query.title.clone()
-    } else {
-        format!("{} - {}", query.artist, query.title)
-    }
+pub async fn resolve_with_updates(
+    resolver: &ProviderResolver,
+    cache: Option<&CacheHandle>,
+    query: &TrackQuery,
+    cancel: &CancellationToken,
+    updates: &mpsc::UnboundedSender<EngineUpdate>,
+) -> Result<(), ProviderError> {
+    engine::resolve(resolver, cache, query, cancel, updates).await
 }
 
 #[derive(Debug)]
@@ -241,20 +209,25 @@ impl ResolveCoordinator {
         &mut self,
         resolved_epoch: u64,
         answer: Option<ProviderAnswer>,
+        is_final: bool,
     ) -> Option<Option<ProviderAnswer>> {
         if resolved_epoch != self.epoch {
             return None;
         }
-        self.active_token = None;
+        if is_final {
+            self.active_token = None;
+        }
 
         let Some(mut answer) = answer else {
-            return Some(None);
+            return is_final.then_some(None);
         };
 
         if let Some(key) = self.active_key.clone() {
             let user_offset_ms = self.user_offsets.get(&key).copied().unwrap_or(0);
             answer.track.user_offset_ms = user_offset_ms;
-            self.cache.insert(key, answer.clone());
+            if is_final {
+                self.cache.insert(key, answer.clone());
+            }
         }
 
         Some(Some(answer))
@@ -378,11 +351,11 @@ mod tests {
 
         assert!(
             coordinator
-                .complete_epoch(epoch_a, Some(sample_answer("A")))
+                .complete_epoch(epoch_a, Some(sample_answer("A")), true)
                 .is_none()
         );
         let resolved_b = coordinator
-            .complete_epoch(epoch_b, Some(sample_answer("B")))
+            .complete_epoch(epoch_b, Some(sample_answer("B")), true)
             .expect("current epoch should resolve")
             .expect("track should be present");
         assert_eq!(resolved_b.track.source_track_id.as_deref(), Some("B"));
@@ -400,7 +373,7 @@ mod tests {
         };
         coordinator.record_user_offset(-200);
         let resolved_a = coordinator
-            .complete_epoch(epoch_a, Some(sample_answer("A")))
+            .complete_epoch(epoch_a, Some(sample_answer("A")), true)
             .unwrap()
             .unwrap();
         assert_eq!(resolved_a.track.user_offset_ms, -200);

@@ -158,10 +158,10 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
     while let Some(AppEvent::Lyrics {
         epoch,
         result,
-        is_final: _,
+        is_final,
     }) = app_rx.recv().await
     {
-        handle_resolved(&mut state, &mut coordinator, epoch, result);
+        handle_resolved(&mut state, &mut coordinator, epoch, result, is_final);
         if let Some(loaded) = state.lyrics_track() {
             assert_eq!(
                 loaded.source_track_id.as_deref(),
@@ -178,6 +178,7 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
         &mut coordinator,
         2,
         Ok(Some(ProviderAnswer::new(Provider::Local, late_stale))),
+        true,
     );
 
     let final_track = state
