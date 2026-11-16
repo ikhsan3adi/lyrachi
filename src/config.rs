@@ -425,7 +425,10 @@ l1_entries = 8
 
         assert_eq!(outcome.config.provider_order, Provider::all());
         assert!(outcome.warnings.iter().any(|warning| {
-            warning.contains("bogus") && warning.contains("local") && warning.contains("lrclib")
+            warning.contains("bogus")
+                && warning.contains("local")
+                && warning.contains("lrclib")
+                && warning.contains("lyricsplus")
         }));
 
         fs::remove_file(path).unwrap();

@@ -6,21 +6,33 @@ const MIN_CONFIDENCE: f32 = 0.65;
 const TIE_WINDOW: f32 = 0.05;
 
 pub fn score_candidate(query: &TrackQuery, candidate: &LrclibRecord) -> f32 {
-    let title_similarity = similarity(
-        &query.canonical.norm_title,
-        &normalize_for_match(candidate.title()),
-    );
+    score_metadata(
+        query,
+        candidate.title(),
+        candidate.artist_name.as_deref().unwrap_or_default(),
+        candidate.duration,
+    )
+}
+
+pub fn score_metadata(
+    query: &TrackQuery,
+    title: &str,
+    artist: &str,
+    duration_sec: Option<f64>,
+) -> f32 {
+    let title_similarity = similarity(&query.canonical.norm_title, &normalize_for_match(title));
     let artist_similarity = if query.canonical.norm_artist.is_empty() {
         0.8
     } else {
-        similarity(
-            &query.canonical.norm_artist,
-            &normalize_for_match(candidate.artist_name.as_deref().unwrap_or_default()),
-        )
+        similarity(&query.canonical.norm_artist, &normalize_for_match(artist))
     };
-    let duration_score = duration_score(query.duration_sec(), candidate.duration);
+    let duration_score = duration_score(query.duration_sec(), duration_sec);
 
     (title_similarity * 0.45 + artist_similarity * 0.35 + duration_score * 0.20).clamp(0.0, 1.0)
+}
+
+pub fn is_confident(score: f32) -> bool {
+    score >= MIN_CONFIDENCE
 }
 
 pub fn duration_score(query_sec: Option<f64>, candidate_sec: Option<f64>) -> f32 {

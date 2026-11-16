@@ -67,6 +67,18 @@ pub async fn read_limited_text(mut response: reqwest::Response) -> Result<String
         .map_err(|_| ProviderError::Invalid("HTTP body is not valid UTF-8".to_string()))
 }
 
+pub(crate) fn retry_after_ms(response: &reqwest::Response) -> Option<u64> {
+    response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse::<u64>()
+        .ok()?
+        .checked_mul(1_000)
+}
+
 fn body_limit_error(length: u64) -> ProviderError {
     ProviderError::Invalid(format!(
         "HTTP body is {length} bytes, limit is {MAX_HTTP_BODY_BYTES}"

@@ -198,7 +198,8 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
          offset_global_ms: 100\n\
          offset_track_ms: -200\n\
          offset_effective_ms: -100\n\
-         circuit_breaker_lrclib: closed\n"
+         circuit_breaker_lrclib: closed\n\
+         circuit_breaker_lyricsplus: closed\n"
     );
     assert_eq!(render_text(&report), expected);
 
@@ -217,6 +218,8 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     assert_eq!(json["offset"]["effective_ms"], -100);
     assert_eq!(json["circuit_breakers"][0]["provider"], "lrclib");
     assert_eq!(json["circuit_breakers"][0]["status"], "closed");
+    assert_eq!(json["circuit_breakers"][1]["provider"], "lyricsplus");
+    assert_eq!(json["circuit_breakers"][1]["status"], "closed");
 
     std::fs::remove_dir_all(dir).unwrap();
 }

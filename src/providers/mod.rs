@@ -2,6 +2,7 @@ pub mod engine;
 mod http;
 pub mod local;
 pub mod lrclib;
+pub mod lyricsplus;
 pub mod sanitize;
 pub mod score;
 
@@ -19,6 +20,7 @@ use crate::core::model::{CanonicalTrackKey, SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use local::LocalProvider;
 use lrclib::LrclibClient;
+use lyricsplus::LyricsPlusProvider;
 use sanitize::{
     canonical_key, clean_artist, clean_text, clean_title, normalize_for_match, split_artist_title,
     strip_dash_qualifier,
@@ -28,17 +30,19 @@ use sanitize::{
 pub enum Provider {
     Local,
     Lrclib,
+    LyricsPlus,
 }
 
 impl Provider {
-    pub const fn all() -> [Self; 2] {
-        [Self::Local, Self::Lrclib]
+    pub const fn all() -> [Self; 3] {
+        [Self::Local, Self::Lrclib, Self::LyricsPlus]
     }
 
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Local => "local",
             Self::Lrclib => "lrclib",
+            Self::LyricsPlus => "lyricsplus",
         }
     }
 
@@ -46,16 +50,17 @@ impl Provider {
         match name {
             "local" => Some(Self::Local),
             "lrclib" => Some(Self::Lrclib),
+            "lyricsplus" => Some(Self::LyricsPlus),
             _ => None,
         }
     }
 
     pub const fn valid_config_names() -> &'static str {
-        "local, lrclib"
+        "local, lrclib, lyricsplus"
     }
 
     pub const fn is_tier2(self) -> bool {
-        false
+        matches!(self, Self::LyricsPlus)
     }
 }
 
@@ -190,6 +195,7 @@ impl TrackQuery {
 pub struct ProviderResolver {
     local: LocalProvider,
     lrclib: Arc<LrclibClient>,
+    lyricsplus: Arc<LyricsPlusProvider>,
     order: Vec<Provider>,
     network: bool,
     breakers: Arc<engine::CircuitBreakers>,
@@ -207,9 +213,11 @@ impl ProviderResolver {
         network: bool,
     ) -> Result<Self, ProviderError> {
         let lrclib = LrclibClient::new()?;
+        let lyricsplus = LyricsPlusProvider::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
             lrclib: Arc::new(lrclib),
+            lyricsplus: Arc::new(lyricsplus),
             order,
             network,
             breakers: Arc::new(engine::CircuitBreakers::default()),
@@ -224,9 +232,11 @@ impl ProviderResolver {
         network: bool,
         base_url: impl Into<String>,
     ) -> Result<Self, ProviderError> {
+        let base_url = base_url.into();
         Ok(Self {
             local: LocalProvider::new(local_dirs),
-            lrclib: Arc::new(LrclibClient::with_base_url(base_url)?),
+            lrclib: Arc::new(LrclibClient::with_base_url(base_url.clone())?),
+            lyricsplus: Arc::new(LyricsPlusProvider::with_base_url(base_url)?),
             order,
             network,
             breakers: Arc::new(engine::CircuitBreakers::default()),
@@ -242,9 +252,11 @@ impl ProviderResolver {
         breakers: Arc<engine::CircuitBreakers>,
     ) -> Result<Self, ProviderError> {
         let lrclib = LrclibClient::new()?;
+        let lyricsplus = LyricsPlusProvider::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
             lrclib: Arc::new(lrclib),
+            lyricsplus: Arc::new(lyricsplus),
             order,
             network,
             breakers,
@@ -290,6 +302,7 @@ impl ProviderResolver {
                 let source: Arc<dyn engine::NetworkProvider> = match provider {
                     Provider::Local => return None,
                     Provider::Lrclib => self.lrclib.clone(),
+                    Provider::LyricsPlus => self.lyricsplus.clone(),
                 };
                 let limiter = if provider.is_tier2() {
                     Some(self.limiters.get_or_create(*provider))
@@ -348,6 +361,7 @@ impl ProviderResolver {
             let answer = match provider {
                 Provider::Local => None,
                 Provider::Lrclib => self.lrclib.resolve_with_cancel(query, cancel).await?,
+                Provider::LyricsPlus => self.lyricsplus.resolve_with_cancel(query, cancel).await?,
             };
             if answer.is_some() {
                 return Ok(answer);
@@ -379,6 +393,10 @@ impl ProviderResolver {
                     self.lrclib.resolve_with_cancel(query, cancel).await?
                 }
                 Provider::Lrclib => None,
+                Provider::LyricsPlus if self.network => {
+                    self.lyricsplus.resolve_with_cancel(query, cancel).await?
+                }
+                Provider::LyricsPlus => None,
             };
             if answer.is_some() {
                 return Ok(answer);
@@ -528,6 +546,17 @@ mod tests {
                 .await
                 .is_err()
         );
+    }
+
+    #[tokio::test]
+    async fn lyricsplus_network_spec_uses_the_tier2_limiter() {
+        let resolver =
+            ProviderResolver::with_config(Vec::new(), vec![Provider::LyricsPlus], true).unwrap();
+        let specs = resolver.network_specs();
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].provider, Provider::LyricsPlus);
+        assert!(specs[0].limiter.is_some());
     }
 
     #[tokio::test]

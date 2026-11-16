@@ -12,6 +12,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
 use super::lrclib::LrclibClient;
+use super::lyricsplus::LyricsPlusProvider;
 use super::{Provider, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery};
 use crate::cache::CacheHandle;
 
@@ -298,6 +299,16 @@ pub(crate) trait NetworkProvider: Send + Sync {
 }
 
 impl NetworkProvider for LrclibClient {
+    fn lookup<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> ProviderFuture<'a> {
+        Box::pin(self.resolve_with_cancel(query, cancel))
+    }
+}
+
+impl NetworkProvider for LyricsPlusProvider {
     fn lookup<'a>(
         &'a self,
         query: &'a TrackQuery,

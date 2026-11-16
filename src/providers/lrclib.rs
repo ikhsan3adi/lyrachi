@@ -335,20 +335,8 @@ fn unavailable_status(status: StatusCode) -> ProviderError {
 
 fn rate_limited(response: &reqwest::Response) -> ProviderError {
     ProviderError::RateLimited {
-        retry_after_ms: retry_after_ms(response),
+        retry_after_ms: http::retry_after_ms(response),
     }
-}
-
-fn retry_after_ms(response: &reqwest::Response) -> Option<u64> {
-    response
-        .headers()
-        .get(reqwest::header::RETRY_AFTER)?
-        .to_str()
-        .ok()?
-        .trim()
-        .parse::<u64>()
-        .ok()?
-        .checked_mul(1_000)
 }
 
 fn get_params(query: &TrackQuery) -> Vec<(&'static str, String)> {

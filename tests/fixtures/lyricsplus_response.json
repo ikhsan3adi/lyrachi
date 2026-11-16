@@ -1,0 +1,43 @@
+{
+  "type": "Word",
+  "metadata": {
+    "source": "Apple",
+    "title": "Yellow",
+    "artist": "Coldplay",
+    "album": "Parachutes",
+    "language": "en",
+    "agents": {
+      "v1": { "type": "person", "name": "Chris Martin" },
+      "v2": { "type": "person", "name": "Jonny Buckland" }
+    }
+  },
+  "lyrics": [
+    {
+      "time": 33370,
+      "duration": 3370,
+      "text": "Look at the stars",
+      "syllabus": [
+        { "time": 33370, "duration": 600, "text": "Look " },
+        { "time": 34000, "duration": 400, "text": "at " },
+        { "time": 34500, "duration": 400, "text": "the " },
+        { "time": 35000, "duration": 1740, "text": "stars" }
+      ],
+      "element": { "key": "L1", "singer": "v1" },
+      "transliteration": { "lang": "en", "text": "Luk at de stars" },
+      "translation": { "lang": "id", "text": "Lihat bintang-bintang" }
+    },
+    {
+      "time": 37000,
+      "duration": 2500,
+      "text": "Yellow",
+      "syllabus": [
+        { "time": 37000, "duration": 1200, "text": "Yel" },
+        { "time": 38200, "duration": 1300, "text": "low" }
+      ],
+      "element": { "key": "L2", "singer": "v2" },
+      "translations": [
+        { "lang": "id", "text": "Kuning" }
+      ]
+    }
+  ]
+}
