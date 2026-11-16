@@ -1,0 +1,42 @@
+{
+  "contents": {
+    "sectionListRenderer": {
+      "contents": [
+        {
+          "musicTimedLyricsRenderer": {
+            "timedLyricsData": [
+              {
+                "lyricLine": "Look at the stars",
+                "cueRange": {
+                  "startTimeMs": "33370",
+                  "endTimeMs": "36740"
+                }
+              },
+              {
+                "lyricLine": "Look how they shine for you",
+                "cueRange": {
+                  "startTimeMs": "37000",
+                  "endTimeMs": "42000"
+                }
+              },
+              {
+                "lyricLine": "And everything you do",
+                "cueRange": {
+                  "startTimeMs": "42500",
+                  "endTimeMs": "46000"
+                }
+              },
+              {
+                "lyricLine": "Yeah, they were all yellow",
+                "cueRange": {
+                  "startTimeMs": "46500",
+                  "endTimeMs": "52000"
+                }
+              }
+            ]
+          }
+        }
+      ]
+    }
+  }
+}

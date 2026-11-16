@@ -13,6 +13,8 @@ use tracing::{debug, warn};
 
 use super::lrclib::LrclibClient;
 use super::lyricsplus::LyricsPlusProvider;
+#[cfg(feature = "ytmusic")]
+use super::ytmusic::YtMusicProvider;
 use super::{Provider, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery};
 use crate::cache::CacheHandle;
 
@@ -309,6 +311,17 @@ impl NetworkProvider for LrclibClient {
 }
 
 impl NetworkProvider for LyricsPlusProvider {
+    fn lookup<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> ProviderFuture<'a> {
+        Box::pin(self.resolve_with_cancel(query, cancel))
+    }
+}
+
+#[cfg(feature = "ytmusic")]
+impl NetworkProvider for YtMusicProvider {
     fn lookup<'a>(
         &'a self,
         query: &'a TrackQuery,

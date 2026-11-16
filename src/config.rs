@@ -444,4 +444,27 @@ l1_entries = 8
 
         fs::remove_file(path).unwrap();
     }
+
+    #[test]
+    #[cfg(feature = "ytmusic")]
+    fn opt_in_ytmusic_in_provider_order_is_accepted() {
+        let path = temp_file(
+            "ytmusic-order",
+            "[providers]\norder = [\"local\", \"lrclib\", \"lyricsplus\", \"ytmusic\"]\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(
+            outcome.config.provider_order,
+            vec![
+                Provider::Local,
+                Provider::Lrclib,
+                Provider::LyricsPlus,
+                Provider::YtMusic
+            ]
+        );
+
+        fs::remove_file(path).unwrap();
+    }
 }

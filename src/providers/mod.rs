@@ -5,6 +5,8 @@ pub mod lrclib;
 pub mod lyricsplus;
 pub mod sanitize;
 pub mod score;
+#[cfg(feature = "ytmusic")]
+pub mod ytmusic;
 
 pub use engine::{
     CircuitBreaker, CircuitBreakers, CircuitState, RateLimiters, TokenBucketRateLimiter,
@@ -25,12 +27,16 @@ use sanitize::{
     canonical_key, clean_artist, clean_text, clean_title, normalize_for_match, split_artist_title,
     strip_dash_qualifier,
 };
+#[cfg(feature = "ytmusic")]
+use ytmusic::YtMusicProvider;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Provider {
     Local,
     Lrclib,
     LyricsPlus,
+    #[cfg(feature = "ytmusic")]
+    YtMusic,
 }
 
 impl Provider {
@@ -43,6 +49,8 @@ impl Provider {
             Self::Local => "local",
             Self::Lrclib => "lrclib",
             Self::LyricsPlus => "lyricsplus",
+            #[cfg(feature = "ytmusic")]
+            Self::YtMusic => "ytmusic",
         }
     }
 
@@ -51,16 +59,30 @@ impl Provider {
             "local" => Some(Self::Local),
             "lrclib" => Some(Self::Lrclib),
             "lyricsplus" => Some(Self::LyricsPlus),
+            #[cfg(feature = "ytmusic")]
+            "ytmusic" => Some(Self::YtMusic),
             _ => None,
         }
     }
 
     pub const fn valid_config_names() -> &'static str {
-        "local, lrclib, lyricsplus"
+        #[cfg(feature = "ytmusic")]
+        {
+            "local, lrclib, lyricsplus, ytmusic"
+        }
+        #[cfg(not(feature = "ytmusic"))]
+        {
+            "local, lrclib, lyricsplus"
+        }
     }
 
     pub const fn is_tier2(self) -> bool {
-        matches!(self, Self::LyricsPlus)
+        match self {
+            Self::LyricsPlus => true,
+            #[cfg(feature = "ytmusic")]
+            Self::YtMusic => true,
+            _ => false,
+        }
     }
 }
 
@@ -196,6 +218,8 @@ pub struct ProviderResolver {
     local: LocalProvider,
     lrclib: Arc<LrclibClient>,
     lyricsplus: Arc<LyricsPlusProvider>,
+    #[cfg(feature = "ytmusic")]
+    ytmusic: Arc<YtMusicProvider>,
     order: Vec<Provider>,
     network: bool,
     breakers: Arc<engine::CircuitBreakers>,
@@ -214,10 +238,14 @@ impl ProviderResolver {
     ) -> Result<Self, ProviderError> {
         let lrclib = LrclibClient::new()?;
         let lyricsplus = LyricsPlusProvider::new()?;
+        #[cfg(feature = "ytmusic")]
+        let ytmusic = YtMusicProvider::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
             lrclib: Arc::new(lrclib),
             lyricsplus: Arc::new(lyricsplus),
+            #[cfg(feature = "ytmusic")]
+            ytmusic: Arc::new(ytmusic),
             order,
             network,
             breakers: Arc::new(engine::CircuitBreakers::default()),
@@ -236,7 +264,9 @@ impl ProviderResolver {
         Ok(Self {
             local: LocalProvider::new(local_dirs),
             lrclib: Arc::new(LrclibClient::with_base_url(base_url.clone())?),
-            lyricsplus: Arc::new(LyricsPlusProvider::with_base_url(base_url)?),
+            lyricsplus: Arc::new(LyricsPlusProvider::with_base_url(base_url.clone())?),
+            #[cfg(feature = "ytmusic")]
+            ytmusic: Arc::new(YtMusicProvider::with_base_url(base_url)?),
             order,
             network,
             breakers: Arc::new(engine::CircuitBreakers::default()),
@@ -253,10 +283,14 @@ impl ProviderResolver {
     ) -> Result<Self, ProviderError> {
         let lrclib = LrclibClient::new()?;
         let lyricsplus = LyricsPlusProvider::new()?;
+        #[cfg(feature = "ytmusic")]
+        let ytmusic = YtMusicProvider::new()?;
         Ok(Self {
             local: LocalProvider::new(local_dirs),
             lrclib: Arc::new(lrclib),
             lyricsplus: Arc::new(lyricsplus),
+            #[cfg(feature = "ytmusic")]
+            ytmusic: Arc::new(ytmusic),
             order,
             network,
             breakers,
@@ -303,6 +337,8 @@ impl ProviderResolver {
                     Provider::Local => return None,
                     Provider::Lrclib => self.lrclib.clone(),
                     Provider::LyricsPlus => self.lyricsplus.clone(),
+                    #[cfg(feature = "ytmusic")]
+                    Provider::YtMusic => self.ytmusic.clone(),
                 };
                 let limiter = if provider.is_tier2() {
                     Some(self.limiters.get_or_create(*provider))
@@ -362,6 +398,8 @@ impl ProviderResolver {
                 Provider::Local => None,
                 Provider::Lrclib => self.lrclib.resolve_with_cancel(query, cancel).await?,
                 Provider::LyricsPlus => self.lyricsplus.resolve_with_cancel(query, cancel).await?,
+                #[cfg(feature = "ytmusic")]
+                Provider::YtMusic => self.ytmusic.resolve_with_cancel(query, cancel).await?,
             };
             if answer.is_some() {
                 return Ok(answer);
@@ -397,6 +435,12 @@ impl ProviderResolver {
                     self.lyricsplus.resolve_with_cancel(query, cancel).await?
                 }
                 Provider::LyricsPlus => None,
+                #[cfg(feature = "ytmusic")]
+                Provider::YtMusic if self.network => {
+                    self.ytmusic.resolve_with_cancel(query, cancel).await?
+                }
+                #[cfg(feature = "ytmusic")]
+                Provider::YtMusic => None,
             };
             if answer.is_some() {
                 return Ok(answer);
@@ -579,5 +623,60 @@ mod tests {
         assert_eq!(track.provider, Provider::Local);
         assert_eq!(track.track.source_provider, "local");
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "ytmusic")]
+    async fn ytmusic_not_called_when_not_in_order() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let base_url = format!("http://{}", listener.local_addr().unwrap());
+
+        let resolver = ProviderResolver::with_config_and_base_url(
+            Vec::new(),
+            Provider::all().to_vec(),
+            true,
+            base_url,
+        )
+        .unwrap();
+
+        let specs = resolver.network_specs();
+        assert!(specs.iter().all(|s| s.provider != Provider::YtMusic));
+        assert!(!resolver.order.contains(&Provider::YtMusic));
+
+        let q = TrackQuery::from_meta(&meta("Yellow", "Coldplay", None, None), 0);
+        let cancel = CancellationToken::new();
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 2048];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                let req = String::from_utf8_lossy(&buf[..n]);
+                assert!(!req.contains("POST /search"));
+                assert!(!req.contains("/next"));
+                assert!(!req.contains("/browse"));
+                assert!(!req.contains("X-YouTube-Client-Name"));
+
+                let _ = socket
+                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n")
+                    .await;
+            }
+        });
+
+        let result = resolver.resolve_query(&q, &cancel).await.unwrap();
+        assert!(result.is_none());
+    }
+
+    #[tokio::test]
+    #[cfg(feature = "ytmusic")]
+    async fn ytmusic_network_spec_uses_the_tier2_limiter() {
+        let resolver =
+            ProviderResolver::with_config(Vec::new(), vec![Provider::YtMusic], true).unwrap();
+        let specs = resolver.network_specs();
+
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].provider, Provider::YtMusic);
+        assert!(specs[0].limiter.is_some());
     }
 }
