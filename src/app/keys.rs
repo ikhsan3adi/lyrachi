@@ -58,6 +58,7 @@ pub enum KeyTrigger {
     Up,
     Down,
     Esc,
+    Tab,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -192,9 +193,10 @@ pub fn normalize_key_event(key: KeyEvent) -> Option<KeyTrigger> {
     }
 
     match key.code {
-        KeyCode::Up if modifiers.is_empty() => Some(KeyTrigger::Up),
-        KeyCode::Down if modifiers.is_empty() => Some(KeyTrigger::Down),
-        KeyCode::Esc if modifiers.is_empty() => Some(KeyTrigger::Esc),
+        KeyCode::Up if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Up),
+        KeyCode::Down if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Down),
+        KeyCode::Esc if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Esc),
+        KeyCode::Tab if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Tab),
         KeyCode::Char(ch) if has_ctrl => Some(KeyTrigger::CtrlChar(ch.to_ascii_lowercase())),
         KeyCode::Char('?') if !has_ctrl => Some(KeyTrigger::Char('?')),
         KeyCode::Char(ch) if ch.is_ascii_uppercase() => {
@@ -286,6 +288,11 @@ mod tests {
             ),
             Some(KeyAction::ToggleHelp)
         );
+
+        let tab_key = normalize_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE));
+        assert_eq!(tab_key, Some(KeyTrigger::Tab));
+        let tab_ctrl = normalize_key_event(KeyEvent::new(KeyCode::Tab, KeyModifiers::CONTROL));
+        assert_eq!(tab_ctrl, None);
     }
 
     #[test]

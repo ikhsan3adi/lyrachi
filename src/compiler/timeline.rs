@@ -323,6 +323,12 @@ impl CompiledTimeline {
             }
         }
 
+        if let Some(gap) = self.waiting_gap(effective_ms, self.line_index(effective_ms))
+            && gap.end_ms > effective_ms
+        {
+            earliest = min_boundary(earliest, Some(gap.end_ms));
+        }
+
         earliest
     }
 
@@ -476,6 +482,28 @@ mod tests {
         assert_eq!(timeline.next_boundary_ms(3_500), Some(4_000));
         assert_eq!(timeline.next_boundary_ms(4_500), Some(5_001));
         assert_eq!(timeline.next_boundary_ms(5_500), None);
+    }
+
+    #[test]
+    fn reports_waiting_gap_boundary_for_intro_and_outro() {
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 4_000;
+        context.track_duration_ms = Some(10_000);
+
+        let mut intro_outro_track = track();
+        // First line starts at 5_000 (>= min_gap_ms 4_000 -> intro gap 0..5000)
+        intro_outro_track.lines[0].start_ms = 5_000;
+        intro_outro_track.lines[0].end_ms = 6_000;
+        intro_outro_track.lines[0].words = vec![word("intro-test", 5_000, 6_000)];
+        intro_outro_track.lines.truncate(1);
+
+        let timeline = CompiledTimeline::compile(&intro_outro_track, context);
+        // During intro waiting gap (effective_ms 2_000), next boundary is 5_000 (gap.end_ms / line start)
+        assert_eq!(timeline.next_boundary_ms(2_000), Some(5_000));
+        // During outro waiting gap (effective_ms 7_000), next boundary is 10_000 (gap.end_ms)
+        assert_eq!(timeline.next_boundary_ms(7_000), Some(10_000));
+        // Past track duration, no next boundary
+        assert_eq!(timeline.next_boundary_ms(10_500), None);
     }
 
     #[test]

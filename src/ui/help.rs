@@ -12,7 +12,9 @@ const MAX_MODAL_WIDTH: u16 = 56;
 const MIN_KEY_COLUMN_WIDTH: usize = 10;
 
 pub fn render(frame: &mut Frame, area: Rect) {
-    if area.width < 4 || area.height < 3 {
+    let available_width = area.width.saturating_sub(2);
+    let available_height = area.height.saturating_sub(2);
+    if available_width < 18 || available_height < 6 {
         return;
     }
 
@@ -33,11 +35,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let desired_width = u16::try_from(content_width + 4)
         .unwrap_or(MAX_MODAL_WIDTH)
         .min(MAX_MODAL_WIDTH);
-    let width = desired_width.min(area.width.saturating_sub(2)).max(4);
+    let width = desired_width.min(available_width);
 
     // Borders (2) + vertical padding (2)
     let desired_height = u16::try_from(rows.len() + 4).unwrap_or(u16::MAX);
-    let height = desired_height.min(area.height.saturating_sub(2)).max(3);
+    let height = desired_height.min(available_height);
 
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
@@ -95,5 +97,47 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
         y,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::Terminal;
+    use ratatui::backend::TestBackend;
+
+    #[test]
+    fn centered_rect_clamps_within_bounds() {
+        let area = Rect::new(0, 0, 80, 24);
+        let popup = centered_rect(area, 50, 15);
+        assert_eq!(popup.width, 50);
+        assert_eq!(popup.height, 15);
+        assert_eq!(popup.x, 15);
+        assert_eq!(popup.y, 4);
+
+        let clamped = centered_rect(area, 100, 30);
+        assert_eq!(clamped.width, 80);
+        assert_eq!(clamped.height, 24);
+        assert_eq!(clamped.x, 0);
+        assert_eq!(clamped.y, 0);
+    }
+
+    #[test]
+    fn render_skips_tiny_areas_without_panic() {
+        let backend = TestBackend::new(10, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area());
+            })
+            .unwrap();
+
+        // Screen buffer should remain empty (all spaces)
+        let buffer = terminal.backend().buffer();
+        for y in 0..5 {
+            for x in 0..10 {
+                assert_eq!(buffer.cell((x, y)).unwrap().symbol(), " ");
+            }
+        }
     }
 }
