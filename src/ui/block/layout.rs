@@ -1,6 +1,8 @@
 use unicode_segmentation::UnicodeSegmentation;
 
-use super::font::{BlockFontSize, GlyphBitmap, glyph_bitmap, placeholder_bitmap, space_bitmap};
+use super::font::{
+    BlockFontSize, GlyphBitmap, glyph_bitmap_for_cluster, placeholder_bitmap, space_bitmap,
+};
 use crate::core::text::{cannot_end_line, cannot_start_line, display_width_with_ambiguous, is_cjk};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -207,12 +209,7 @@ fn glyphs_for(
         let glyph = if size == BlockFontSize::Plain {
             plain_glyph(cluster.text, cluster.byte_range, ambiguous_width)
         } else {
-            let bitmap = cluster
-                .text
-                .chars()
-                .next()
-                .and_then(|ch| glyph_bitmap(ch, size));
-            match bitmap {
+            match glyph_bitmap_for_cluster(cluster.text, size) {
                 Some(bitmap) => Glyph {
                     bitmap,
                     source_byte_range: cluster.byte_range,
@@ -587,6 +584,31 @@ mod tests {
         assert_eq!(wide.lines.len(), 3);
         assert_valid(&narrow, "あ··", 3, 24);
         assert_valid(&wide, "あ··", 3, 24);
+    }
+
+    #[test]
+    fn composes_nfd_without_changing_source_ranges() {
+        let text = "cafe\u{301} ß 👩🏽‍💻";
+        let layout = BlockLayout::new(text, 120, 24, 1);
+        assert_valid(&layout, text, 120, 24);
+
+        let cells = layout
+            .lines
+            .iter()
+            .flat_map(|line| line.cells.iter())
+            .collect::<Vec<_>>();
+        assert!(cells.iter().any(|cell| {
+            let (start, end) = cell.source_byte_range;
+            &text[start..end] == "e\u{301}"
+        }));
+        assert!(cells.iter().any(|cell| {
+            let (start, end) = cell.source_byte_range;
+            &text[start..end] == "ß"
+        }));
+        assert!(cells.iter().any(|cell| {
+            let (start, end) = cell.source_byte_range;
+            &text[start..end] == "👩🏽‍💻"
+        }));
     }
 
     #[test]

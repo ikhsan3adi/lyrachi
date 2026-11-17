@@ -323,6 +323,35 @@ fn fullscreen() -> UiState {
     state
 }
 
+fn block_reveal_nfd() -> UiState {
+    let mut state = base_state();
+    state.display_mode = DisplayMode::Block;
+    state.set_lyrics(SyncedTrack {
+        source_provider: "test".to_string(),
+        source_track_id: None,
+        parser_version: 2,
+        is_instrumental: false,
+        granularity: SyncGranularity::Syllable,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 1.0,
+        lines: vec![line(
+            1_000,
+            4_000,
+            "cafe\u{301} straße 👩🏽‍💻",
+            vec![
+                word("", 0, 2, 1_000, 1_400),
+                word("", 2, 6, 1_400, 1_800),
+                word("", 7, 11, 1_800, 2_200),
+                word("", 11, 14, 2_200, 2_600),
+                word("", 15, 30, 2_600, 3_000),
+            ],
+            Vec::new(),
+        )],
+    });
+    state
+}
+
 fn block_word_sync() -> UiState {
     let mut state = word_sync();
     state.display_mode = DisplayMode::Block;
@@ -497,6 +526,28 @@ fn background_lyricsplus_120x40() {
 }
 
 #[test]
+fn block_reveal_nfd_syllable_80x24() {
+    snapshot(
+        &mut block_reveal_nfd(),
+        80,
+        24,
+        1_500,
+        "80x24_block_reveal_nfd_syllable",
+    );
+}
+
+#[test]
+fn block_reveal_nfd_syllable_120x40() {
+    snapshot(
+        &mut block_reveal_nfd(),
+        120,
+        40,
+        1_500,
+        "120x40_block_reveal_nfd_syllable",
+    );
+}
+
+#[test]
 fn block_word_sync_80x24() {
     snapshot(
         &mut block_word_sync(),
@@ -605,6 +656,61 @@ fn block_mode_does_not_style_anchor_as_active_in_a_gap() {
             .any(|cell| cell.fg == Color::Cyan)
     });
     assert!(!has_accent, "a line was styled active before playback");
+}
+
+#[test]
+fn block_mode_reveals_only_the_active_word_cells() {
+    let mut state = block_word_sync();
+    state.configure_layout(false, false, false);
+    state.set_max_width(Some(10));
+    let buffer = render_buffer(&mut state, 80, 24, 9_500);
+
+    let (x, y, _) = find_text(&buffer, "And").expect("previous word was not rendered");
+    assert_ne!(buffer.cell((x, y)).unwrap().fg, Color::Cyan);
+
+    let (x, y, _) = find_text(&buffer, "eve").expect("active word was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::Cyan);
+    assert!(cell.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn block_mode_word_highlight_off_styles_the_whole_active_line() {
+    let mut state = block_word_sync();
+    state.configure_layout(false, false, false);
+    state.set_max_width(Some(10));
+    state.word_highlight = false;
+    let buffer = render_buffer(&mut state, 80, 24, 9_500);
+
+    let (x, y, _) = find_text(&buffer, "And").expect("active line was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::Cyan);
+    assert!(cell.modifier.contains(Modifier::BOLD));
+}
+
+#[test]
+fn block_mode_handles_nfd_eszett_and_emoji_without_panicking() {
+    let mut state = base_state();
+    state.display_mode = DisplayMode::Block;
+    state.set_lyrics(SyncedTrack {
+        source_provider: "test".to_string(),
+        source_track_id: None,
+        parser_version: 2,
+        is_instrumental: false,
+        granularity: SyncGranularity::Line,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 1.0,
+        lines: vec![line(
+            0,
+            1_000,
+            "cafe\u{301} straße 👩🏽‍💻",
+            Vec::new(),
+            Vec::new(),
+        )],
+    });
+
+    render_buffer(&mut state, 80, 24, 500);
 }
 
 #[test]

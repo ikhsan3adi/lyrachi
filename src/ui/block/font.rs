@@ -1,4 +1,5 @@
 use font8x8::{BASIC_FONTS, GREEK_FONTS, LATIN_FONTS, UnicodeFonts};
+use unicode_normalization::UnicodeNormalization;
 
 pub const GLYPH_GAP: u16 = 1;
 
@@ -65,6 +66,14 @@ pub fn glyph_bitmap(ch: char, size: BlockFontSize) -> Option<GlyphBitmap> {
         BlockFontSize::Mini => compact_bitmap(raw, 3, 2),
         BlockFontSize::Plain => None,
     }
+}
+
+pub fn glyph_bitmap_for_cluster(text: &str, size: BlockFontSize) -> Option<GlyphBitmap> {
+    if size == BlockFontSize::Plain {
+        return None;
+    }
+    let ch = text.nfc().next()?;
+    glyph_bitmap(ch, size)
 }
 
 pub fn placeholder_bitmap(size: BlockFontSize) -> GlyphBitmap {
@@ -214,6 +223,17 @@ mod tests {
         assert_eq!(mini.rows.len(), 2);
         assert!(compact.rows.iter().all(|row| row.contains('█')));
         assert!(mini.rows.iter().all(|row| row.contains('█')));
+    }
+
+    #[test]
+    fn composes_nfd_latin_clusters_before_glyph_lookup() {
+        let direct = glyph_bitmap('é', BlockFontSize::Block).unwrap();
+        assert_eq!(
+            glyph_bitmap_for_cluster("e\u{301}", BlockFontSize::Block),
+            Some(direct)
+        );
+        assert!(glyph_bitmap_for_cluster("ß", BlockFontSize::Block).is_some());
+        assert!(glyph_bitmap_for_cluster("👩🏽‍💻", BlockFontSize::Block).is_none());
     }
 
     #[test]

@@ -4,6 +4,7 @@ use std::mem::size_of;
 
 pub mod font;
 pub mod layout;
+pub mod render;
 
 pub use font::{BlockFontSize, GlyphBitmap};
 pub use layout::{BlockCell, BlockLayout, Glyph, VisualLine, layout_text};

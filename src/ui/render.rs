@@ -13,7 +13,10 @@ use crate::core::model::{LineRole, SyncedTrack, WordToken};
 
 use super::{
     LyricsView, UiState,
-    block::{BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockLayout, BlockStageCache},
+    block::{
+        BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockStageCache,
+        render::{BlockRenderContext, BlockStyles, render_lines as render_block_lines},
+    },
     status::footer_line,
 };
 
@@ -272,7 +275,15 @@ fn render_body(
         LyricsView::Loaded { track, timeline }
             if state.effective_display_mode() == super::DisplayMode::Block =>
         {
-            render_block_synced(frame, area, timeline, track, block_cache, effective_ms);
+            render_block_synced(
+                frame,
+                area,
+                timeline,
+                track,
+                block_cache,
+                effective_ms,
+                state.word_highlight,
+            );
         }
         LyricsView::Loaded { timeline, .. } => {
             render_synced(frame, area, timeline, effective_ms, state.word_highlight);
@@ -370,6 +381,7 @@ fn render_block_synced(
     track: &SyncedTrack,
     cache: &mut BlockStageCache,
     effective_ms: u64,
+    word_highlight: bool,
 ) {
     if timeline.lines.is_empty() {
         centered_message(frame, area, "No lyrics found", "");
@@ -447,18 +459,22 @@ fn render_block_synced(
             meta.max_height,
             timeline.context.ambiguous_width,
         );
+        let alignment = styles.alignment(compiled.role, viewport_width);
         if meta.focus {
             active_start = Some(lines.len());
         }
-        push_block_layout_lines(
-            &mut lines,
+        lines.extend(render_block_lines(
             layout,
-            compiled,
-            meta.active,
-            viewport_width,
-            styles,
-        );
-        let alignment = styles.alignment(compiled.role, viewport_width);
+            BlockRenderContext {
+                words: &compiled.words,
+                cursor,
+                effective_ms,
+                active: meta.active,
+                word_highlight: word_highlight && compiled.role != LineRole::InstrumentalBreak,
+                styles: block_styles(compiled, word_highlight, styles),
+                alignment,
+            },
+        ));
         for annotation in &compiled.wrapped_annotations {
             lines.push(
                 Line::from(Span::styled(annotation.clone(), styles.annotation_style()))
@@ -490,42 +506,30 @@ fn block_line_height(area: Rect, role: LineRole, focus: bool, annotation_rows: u
     }
 }
 
+fn block_styles(compiled: &CompiledLine, word_highlight: bool, styles: StageStyle) -> BlockStyles {
+    let active = if compiled.role == LineRole::InstrumentalBreak
+        || (word_highlight
+            && compiled.words.is_empty()
+            && compiled.role == LineRole::BackgroundVocal)
+    {
+        styles.line_style(compiled.role, true)
+    } else {
+        styles.word_style(compiled.role, WordState::Active)
+    };
+
+    BlockStyles {
+        active,
+        sung: styles.word_style(compiled.role, WordState::Sung),
+        unsung: styles.word_style(compiled.role, WordState::Unsung),
+        inactive: styles.line_style(compiled.role, false),
+    }
+}
+
 fn block_source_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a str {
     track
         .lines
         .get(compiled.source_line_idx)
         .map_or("", |line| line.text.as_str())
-}
-
-fn push_block_layout_lines(
-    lines: &mut Vec<Line<'static>>,
-    layout: &BlockLayout,
-    compiled: &CompiledLine,
-    active: bool,
-    viewport_width: u16,
-    styles: StageStyle,
-) {
-    if layout.is_empty() {
-        return;
-    }
-
-    let alignment = styles.alignment(compiled.role, viewport_width);
-    let style = if active {
-        styles.word_style(compiled.role, WordState::Active)
-    } else {
-        styles.line_style(compiled.role, false)
-    };
-    let rows_per_line = usize::from(layout.rows_per_line().max(1));
-
-    for visual in &layout.lines {
-        for row_index in 0..rows_per_line {
-            let mut text = String::new();
-            for cell in &visual.cells {
-                text.push_str(cell.rows.get(row_index).map_or(" ", String::as_str));
-            }
-            lines.push(Line::from(Span::styled(text, style)).alignment(alignment));
-        }
-    }
 }
 
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {
