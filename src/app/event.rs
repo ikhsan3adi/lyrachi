@@ -26,4 +26,5 @@ pub enum AppEvent {
         summary: Box<CandidateSummary>,
         result: Result<Option<ProviderAnswer>, ProviderError>,
     },
+    StyleReloadRequested,
 }

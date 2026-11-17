@@ -49,7 +49,7 @@ pub struct Args {
     pub command: Option<Command>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+#[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
     /// Print resolved application paths.
     Paths,
@@ -68,6 +68,32 @@ pub enum Command {
         #[arg(long, value_name = "N")]
         max_width: Option<u16>,
     },
+    /// Inspect, validate, or generate configuration and style schemas.
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum ConfigAction {
+    /// Validate config.toml and the active style file, reporting any warnings.
+    Check,
+    /// Print default config.toml template.
+    PrintDefault,
+    /// Print JSON Schema Draft 2020-12 for config or style.
+    Schema {
+        /// Target schema kind (config or style).
+        #[arg(long, value_enum, default_value = "config")]
+        kind: SchemaKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]
+pub enum SchemaKind {
+    #[default]
+    Config,
+    Style,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum)]

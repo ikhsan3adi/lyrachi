@@ -76,6 +76,36 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
     write_atomic(&target, document.to_string().as_bytes())
 }
 
+pub fn save_style_pref(path: &Path, style: &str) -> Result<(), PrefsError> {
+    let target = resolve_target(path)?;
+    let source = match fs::read_to_string(&target) {
+        Ok(source) => source,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(PrefsError::io("read", &target, error)),
+    };
+
+    let mut document = source
+        .parse::<DocumentMut>()
+        .map_err(|error| PrefsError::InvalidToml {
+            path: path.display().to_string(),
+            message: error.to_string(),
+        })?;
+    let ui = document
+        .as_table_mut()
+        .entry("ui")
+        .or_insert(Item::Table(Table::new()));
+    let Some(ui) = ui.as_table_like_mut() else {
+        return Err(PrefsError::InvalidToml {
+            path: path.display().to_string(),
+            message: "`ui` must be a table".to_string(),
+        });
+    };
+
+    set_value(ui, "style", style);
+
+    write_atomic(&target, document.to_string().as_bytes())
+}
+
 fn set_value(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: impl Into<Value>) {
     let mut item = value(new_value);
     if let Some(existing) = ui.get_mut(key) {
@@ -254,6 +284,28 @@ mod tests {
         let saved = fs::read_to_string(&target).unwrap();
         assert!(saved.contains("# original"));
         assert!(saved.contains("fullscreen = true"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_and_updates_style_preference() {
+        let dir = temp_dir("prefs-style");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "# top note\n[ui]\nstyle = \"builtin:default\" # theme note\n",
+        )
+        .unwrap();
+
+        save_style_pref(&path, "builtin:aurora").unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("# top note"));
+        assert!(
+            saved.contains("style = \"builtin:aurora\" # theme note"),
+            "{saved}"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

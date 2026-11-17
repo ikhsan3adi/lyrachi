@@ -64,7 +64,6 @@ impl AnimationStatus {
     }
 }
 
-#[derive(Debug)]
 pub struct AppRuntime {
     pub animation: AnimationStatus,
     pub block_cache: BlockStageCache,
@@ -72,11 +71,24 @@ pub struct AppRuntime {
     pub styles_dir: Option<PathBuf>,
     pub color_capability: ColorCapability,
     pub bg_blend_hint: Option<(u8, u8, u8)>,
+    pub _watcher: Option<notify::RecommendedWatcher>,
     menu_cancel: Option<CancellationToken>,
     menu_request_id: u64,
     preference_revision: u64,
     candidates: Vec<CandidateSummary>,
     candidate_track_key: Option<CanonicalTrackKey>,
+}
+
+impl std::fmt::Debug for AppRuntime {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AppRuntime")
+            .field("animation", &self.animation)
+            .field("base_style_name", &self.base_style_name)
+            .field("styles_dir", &self.styles_dir)
+            .field("color_capability", &self.color_capability)
+            .field("bg_blend_hint", &self.bg_blend_hint)
+            .finish()
+    }
 }
 
 impl Default for AppRuntime {
@@ -88,6 +100,7 @@ impl Default for AppRuntime {
             styles_dir: None,
             color_capability: ColorCapability::TrueColor,
             bg_blend_hint: None,
+            _watcher: None,
             menu_cancel: None,
             menu_request_id: 0,
             preference_revision: 0,
@@ -222,6 +235,49 @@ pub async fn run(
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
     let (app_tx, mut app_rx) = mpsc::channel(64);
+    let (style_notify_tx, mut style_notify_rx) = mpsc::channel::<()>(16);
+    let watcher_res = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if res.is_ok() {
+            let _ = style_notify_tx.try_send(());
+        }
+    });
+    let (watcher, watcher_task) = match (watcher_res, &runtime.styles_dir) {
+        (Ok(mut watcher), Some(dir)) => {
+            let _ = std::fs::create_dir_all(dir);
+            use notify::Watcher;
+            match watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
+                Ok(()) => {
+                    let debounce_app_tx = app_tx.clone();
+                    let task = tokio::spawn(async move {
+                        while style_notify_rx.recv().await.is_some() {
+                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                            while style_notify_rx.try_recv().is_ok() {}
+                            let _ = debounce_app_tx.send(AppEvent::StyleReloadRequested).await;
+                        }
+                    });
+                    (Some(watcher), Some(task))
+                }
+                Err(error) => {
+                    warn!(%error, "styles file watcher failed to watch directory");
+                    state.show_banner(
+                        format!("styles watcher unavailable: {error}"),
+                        Instant::now(),
+                    );
+                    (None, None)
+                }
+            }
+        }
+        (Err(error), _) => {
+            warn!(%error, "failed to initialize styles file watcher");
+            state.show_banner(
+                format!("styles watcher unavailable: {error}"),
+                Instant::now(),
+            );
+            (None, None)
+        }
+        _ => (None, None),
+    };
+    runtime._watcher = watcher;
     let cancel = CancellationToken::new();
     let player_filter = config.player_filter.clone();
     let monitor_cancel = cancel.clone();
@@ -348,6 +404,9 @@ pub async fn run(
     runtime.cancel_menu_requests();
     coordinator.cancel_active();
     cancel.cancel();
+    if let Some(task) = watcher_task {
+        task.abort();
+    }
     if let Some(monitor) = monitor {
         monitor.abort();
         let _ = monitor.await;
@@ -820,6 +879,9 @@ fn handle_app_event(
                 cache,
             );
         }
+        AppEvent::StyleReloadRequested => {
+            reload_active_style(state, runtime, Instant::now());
+        }
     }
 }
 
@@ -891,6 +953,40 @@ fn apply_active_style(state: &mut UiState, runtime: &AppRuntime) {
             .profile
             .resolve(desired, runtime.color_capability, runtime.bg_blend_hint);
     state.set_resolved_style(resolved);
+}
+
+pub fn reload_active_style(state: &mut UiState, runtime: &mut AppRuntime, now: Instant) {
+    let desired = state
+        .pinned_style
+        .as_deref()
+        .unwrap_or(runtime.base_style_name.as_str());
+
+    match crate::style::loader::load_style(
+        desired,
+        runtime.styles_dir.as_deref(),
+        state.viewport_width,
+    ) {
+        Ok(outcome) => {
+            for warning in &outcome.warnings {
+                warn!("{warning}");
+            }
+            if state.config_warning.is_none()
+                && let Some(first) = outcome.warnings.first()
+            {
+                state.config_warning = Some(first.clone());
+            }
+            let resolved =
+                outcome
+                    .profile
+                    .resolve(desired, runtime.color_capability, runtime.bg_blend_hint);
+            state.set_resolved_style(resolved);
+            runtime.block_cache.clear();
+        }
+        Err(error) => {
+            warn!(%error, "hot-reload style failed for `{desired}`; retaining previous valid profile");
+            state.show_banner(format!("style reload failed: {error}"), now);
+        }
+    }
 }
 
 pub fn handle_search_candidates(
@@ -1108,6 +1204,33 @@ fn handle_input_with_runtime(
         }
         KeyAction::ToggleRibbon => {
             state.toggle_ribbon(now);
+            InputOutcome::default()
+        }
+        KeyAction::CycleStyle => {
+            if let Some(runtime) = runtime {
+                let next = crate::style::cycle_next_style(
+                    &runtime.base_style_name,
+                    runtime.styles_dir.as_deref(),
+                );
+                runtime.base_style_name = next.clone();
+                if let Some(config_file) = config_file
+                    && let Err(error) = crate::prefs::save_style_pref(config_file, &next)
+                {
+                    warn!(%error, "failed to persist style preference");
+                }
+                apply_active_style(state, runtime);
+                runtime.block_cache.clear();
+                if let Some(pinned) = state.pinned_style.as_deref() {
+                    state.show_banner(
+                        format!(
+                            "base style set to `{next}` (pinned track style `{pinned}` active)"
+                        ),
+                        now,
+                    );
+                } else {
+                    state.show_banner(format!("style: {next}"), now);
+                }
+            }
             InputOutcome::default()
         }
         KeyAction::OffsetBack => {
@@ -3207,5 +3330,133 @@ mod tests {
         );
         assert_eq!(state.modal, None);
         assert!(state.transient_banner.is_some());
+    }
+
+    #[test]
+    fn hot_reload_applies_new_theme_and_retains_last_valid_profile_on_corruption_or_deletion() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("lyrachi-reload-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let style_file = dir.join("custom.toml");
+
+        std::fs::write(
+            &style_file,
+            r#"
+schema_version = 1
+[palette]
+accent = "cyan"
+[lines.active]
+fg = "$accent"
+prefix = "> "
+"#,
+        )
+        .unwrap();
+
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime {
+            base_style_name: "custom".to_string(),
+            styles_dir: Some(dir.clone()),
+            ..AppRuntime::default()
+        };
+        apply_active_style(&mut state, &runtime);
+        assert_eq!(state.style.active_prefix, "> ");
+
+        // 1. Atomic save / rename with new theme
+        let temp_file = dir.join(".custom.toml.tmp");
+        std::fs::write(
+            &temp_file,
+            r#"
+schema_version = 1
+[palette]
+accent = "magenta"
+[lines.active]
+fg = "$accent"
+prefix = ">> "
+"#,
+        )
+        .unwrap();
+        std::fs::rename(&temp_file, &style_file).unwrap();
+
+        let now = Instant::now();
+        reload_active_style(&mut state, &mut runtime, now);
+        assert_eq!(state.style.active_prefix, ">> ");
+        assert_eq!(state.style.accent, Some(ratatui::style::Color::Magenta));
+
+        // 2. Corrupted file: retains previous valid profile and shows warning banner
+        std::fs::write(&style_file, "invalid [[[ toml").unwrap();
+        reload_active_style(&mut state, &mut runtime, now);
+        assert_eq!(
+            state.style.active_prefix, ">> ",
+            "retains previous valid profile"
+        );
+        assert!(state.transient_banner.is_some());
+
+        // 3. Deleted file: retains previous valid profile and shows warning banner
+        let _ = std::fs::remove_file(&style_file);
+        reload_active_style(&mut state, &mut runtime, now);
+        assert_eq!(
+            state.style.active_prefix, ">> ",
+            "retains previous valid profile"
+        );
+        assert!(state.transient_banner.is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn shift_s_cycles_style_preset_and_persists() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("lyrachi-cycle-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+        std::fs::write(&config_file, "[ui]\nstyle = \"builtin:default\"\n").unwrap();
+
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime {
+            base_style_name: "builtin:default".to_string(),
+            styles_dir: Some(dir.join("styles")),
+            ..AppRuntime::default()
+        };
+        apply_active_style(&mut state, &runtime);
+        assert_eq!(runtime.base_style_name, "builtin:default");
+
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let now = Instant::now();
+
+        // Press Shift+S
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            Some(&config_file),
+            now,
+            Event::Key(crossterm::event::KeyEvent {
+                code: crossterm::event::KeyCode::Char('S'),
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+        );
+
+        assert_eq!(runtime.base_style_name, "builtin:dark");
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("style = \"builtin:dark\""), "{saved}");
+        assert!(state.transient_banner.is_some());
+
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

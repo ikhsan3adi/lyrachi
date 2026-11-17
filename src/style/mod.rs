@@ -2,6 +2,7 @@ pub mod color;
 pub mod loader;
 
 use std::collections::BTreeMap;
+use std::path::Path;
 
 use ratatui::{
     layout::Alignment,
@@ -22,6 +23,47 @@ pub const BUILTIN_PRESETS: &[&str] = &[
     "builtin:aurora",
     "builtin:minimal",
 ];
+
+/// List all available style presets, including built-ins and user `.toml` styles in `styles_dir`.
+pub fn available_style_names(styles_dir: Option<&Path>) -> Vec<String> {
+    let mut names = BUILTIN_PRESETS
+        .iter()
+        .map(|s| s.to_string())
+        .collect::<Vec<_>>();
+
+    if let Some(dir) = styles_dir
+        && let Ok(entries) = std::fs::read_dir(dir)
+    {
+        let mut custom = Vec::new();
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+                && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
+                && !stem.starts_with('.')
+                && !custom.contains(&stem.to_string())
+            {
+                custom.push(stem.to_string());
+            }
+        }
+        custom.sort();
+        names.extend(custom);
+    }
+
+    names
+}
+
+/// Advance to the next style preset, wrapping around to the first when the end is reached.
+pub fn cycle_next_style(current: &str, styles_dir: Option<&Path>) -> String {
+    let all = available_style_names(styles_dir);
+    if all.is_empty() {
+        return DEFAULT_STYLE_NAME.to_string();
+    }
+    if let Some(pos) = all.iter().position(|s| s == current) {
+        all[(pos + 1) % all.len()].clone()
+    } else {
+        all[0].clone()
+    }
+}
 
 const PADDING_MAX: u16 = 32;
 const LINE_SPACING_MAX: u16 = 4;
@@ -313,7 +355,7 @@ pub fn builtin_preset_source(name: &str) -> Option<&'static str> {
 }
 
 /// Complete visual theme schema active in M33 (`styles/*.toml`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleProfile {
     pub schema_version: Option<u32>,
@@ -466,7 +508,7 @@ impl StyleProfile {
 }
 
 /// Descriptive style metadata (active M33 subset).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleMeta {
     pub name: String,
@@ -475,7 +517,7 @@ pub struct StyleMeta {
 }
 
 /// Named color tokens plus custom user variables for `$var` expansion.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StylePalette {
     pub bg: StyleColor,
@@ -505,7 +547,7 @@ impl Default for StylePalette {
 }
 
 /// Horizontal text alignment for lyrics lines.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TextAlign {
     Left,
@@ -524,8 +566,16 @@ impl From<TextAlign> for Alignment {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum RawMaxWidth {
+    Int(u16),
+    Text(String),
+}
+
 /// Maximum lyric wrap width expressed as percentage or fixed columns.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, schemars::JsonSchema)]
+#[schemars(with = "RawMaxWidth")]
 pub enum MaxWidth {
     Columns(u16),
     Percent(u16),
@@ -549,13 +599,6 @@ impl<'de> Deserialize<'de> for MaxWidth {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum RawMaxWidth {
-            Int(u16),
-            Text(String),
-        }
-
         match RawMaxWidth::deserialize(deserializer)? {
             RawMaxWidth::Int(cols) => Ok(Self::Columns(cols.clamp(1, 500))),
             RawMaxWidth::Text(raw) => {
@@ -578,8 +621,16 @@ impl<'de> Deserialize<'de> for MaxWidth {
     }
 }
 
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
+#[serde(untagged)]
+enum RawPadding {
+    Scalar(u16),
+    Pair([u16; 2]),
+}
+
 /// Vertical and horizontal outer padding (`[vertical, horizontal]` or scalar).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, schemars::JsonSchema)]
+#[schemars(with = "RawPadding")]
 pub struct Padding {
     pub vertical: u16,
     pub horizontal: u16,
@@ -612,13 +663,6 @@ impl<'de> Deserialize<'de> for Padding {
     where
         D: Deserializer<'de>,
     {
-        #[derive(Deserialize)]
-        #[serde(untagged)]
-        enum RawPadding {
-            Scalar(u16),
-            Pair([u16; 2]),
-        }
-
         match RawPadding::deserialize(deserializer)? {
             RawPadding::Scalar(value) => Ok(Self {
                 vertical: value,
@@ -633,7 +677,7 @@ impl<'de> Deserialize<'de> for Padding {
 }
 
 /// Layout and viewport window settings.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleLayout {
     pub align: TextAlign,
@@ -658,7 +702,7 @@ impl Default for StyleLayout {
 }
 
 /// Supported terminal text modifiers in `styles/*.toml`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum StyleModifier {
     Bold,
@@ -684,7 +728,7 @@ fn collect_modifiers(list: &[StyleModifier]) -> Modifier {
 }
 
 /// Line styling rule for active or inactive lines.
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct LineRule {
     pub fg: StyleColor,
@@ -703,7 +747,7 @@ impl Default for LineRule {
 }
 
 /// Distance fade configuration between adjacent and far lines.
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct FadeConfig {
     pub curve: FadeCurve,
@@ -720,7 +764,7 @@ impl Default for FadeConfig {
 }
 
 /// Line appearance rules (`[lines]`).
-#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleLines {
     pub active: LineRule,
@@ -743,7 +787,7 @@ impl Default for StyleLines {
 }
 
 /// Word highlight granularity supported in M33 (no `wipe` yet).
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum HighlightMode {
     Line,
@@ -752,7 +796,7 @@ pub enum HighlightMode {
 }
 
 /// Highlight settings (`[highlight]`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleHighlight {
     pub mode: HighlightMode,
@@ -762,7 +806,7 @@ pub struct StyleHighlight {
 }
 
 /// Instrumental wait countdown visual style.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum InstrumentalStyle {
     #[default]
@@ -773,7 +817,7 @@ pub enum InstrumentalStyle {
 }
 
 /// Waiting gap indicator settings (`[instrumental]`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleInstrumental {
     pub style: InstrumentalStyle,
@@ -792,7 +836,7 @@ impl Default for StyleInstrumental {
 }
 
 /// Where lyric annotations appear relative to the main line.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum AnnotationPosition {
     #[default]
@@ -801,7 +845,7 @@ pub enum AnnotationPosition {
 }
 
 /// Annotation styling (`[annotations]`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleAnnotations {
     pub show: bool,
@@ -822,7 +866,7 @@ impl Default for StyleAnnotations {
 }
 
 /// Track header display rules (`[header]`).
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleHeader {
     pub show: bool,
@@ -839,7 +883,7 @@ impl Default for StyleHeader {
 }
 
 /// Maximum bitmap font tier allowed for Block display mode.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum BigTextMaxSize {
     #[default]
@@ -851,7 +895,7 @@ pub enum BigTextMaxSize {
 }
 
 /// Fallback strategy when a phrase exceeds the Block display budget.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum BigTextOverflow {
     #[default]
@@ -861,7 +905,7 @@ pub enum BigTextOverflow {
 }
 
 /// Block mode typography limits (`[big_text]`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleBigText {
     pub max_size: BigTextMaxSize,
@@ -1086,4 +1130,70 @@ fn clamp_usize(
         ));
     }
     clamped
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use super::*;
+
+    fn temp_dir(label: &str) -> std::path::PathBuf {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-style-{label}-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    #[test]
+    fn style_cycling_advances_through_builtins_and_custom_presets() {
+        let dir = temp_dir("cycling");
+        fs::write(dir.join("zebra.toml"), "[meta]\nname = \"zebra\"\n").unwrap();
+        fs::write(dir.join("alpha.toml"), "[meta]\nname = \"alpha\"\n").unwrap();
+        fs::write(dir.join(".hidden.toml"), "[meta]\nname = \"hidden\"\n").unwrap();
+        fs::write(dir.join("not_toml.txt"), "hello").unwrap();
+
+        let all = available_style_names(Some(&dir));
+        assert_eq!(
+            all,
+            vec![
+                "builtin:default",
+                "builtin:dark",
+                "builtin:aurora",
+                "builtin:minimal",
+                "alpha",
+                "zebra",
+            ]
+        );
+
+        assert_eq!(
+            cycle_next_style("builtin:default", Some(&dir)),
+            "builtin:dark"
+        );
+        assert_eq!(cycle_next_style("builtin:minimal", Some(&dir)), "alpha");
+        assert_eq!(cycle_next_style("alpha", Some(&dir)), "zebra");
+        assert_eq!(cycle_next_style("zebra", Some(&dir)), "builtin:default");
+        assert_eq!(cycle_next_style("unknown", Some(&dir)), "builtin:default");
+
+        let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn schema_for_style_profile_is_valid_2020_12() {
+        let schema = schemars::schema_for!(StyleProfile);
+        let json: serde_json::Value = serde_json::to_value(&schema).unwrap();
+        assert_eq!(
+            json["$schema"],
+            "https://json-schema.org/draft/2020-12/schema"
+        );
+        assert!(json["properties"]["palette"].is_object());
+        assert!(json["properties"]["layout"].is_object());
+    }
 }

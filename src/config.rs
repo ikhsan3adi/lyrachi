@@ -295,7 +295,7 @@ fn clamp_ambiguous_width(value: u8, field: &str, warnings: &mut Vec<String>) -> 
     clamped
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
     pub schema_version: Option<u32>,
@@ -307,20 +307,20 @@ pub struct FileConfig {
     pub terminal: TerminalSection,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct PlayerSection {
     pub filter: Option<String>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct SyncSection {
     pub global_offset_ms: Option<i64>,
     pub lookahead_ms: Option<u64>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct ProvidersSection {
     pub order: Option<Vec<String>>,
@@ -328,13 +328,13 @@ pub struct ProvidersSection {
     pub local_dirs: Option<Vec<PathBuf>>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct CacheSection {
     pub l1_entries: Option<usize>,
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct UiSection {
     pub fullscreen: Option<bool>,
@@ -346,7 +346,7 @@ pub struct UiSection {
     pub style: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum RibbonMode {
     #[default]
@@ -367,7 +367,7 @@ impl RibbonMode {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
 #[serde(default, deny_unknown_fields)]
 pub struct TerminalSection {
     pub ambiguous_width: Option<u8>,
@@ -376,7 +376,7 @@ pub struct TerminalSection {
     pub bg_blend_hint: Option<String>,
 }
 
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum TerminalUnicode {
     #[default]
@@ -387,6 +387,144 @@ pub enum TerminalUnicode {
 impl TerminalUnicode {
     pub fn is_full(self) -> bool {
         self == Self::Full
+    }
+}
+
+pub const DEFAULT_CONFIG_TEMPLATE: &str = r##"# lyrachi default configuration (schema version 1)
+schema_version = 1
+
+[player]
+# Only consider this media player (for example: mpv, spotify, firefox)
+# filter = "mpv"
+
+[sync]
+# Manual lyric delay in milliseconds (positive values delay lyrics)
+global_offset_ms = 0
+# Lookahead in milliseconds (render transitions earlier)
+lookahead_ms = 0
+
+[providers]
+# Provider resolution order
+order = ["local", "lrclib", "lyricsplus", "ytmusic"]
+# Enable or disable network lyric providers
+network = true
+# Additional local lyric directories
+local_dirs = []
+
+[cache]
+# Maximum number of in-memory L1 cache entries
+l1_entries = 64
+
+[ui]
+# Start in fullscreen mode
+fullscreen = false
+# Display track title and artist header
+show_header = true
+# Display status bar at the bottom
+show_status = true
+# Display mode: "normal" or "block"
+display_mode = "normal"
+# Enable word-level karaoke highlighting
+word_highlight = true
+# Collapsible ribbon mode: "auto", "top", "bottom", or "off"
+ribbon = "auto"
+# Active style name or preset (e.g. "builtin:default", "builtin:dark", "builtin:aurora", "builtin:minimal")
+style = "builtin:default"
+
+[terminal]
+# Ambiguous-width Unicode character width: 1 or 2
+ambiguous_width = 1
+# Unicode glyph support: "full" or "ascii"
+unicode = "full"
+# Terminal color capability mode: "auto", "truecolor", "256", or "16"
+color_mode = "auto"
+# Optional fallback background RGB color hint (e.g. "#1a1b26")
+# bg_blend_hint = ""
+"##;
+
+pub fn check_config(
+    config_path: &Path,
+    styles_dir: Option<&Path>,
+) -> Result<(String, Vec<String>), String> {
+    let mut warnings = Vec::new();
+    let mut style_name = DEFAULT_STYLE_NAME.to_string();
+
+    if config_path.exists() {
+        let source = fs::read_to_string(config_path).map_err(|error| {
+            format!(
+                "could not read config file {}: {error}",
+                config_path.display()
+            )
+        })?;
+
+        let file: FileConfig =
+            toml::from_str(&source).map_err(|error| format_toml_error(&source, &error))?;
+
+        if let Some(style) = file.ui.style.as_ref()
+            && !style.trim().is_empty()
+        {
+            style_name = style.clone();
+        }
+
+        let mut runtime = RuntimeConfig::default();
+        apply_file(&mut runtime, file, &mut warnings);
+    } else {
+        warnings.push(format!(
+            "config file not found at {}; using default configuration",
+            config_path.display()
+        ));
+    }
+
+    let style_outcome = crate::style::loader::load_style(&style_name, styles_dir, 80)
+        .map_err(|error| format!("error in style `{style_name}`: {error}"))?;
+
+    warnings.extend(style_outcome.warnings);
+
+    Ok((style_name, warnings))
+}
+
+pub fn run_config_action(
+    action: crate::cli::ConfigAction,
+    config_path: &Path,
+    styles_dir: Option<&Path>,
+) -> Result<(), String> {
+    match action {
+        crate::cli::ConfigAction::PrintDefault => {
+            print!("{DEFAULT_CONFIG_TEMPLATE}");
+            Ok(())
+        }
+        crate::cli::ConfigAction::Schema { kind } => {
+            match kind {
+                crate::cli::SchemaKind::Config => {
+                    let schema = schemars::schema_for!(FileConfig);
+                    let json = serde_json::to_string_pretty(&schema)
+                        .map_err(|error| format!("failed to serialize config schema: {error}"))?;
+                    println!("{json}");
+                }
+                crate::cli::SchemaKind::Style => {
+                    let schema = schemars::schema_for!(crate::style::StyleProfile);
+                    let json = serde_json::to_string_pretty(&schema)
+                        .map_err(|error| format!("failed to serialize style schema: {error}"))?;
+                    println!("{json}");
+                }
+            }
+            Ok(())
+        }
+        crate::cli::ConfigAction::Check => {
+            let (style_name, warnings) = check_config(config_path, styles_dir)?;
+            if warnings.is_empty() {
+                println!("OK: configuration and active style `{style_name}` are valid.");
+            } else {
+                println!(
+                    "OK: configuration and active style `{style_name}` passed with {} warning(s):",
+                    warnings.len()
+                );
+                for warning in &warnings {
+                    println!("  warning: {warning}");
+                }
+            }
+            Ok(())
+        }
     }
 }
 

@@ -14,6 +14,7 @@ expression: "render_state(state, width, height, effective_ms)"
                │ m           Toggle display mode (normal/block) │
                │ w           Toggle word highlight              │
                │ Tab         Toggle ribbon bar                  │
+               │ S           Cycle style preset                 │
                │ [           Shift timing -100 ms               │
                │ ]           Shift timing +100 ms               │
                │ \           Reset timing offset                │
@@ -23,6 +24,5 @@ expression: "render_state(state, width, height, effective_ms)"
                │ q, Ctrl+C   Quit                               │
                │                                                │
                ╰───────────────────────────────── ? / Esc close ╯
-
 
 limusic | playing | lrclib | +0 ms | 97% | word

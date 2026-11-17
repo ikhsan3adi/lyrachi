@@ -17,6 +17,7 @@ pub struct PathOverrides {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AppPaths {
     pub config_file: PathBuf,
+    pub styles_dir: PathBuf,
     pub offsets_file: PathBuf,
     pub cache_db_file: PathBuf,
     pub log_file: PathBuf,
@@ -37,6 +38,11 @@ impl AppPaths {
             .as_ref()
             .map(|project| project.config_dir().join(CONFIG_FILE))
             .unwrap_or_else(|| fallback_path(home.as_deref(), ".config", CONFIG_FILE));
+        let resolved_config = overrides.config_file.unwrap_or(config_file);
+        let styles_dir = resolved_config
+            .parent()
+            .map(|dir| dir.join("styles"))
+            .unwrap_or_else(|| fallback_path(home.as_deref(), ".config", "styles"));
         let offsets_file = project
             .as_ref()
             .map(|project| project.data_dir().join(OFFSETS_FILE))
@@ -52,7 +58,8 @@ impl AppPaths {
             .unwrap_or_else(|| fallback_path(home.as_deref(), ".local/state", LOG_FILE));
 
         Self {
-            config_file: overrides.config_file.unwrap_or(config_file),
+            config_file: resolved_config,
+            styles_dir,
             offsets_file,
             cache_db_file,
             log_file: overrides.log_file.unwrap_or(log_file),
@@ -73,6 +80,7 @@ impl AppPaths {
 
         vec![
             ("config", self.config_file.display().to_string()),
+            ("styles", self.styles_dir.display().to_string()),
             ("offsets", self.offsets_file.display().to_string()),
             ("cache", self.cache_db_file.display().to_string()),
             ("log", self.log_file.display().to_string()),
@@ -134,9 +142,10 @@ mod tests {
     }
 
     #[test]
-    fn paths_output_contains_five_entries() {
+    fn paths_output_contains_six_entries() {
         let paths = AppPaths {
             config_file: PathBuf::from("/tmp/config.toml"),
+            styles_dir: PathBuf::from("/tmp/styles"),
             offsets_file: PathBuf::from("/tmp/offsets.json"),
             cache_db_file: PathBuf::from("/tmp/cache.db"),
             log_file: PathBuf::from("/tmp/lyrachi.log"),
@@ -144,7 +153,8 @@ mod tests {
         };
         let lines = paths.lines();
 
-        assert_eq!(lines.len(), 5);
+        assert_eq!(lines.len(), 6);
+        assert!(lines.iter().any(|(name, _)| *name == "styles"));
         assert!(lines.iter().any(|(name, _)| *name == "music"));
         assert!(lines.iter().any(|(_, value)| value == "/tmp/config.toml"));
     }

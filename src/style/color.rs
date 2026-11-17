@@ -6,7 +6,7 @@ use serde::{Deserialize, Deserializer};
 const MAX_FADE_MIX: f32 = 0.85;
 
 /// User preference for terminal color depth.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum ColorMode {
     #[default]
@@ -103,7 +103,8 @@ pub fn detect_process_color_capability(mode: ColorMode) -> ColorCapability {
 }
 
 /// Wrapper around `ratatui::style::Color` supporting TOML color string parsing.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, schemars::JsonSchema)]
+#[schemars(with = "String")]
 pub struct StyleColor(pub Color);
 
 impl Default for StyleColor {
@@ -286,7 +287,7 @@ pub fn degrade_color(color: Color, capability: ColorCapability) -> Option<Color>
 }
 
 /// Interpolation curve for distance-based line fading.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum FadeCurve {
     #[default]

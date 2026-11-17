@@ -27,6 +27,15 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
+    if let Some(Command::Config { action }) = args.command {
+        return lyrachi::config::run_config_action(
+            action,
+            &paths.config_file,
+            Some(&paths.styles_dir),
+        )
+        .map_err(|err| color_eyre::eyre::eyre!(err));
+    }
+
     let outcome =
         RuntimeConfig::resolve(&paths.config_file, paths.default_music_dirs.clone(), &args);
     let _guard = logging::init(&paths.log_file)?;

@@ -99,6 +99,10 @@ fn paths_command_prints_resolved_paths_without_tui() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.contains(&format!("config: {}", custom.display())));
     assert!(stdout.contains(&format!(
+        "styles: {}",
+        custom.parent().unwrap().join("styles").display()
+    )));
+    assert!(stdout.contains(&format!(
         "offsets: {}",
         data_home.join("lyrachi/offsets.json").display()
     )));
@@ -245,4 +249,93 @@ fn parses_pipe_defaults_and_json_width() {
             max_width: Some(42)
         })
     );
+}
+
+#[test]
+fn config_print_default_prints_valid_toml_template() {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args(["config", "print-default"])
+        .output()
+        .unwrap();
+
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("schema_version = 1"));
+    assert!(stdout.contains("[providers]"));
+    assert!(stdout.contains("[ui]"));
+}
+
+#[test]
+fn config_schema_outputs_valid_draft_2020_12_json_schema() {
+    for kind in ["config", "style"] {
+        let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+            .args(["config", "schema", "--kind", kind])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let schema: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+        assert_eq!(
+            schema["$schema"], "https://json-schema.org/draft/2020-12/schema",
+            "schema for {kind} failed"
+        );
+        assert!(schema["properties"].is_object());
+    }
+}
+
+#[test]
+fn config_check_detects_typos_in_config_and_style() {
+    let root = std::env::temp_dir().join(format!("lyrachi-config-check-{}", std::process::id()));
+    let config_dir = root.join("config");
+    let styles_dir = config_dir.join("styles");
+    std::fs::create_dir_all(&styles_dir).unwrap();
+
+    // 1. Valid config and builtin style
+    let valid_config = config_dir.join("valid.toml");
+    std::fs::write(&valid_config, "[ui]\nstyle = \"builtin:dark\"\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args([
+            "config",
+            "check",
+            "--config",
+            valid_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("OK:"), "{stdout}");
+
+    // 2. Config with typo (unknown field rejected by deny_unknown_fields)
+    let typo_config = config_dir.join("typo.toml");
+    std::fs::write(&typo_config, "[ui]\ninvalid_setting = true\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args(["config", "check", "--config", typo_config.to_str().unwrap()])
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+
+    // 3. Style with typo (detected by serde_ignored and reported as warning)
+    let style_path = styles_dir.join("custom.toml");
+    std::fs::write(&style_path, "[lines.active]\nunknown_property = true\n").unwrap();
+    let style_config = config_dir.join("style_check.toml");
+    std::fs::write(&style_config, "[ui]\nstyle = \"custom\"\n").unwrap();
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args([
+            "config",
+            "check",
+            "--config",
+            style_config.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    let stdout = String::from_utf8(output.stdout).unwrap();
+    assert!(stdout.contains("unknown_property"), "{stdout}");
+
+    std::fs::remove_dir_all(root).unwrap();
 }
