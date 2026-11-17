@@ -95,6 +95,7 @@ pub struct UiState {
     pub ribbon_mode: RibbonMode,
     pub ribbon_visible_until: Option<Instant>,
     pub ribbon_temp_hidden: bool,
+    pub ribbon_paused_at: Option<Instant>,
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
@@ -134,6 +135,7 @@ impl UiState {
             ribbon_mode: RibbonMode::default(),
             ribbon_visible_until: None,
             ribbon_temp_hidden: false,
+            ribbon_paused_at: None,
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
@@ -151,17 +153,32 @@ impl UiState {
     }
 
     pub fn toggle_help(&mut self) {
-        self.modal = match self.modal {
-            Some(UiModal::Help) => None,
-            Some(UiModal::ContextMenu(_)) | None => Some(UiModal::Help),
-        };
+        self.toggle_help_at(Instant::now());
+    }
+
+    pub fn toggle_help_at(&mut self, now: Instant) {
+        match self.modal {
+            Some(UiModal::Help) => {
+                self.modal = None;
+                self.resume_ribbon_timer(now);
+            }
+            Some(UiModal::ContextMenu(_)) | None => {
+                self.pause_ribbon_timer(now);
+                self.modal = Some(UiModal::Help);
+            }
+        }
     }
 
     pub fn open_help(&mut self) {
+        self.pause_ribbon_timer(Instant::now());
         self.modal = Some(UiModal::Help);
     }
 
     pub fn open_context_menu(&mut self) -> bool {
+        self.open_context_menu_at(Instant::now())
+    }
+
+    pub fn open_context_menu_at(&mut self, now: Instant) -> bool {
         let Some(track) = &self.track else {
             return false;
         };
@@ -170,6 +187,7 @@ impl UiState {
         } else {
             format!("{} - {}", track.artist, track.title)
         };
+        self.pause_ribbon_timer(now);
         self.modal = Some(UiModal::ContextMenu(Box::new(ContextMenuState::actions(
             label,
             self.pinned_source_label.clone(),
@@ -275,17 +293,58 @@ impl UiState {
     }
 
     pub fn close_context_menu(&mut self) {
+        self.close_context_menu_at(Instant::now());
+    }
+
+    pub fn close_context_menu_at(&mut self, now: Instant) {
         if matches!(self.modal, Some(UiModal::ContextMenu(_))) {
             self.modal = None;
+            self.resume_ribbon_timer(now);
         }
     }
 
     pub fn close_modal(&mut self) {
+        self.close_modal_at(Instant::now());
+    }
+
+    pub fn close_modal_at(&mut self, now: Instant) {
         self.modal = None;
+        self.resume_ribbon_timer(now);
     }
 
     pub fn is_modal_open(&self) -> bool {
         self.modal.is_some()
+    }
+
+    pub fn modal_fits_viewport(&self) -> bool {
+        match &self.modal {
+            Some(UiModal::Help) => self.help_fits_viewport(),
+            Some(UiModal::ContextMenu(_)) => self.context_menu_fits_viewport(),
+            None => true,
+        }
+    }
+
+    pub fn help_fits_viewport(&self) -> bool {
+        self.viewport_width >= help::MIN_AREA_WIDTH && self.viewport_height >= help::MIN_AREA_HEIGHT
+    }
+
+    pub fn context_menu_fits_viewport(&self) -> bool {
+        self.viewport_width >= menu::MIN_AREA_WIDTH && self.viewport_height >= menu::MIN_AREA_HEIGHT
+    }
+
+    fn pause_ribbon_timer(&mut self, now: Instant) {
+        if self.ribbon_visible_until.is_some() && self.ribbon_paused_at.is_none() {
+            self.ribbon_paused_at = Some(now);
+        }
+    }
+
+    fn resume_ribbon_timer(&mut self, now: Instant) {
+        let Some(paused_at) = self.ribbon_paused_at.take() else {
+            return;
+        };
+        if let Some(visible_until) = &mut self.ribbon_visible_until {
+            *visible_until += now.saturating_duration_since(paused_at);
+        }
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -389,10 +448,12 @@ impl UiState {
         self.ribbon_mode = mode;
         self.ribbon_visible_until = None;
         self.ribbon_temp_hidden = false;
+        self.ribbon_paused_at = None;
         self.clamp_scroll();
     }
 
     pub fn toggle_ribbon(&mut self, now: Instant) {
+        self.ribbon_paused_at = None;
         match self.ribbon_mode {
             RibbonMode::Auto | RibbonMode::Off => {
                 if self
@@ -412,6 +473,9 @@ impl UiState {
     }
 
     pub fn expire_ribbon(&mut self, now: Instant) {
+        if self.is_modal_open() {
+            return;
+        }
         if let Some(visible_until) = self.ribbon_visible_until
             && now >= visible_until
         {
@@ -1009,5 +1073,21 @@ mod tests {
         assert_eq!(state.ribbon_placement(), None);
         state.resize(80, 8);
         assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
+
+        // Modal pauses auto-hide ribbon timer and resumes remaining time on close
+        state.configure_ribbon(RibbonMode::Auto);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.toggle_help_at(t0 + Duration::from_secs(2));
+        state.expire_ribbon(t0 + Duration::from_secs(6));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.close_modal_at(t0 + Duration::from_secs(6));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        assert_eq!(
+            state.time_until_ribbon_expiry(t0 + Duration::from_secs(6)),
+            Some(Duration::from_secs(1))
+        );
+        state.expire_ribbon(t0 + Duration::from_secs(7));
+        assert_eq!(state.ribbon_placement(), None);
     }
 }

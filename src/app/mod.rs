@@ -11,7 +11,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, debug_span, warn};
 
 use crate::{
-    cache::{CacheHandle, TrackPreference},
+    cache::CacheHandle,
     config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
     core::model::CanonicalTrackKey,
@@ -65,6 +65,7 @@ pub struct AppRuntime {
     pub block_cache: BlockStageCache,
     menu_cancel: Option<CancellationToken>,
     menu_request_id: u64,
+    preference_revision: u64,
     candidates: Vec<CandidateSummary>,
     candidate_track_key: Option<CanonicalTrackKey>,
 }
@@ -77,6 +78,11 @@ impl AppRuntime {
         self.menu_request_id = self.menu_request_id.wrapping_add(1);
         self.candidates.clear();
         self.candidate_track_key = None;
+    }
+
+    pub fn bump_preference_revision(&mut self) -> u64 {
+        self.preference_revision = self.preference_revision.wrapping_add(1);
+        self.preference_revision
     }
 
     fn next_menu_token(&mut self) -> (u64, CancellationToken) {
@@ -238,7 +244,14 @@ pub async fn run(
                         cache: cache.as_ref(),
                     };
                     if let Some(plan) = outcome.refetch {
-                        apply_plan(plan, &mut state, &app_tx, resolution);
+                        apply_plan_with_pin(
+                            plan,
+                            &mut state,
+                            &app_tx,
+                            resolution,
+                            false,
+                            runtime.preference_revision,
+                        );
                     }
                     if let Some(command) = outcome.menu {
                         apply_menu_command(
@@ -378,7 +391,9 @@ pub fn draw_frame_with_cache<B: ratatui::backend::Backend>(
         let area = frame.area();
         let now = Instant::now();
         state.expire_banner(now);
-        state.expire_ribbon(now);
+        if !state.is_modal_open() {
+            state.expire_ribbon(now);
+        }
         state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
         render::render_with_cache(frame, state, block_cache, effective_ms);
@@ -402,7 +417,7 @@ fn apply_plan(
     app_tx: &mpsc::Sender<AppEvent>,
     resolution: Resolution<'_>,
 ) {
-    apply_plan_with_pin(plan, state, app_tx, resolution, false);
+    apply_plan_with_pin(plan, state, app_tx, resolution, false, 0);
 }
 
 fn apply_plan_with_pin(
@@ -411,6 +426,7 @@ fn apply_plan_with_pin(
     app_tx: &mpsc::Sender<AppEvent>,
     resolution: Resolution<'_>,
     clear_pinned: bool,
+    preference_revision: u64,
 ) {
     match plan {
         TrackPlan::Unusable { user_offset_ms, .. } => {
@@ -429,7 +445,7 @@ fn apply_plan_with_pin(
                 && let Some(cache) = resolution.cache
             {
                 let key = TrackQuery::from_meta(meta, user_offset_ms).canonical;
-                spawn_load_track_preference(cache, app_tx, epoch, key);
+                spawn_load_track_preference(cache, app_tx, epoch, preference_revision, key);
             }
             state.set_lyrics(answer.track);
         }
@@ -442,7 +458,13 @@ fn apply_plan_with_pin(
         } => {
             state.user_offset_ms = user_offset_ms;
             if !clear_pinned && let Some(cache) = resolution.cache {
-                spawn_load_track_preference(cache, app_tx, request_epoch, query.canonical.clone());
+                spawn_load_track_preference(
+                    cache,
+                    app_tx,
+                    request_epoch,
+                    preference_revision,
+                    query.canonical.clone(),
+                );
             }
             start_fetch(
                 state,
@@ -462,6 +484,7 @@ fn spawn_load_track_preference(
     cache: &CacheHandle,
     app_tx: &mpsc::Sender<AppEvent>,
     epoch: u64,
+    preference_revision: u64,
     key: CanonicalTrackKey,
 ) {
     let cache = cache.clone();
@@ -478,6 +501,7 @@ fn spawn_load_track_preference(
         let _ = app_tx
             .send(AppEvent::TrackPreferenceLoaded {
                 epoch,
+                preference_revision,
                 key,
                 pinned_source_label,
                 pinned_style: pref.preferred_style,
@@ -497,16 +521,15 @@ fn start_fetch(
     bypass_cache: bool,
     clear_pinned: bool,
 ) {
-    if clear_pinned && let Some(cache) = resolution.cache.cloned() {
-        let key = query.canonical.clone();
-        tokio::spawn(async move {
-            if let Err(error) = cache.clear_pinned_lyrics(&key).await {
-                warn!(%error, "failed to clear pinned lyrics before refetch");
-            }
-        });
-    }
-
     let Some(resolver) = resolution.resolver else {
+        if clear_pinned && let Some(cache) = resolution.cache.cloned() {
+            let key = query.canonical.clone();
+            tokio::spawn(async move {
+                if let Err(error) = cache.clear_pinned_lyrics(&key).await {
+                    warn!(%error, "failed to clear pinned lyrics before refetch");
+                }
+            });
+        }
         state.refetching = false;
         state.set_error("Lyrics providers unavailable.".to_string());
         return;
@@ -515,6 +538,12 @@ fn start_fetch(
     let cache = resolution.cache.cloned();
     let app_tx = app_tx.clone();
     tokio::spawn(async move {
+        if clear_pinned
+            && let Some(cache) = cache.as_ref()
+            && let Err(error) = cache.clear_pinned_lyrics(&query.canonical).await
+        {
+            warn!(%error, "failed to clear pinned lyrics before refetch");
+        }
         if bypass_cache
             && let Some(cache) = cache.as_ref()
             && let Err(error) = cache.invalidate_track(&query.canonical).await
@@ -569,8 +598,24 @@ fn handle_media_with_runtime(
         MediaEvent::NoPlayer | MediaEvent::TrackChanged(_) | MediaEvent::NoTrack
     ) {
         runtime.cancel_menu_requests();
+        runtime.bump_preference_revision();
     }
-    handle_media(event, state, clock, coordinator, app_tx, resolution, now);
+    match event {
+        MediaEvent::TrackChanged(meta) => {
+            clock.on_seeked(0, now);
+            state.set_track(meta.clone());
+            let plan = coordinator.prepare_track(&meta);
+            apply_plan_with_pin(
+                plan,
+                state,
+                app_tx,
+                resolution,
+                false,
+                runtime.preference_revision,
+            );
+        }
+        other => handle_media(other, state, clock, coordinator, app_tx, resolution, now),
+    }
 }
 
 pub fn handle_media(
@@ -690,14 +735,17 @@ fn handle_app_event(
         }
         AppEvent::TrackPreferenceLoaded {
             epoch,
+            preference_revision,
             key,
             pinned_source_label,
             pinned_style,
         } => {
             handle_track_preference_loaded(
                 state,
+                runtime,
                 coordinator,
                 epoch,
+                preference_revision,
                 &key,
                 pinned_source_label,
                 pinned_style,
@@ -730,15 +778,21 @@ fn handle_app_event(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn handle_track_preference_loaded(
     state: &mut UiState,
+    runtime: &AppRuntime,
     coordinator: &ResolveCoordinator,
     epoch: u64,
+    preference_revision: u64,
     key: &CanonicalTrackKey,
     pinned_source_label: Option<String>,
     pinned_style: Option<String>,
 ) {
-    if epoch != coordinator.epoch() || coordinator.active_key() != Some(key) {
+    if epoch != coordinator.epoch()
+        || preference_revision != runtime.preference_revision
+        || coordinator.active_key() != Some(key)
+    {
         return;
     }
     state.pinned_source_label = pinned_source_label;
@@ -823,6 +877,7 @@ pub fn handle_candidate_hydrated(
             state.set_lyrics(applied.track.clone());
             state.close_context_menu();
             runtime.cancel_menu_requests();
+            runtime.bump_preference_revision();
 
             if let Some(cache) = cache {
                 let cache = cache.clone();
@@ -833,29 +888,17 @@ pub fn handle_candidate_hydrated(
                     .map_or_else(|| summary.title.clone(), track_label);
                 let answer_to_store = applied.clone();
                 let source_track_id = summary.source_track_id.clone();
-                let fallback_style = state.pinned_style.clone();
                 tokio::spawn(async move {
-                    let existing_style = cache
-                        .get_track_preference(&key)
+                    if let Err(error) = cache
+                        .set_pinned_lyrics(
+                            &key,
+                            answer_to_store.provider,
+                            source_track_id,
+                            &answer_to_store.track,
+                        )
                         .await
-                        .ok()
-                        .flatten()
-                        .and_then(|pref| pref.preferred_style)
-                        .or(fallback_style);
-                    match TrackPreference::with_pinned_track(
-                        answer_to_store.provider,
-                        source_track_id,
-                        &answer_to_store.track,
-                        existing_style,
-                    ) {
-                        Ok(pref) => {
-                            if let Err(error) = cache.set_track_preference(&key, pref).await {
-                                warn!(%error, "failed to persist pinned track preference");
-                            }
-                        }
-                        Err(error) => {
-                            warn!(%error, "failed to serialize pinned track preference");
-                        }
+                    {
+                        warn!(%error, "failed to persist pinned track preference");
                     }
                     if let Err(error) = cache.store(&key, &label, &answer_to_store).await {
                         warn!(%error, "failed to persist manual candidate to L2 cache");
@@ -898,7 +941,7 @@ fn handle_input(
 
 fn handle_input_with_runtime(
     state: &mut UiState,
-    runtime: Option<&mut AppRuntime>,
+    mut runtime: Option<&mut AppRuntime>,
     coordinator: &mut ResolveCoordinator,
     offsets: &mut DebouncedOffsetWriter,
     config_file: Option<&Path>,
@@ -908,6 +951,12 @@ fn handle_input_with_runtime(
     let Event::Key(key) = event else {
         return InputOutcome::default();
     };
+    if state.is_modal_open() && !state.modal_fits_viewport() {
+        state.close_modal_at(now);
+        if let Some(rt) = runtime.as_deref_mut() {
+            rt.cancel_menu_requests();
+        }
+    }
     let active_scope = match &state.modal {
         Some(UiModal::Help) => KeyScope::Help,
         Some(UiModal::ContextMenu(menu)) => match menu.view {
@@ -992,15 +1041,22 @@ fn handle_input_with_runtime(
             InputOutcome::default()
         }
         KeyAction::ToggleHelp => {
-            state.toggle_help();
+            if state.modal != Some(UiModal::Help) && !state.help_fits_viewport() {
+                state.close_context_menu_at(now);
+                state.show_banner("Terminal too small for help overlay", now);
+            } else {
+                state.toggle_help_at(now);
+            }
             InputOutcome::menu(MenuCommand::CancelMenu)
         }
         KeyAction::CloseModal => {
-            state.close_modal();
+            state.close_modal_at(now);
             InputOutcome::menu(MenuCommand::CancelMenu)
         }
         KeyAction::OpenContextMenu => {
-            if !state.open_context_menu() {
+            if !state.context_menu_fits_viewport() {
+                state.show_banner("Terminal too small for context menu", now);
+            } else if !state.open_context_menu_at(now) {
                 state.show_banner("No active track", now);
             }
             InputOutcome::default()
@@ -1033,7 +1089,7 @@ fn handle_search_input_key(
     match resolve_key(KeyScope::SearchInput, key) {
         Some(KeyAction::Quit) => InputOutcome::quit(),
         Some(KeyAction::CloseModal) => {
-            state.close_modal();
+            state.close_modal_at(now);
             InputOutcome::menu(MenuCommand::CancelMenu)
         }
         Some(KeyAction::SearchSwitchField) => {
@@ -1150,7 +1206,7 @@ fn handle_menu_select(
         }
         Selection::Action(ContextMenuAction::ResetPreferredSource) => {
             state.pinned_source_label = None;
-            state.close_modal();
+            state.close_modal_at(now);
             match coordinator.force_refetch_current_track() {
                 Some(plan) => {
                     state.refetching = true;
@@ -1176,7 +1232,7 @@ fn handle_menu_select(
             } else {
                 state.show_banner("Unpinned track style", now);
             }
-            state.close_modal();
+            state.close_modal_at(now);
             match coordinator.active_key().cloned() {
                 Some(key) => InputOutcome::menu(MenuCommand::SetPinnedStyle {
                     key,
@@ -1270,25 +1326,17 @@ fn apply_menu_command(
         }
         MenuCommand::ClearPinAndRefetch(plan) => {
             runtime.cancel_menu_requests();
-            apply_plan_with_pin(plan, state, app_tx, resolution, true);
+            let pref_rev = runtime.bump_preference_revision();
+            apply_plan_with_pin(plan, state, app_tx, resolution, true, pref_rev);
         }
         MenuCommand::SetPinnedStyle { key, style } => {
             runtime.cancel_menu_requests();
+            runtime.bump_preference_revision();
             let Some(cache) = resolution.cache.cloned() else {
                 return;
             };
             tokio::spawn(async move {
-                let mut pref = cache
-                    .get_track_preference(&key)
-                    .await
-                    .ok()
-                    .flatten()
-                    .unwrap_or_default();
-                pref.preferred_style = style;
-                pref.updated_at = std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map_or(0, |dur| i64::try_from(dur.as_secs()).unwrap_or(i64::MAX));
-                if let Err(error) = cache.set_track_preference(&key, pref).await {
+                if let Err(error) = cache.set_pinned_style(&key, style).await {
                     warn!(%error, "failed to update pinned style preference");
                 }
             });
@@ -2852,7 +2900,7 @@ mod tests {
         };
 
         let answer = ProviderAnswer::new(crate::providers::Provider::Lrclib, track());
-        let pref = TrackPreference::with_pinned_track(
+        let pref = crate::cache::TrackPreference::with_pinned_track(
             crate::providers::Provider::Lrclib,
             Some("123".to_string()),
             &answer.track,
@@ -2939,5 +2987,129 @@ mod tests {
         let _ = std::fs::remove_file(&db_path);
         let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
         let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
+    }
+
+    #[test]
+    fn toggle_pin_style_ignores_stale_track_preference_loaded() {
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime::default();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let now = Instant::now();
+        let meta = TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: None,
+            duration_ms: Some(267_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let _ = coordinator.prepare_track(&meta);
+        let epoch = coordinator.epoch();
+        let key = coordinator.active_key().cloned().unwrap();
+        let stale_rev = runtime.preference_revision;
+
+        // Open menu, toggle pin style ON (simulated like apply_menu_command bumping revision)
+        let press = |code: crossterm::event::KeyCode| {
+            Event::Key(crossterm::event::KeyEvent {
+                code,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            press(crossterm::event::KeyCode::Char('c')),
+        );
+        for _ in 0..3 {
+            handle_input_with_runtime(
+                &mut state,
+                Some(&mut runtime),
+                &mut coordinator,
+                &mut offsets,
+                None,
+                now,
+                press(crossterm::event::KeyCode::Down),
+            );
+        }
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            press(crossterm::event::KeyCode::Enter),
+        );
+        runtime.bump_preference_revision();
+        assert_eq!(state.pinned_style.as_deref(), Some(DEFAULT_PINNED_STYLE));
+
+        // Late TrackPreferenceLoaded with old preference_revision must not overwrite pinned_style
+        handle_track_preference_loaded(
+            &mut state,
+            &runtime,
+            &coordinator,
+            epoch,
+            stale_rev,
+            &key,
+            None,
+            None,
+        );
+        assert_eq!(state.pinned_style.as_deref(), Some(DEFAULT_PINNED_STYLE));
+    }
+
+    #[test]
+    fn hidden_overlay_on_tiny_viewport_does_not_swallow_global_keys() {
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime::default();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let now = Instant::now();
+
+        state.open_help();
+        assert_eq!(state.modal, Some(UiModal::Help));
+        state.resize(15, 5);
+
+        let quit_outcome = handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            Event::Key(crossterm::event::KeyEvent {
+                code: crossterm::event::KeyCode::Char('q'),
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+        );
+        assert_eq!(state.modal, None);
+        assert!(quit_outcome.quit);
+
+        // Opening help on tiny viewport should show banner rather than invisible trap
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            Event::Key(crossterm::event::KeyEvent {
+                code: crossterm::event::KeyCode::Char('?'),
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            }),
+        );
+        assert_eq!(state.modal, None);
+        assert!(state.transient_banner.is_some());
     }
 }

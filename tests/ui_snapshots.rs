@@ -1114,3 +1114,23 @@ fn context_menu_search_input_120x40() {
     state.open_search_input("Coldplay".to_string(), "Yellow (Acoustic)".to_string());
     snapshot(&mut state, 120, 40, 9_500, "120x40_search_input");
 }
+
+#[test]
+fn block_waiting_countdown_80x24() {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Block;
+    snapshot(&mut state, 80, 24, 14_500, "80x24_block_waiting_countdown");
+}
+
+#[test]
+fn block_waiting_countdown_120x40() {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Block;
+    snapshot(
+        &mut state,
+        120,
+        40,
+        14_500,
+        "120x40_block_waiting_countdown",
+    );
+}

@@ -1,11 +1,11 @@
 use std::collections::HashSet;
 use std::path::{Component, Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use tokio::fs;
 use tokio::io::AsyncReadExt;
-use tokio::sync::OnceCell;
+use tokio::sync::watch;
 use tokio_util::sync::CancellationToken;
 use tracing::{info, warn};
 
@@ -27,10 +27,12 @@ struct IndexedLyricFile {
     is_elrc: bool,
 }
 
+type IndexWatchSlot = Arc<Mutex<Option<watch::Receiver<Option<Arc<Vec<IndexedLyricFile>>>>>>>;
+
 #[derive(Debug, Clone, Default)]
 pub struct LocalProvider {
     dirs: Vec<PathBuf>,
-    index: Arc<OnceCell<Vec<IndexedLyricFile>>>,
+    index: IndexWatchSlot,
 }
 
 impl LocalProvider {
@@ -52,7 +54,7 @@ impl LocalProvider {
 
         Self {
             dirs: resolved,
-            index: Arc::new(OnceCell::new()),
+            index: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -88,7 +90,7 @@ impl LocalProvider {
         }
 
         let index = self.get_index(cancel).await?;
-        let matches = collect_index_matches(index, query);
+        let matches = collect_index_matches(&index, query);
 
         for (_, _, file) in matches {
             if let Some(answer) = read_and_parse_local(
@@ -138,7 +140,7 @@ impl LocalProvider {
 
         if !self.dirs.is_empty() {
             let index = self.get_index(cancel).await?;
-            for (rank, _, file) in collect_index_matches(index, query) {
+            for (rank, _, file) in collect_index_matches(&index, query) {
                 if cancel.is_cancelled() {
                     return Err(ProviderError::Cancelled);
                 }
@@ -181,21 +183,42 @@ impl LocalProvider {
     async fn get_index(
         &self,
         cancel: &CancellationToken,
-    ) -> Result<&[IndexedLyricFile], ProviderError> {
-        let init_fut = self.index.get_or_init(|| async {
-            let dirs = self.dirs.clone();
-            match tokio::task::spawn_blocking(move || scan_dirs(&dirs)).await {
-                Ok(files) => files,
-                Err(error) => {
-                    warn!(%error, "local lyric scan task failed");
-                    Vec::new()
+    ) -> Result<Arc<Vec<IndexedLyricFile>>, ProviderError> {
+        let mut rx = {
+            let mut slot = self.index.lock().expect("local index mutex poisoned");
+            if let Some(rx) = slot.as_ref() {
+                if let Some(files) = rx.borrow().clone() {
+                    return Ok(files);
                 }
+                rx.clone()
+            } else {
+                let (tx, rx) = watch::channel(None);
+                let dirs = self.dirs.clone();
+                tokio::spawn(async move {
+                    let files = match tokio::task::spawn_blocking(move || scan_dirs(&dirs)).await {
+                        Ok(files) => files,
+                        Err(error) => {
+                            warn!(%error, "local lyric scan task failed");
+                            Vec::new()
+                        }
+                    };
+                    let _ = tx.send(Some(Arc::new(files)));
+                });
+                *slot = Some(rx.clone());
+                rx
             }
-        });
+        };
+
         tokio::select! {
             biased;
             _ = cancel.cancelled() => Err(ProviderError::Cancelled),
-            files = init_fut => Ok(files.as_slice()),
+            res = rx.wait_for(|value| value.is_some()) => match res {
+                Ok(guard) => Ok(guard
+                    .as_ref()
+                    .cloned()
+                    .unwrap_or_else(|| Arc::new(Vec::new()))),
+                Err(_) => Ok(Arc::new(Vec::new())),
+            }
         }
     }
 
@@ -972,6 +995,40 @@ mod tests {
             .expect("should hydrate selected local file");
         assert_eq!(hydrated.provider, Provider::Local);
         assert_eq!(hydrated.track.lines[0].text, "Artist LRC");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn cancelling_first_index_waiter_keeps_shared_scan_reusable() {
+        let dir = temp_dir("local-cancel-reuse");
+        let lrc = dir.join("Artist - Song.lrc");
+        std::fs::write(&lrc, "[00:01.00]Reusable index line\n").unwrap();
+
+        let provider = LocalProvider::with_dirs(vec![dir.clone()]);
+        let q = query("Song", "Artist", None);
+        let pre_cancelled = CancellationToken::new();
+        pre_cancelled.cancel();
+
+        // Trigger/observe first request cancellation
+        let err = provider
+            .search_candidates(&q, &pre_cancelled)
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Cancelled));
+
+        // Cancel mid-flight after initiating background scan
+        let mid_cancel = CancellationToken::new();
+        mid_cancel.cancel();
+        let _ = provider.get_index(&mid_cancel).await;
+
+        // Subsequent search reuses completed shared index
+        let found = provider
+            .search_candidates(&q, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].title, "Artist - Song");
 
         std::fs::remove_dir_all(dir).unwrap();
     }

@@ -10,6 +10,7 @@ pub enum AppEvent {
     },
     TrackPreferenceLoaded {
         epoch: u64,
+        preference_revision: u64,
         key: CanonicalTrackKey,
         pinned_source_label: Option<String>,
         pinned_style: Option<String>,

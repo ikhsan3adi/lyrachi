@@ -371,13 +371,7 @@ fn render_synced(
     let mut active_end = None;
     let mut countdown_rendered = false;
 
-    let has_break_slot = cursor.waiting.is_some_and(|waiting| {
-        timeline.lines[start..end].iter().any(|line| {
-            line.role == LineRole::InstrumentalBreak
-                && line.start_ms >= waiting.start_ms
-                && line.end_ms <= waiting.end_ms
-        })
-    });
+    let has_break_slot = has_waiting_break_slot(&timeline.lines[start..end], cursor.waiting);
 
     if let Some(waiting) = cursor.waiting
         && waiting.kind == WaitKind::Intro
@@ -397,9 +391,7 @@ fn render_synced(
         let compiled = &timeline.lines[index];
         if let Some(waiting) = cursor.waiting
             && !countdown_rendered
-            && compiled.role == LineRole::InstrumentalBreak
-            && compiled.start_ms >= waiting.start_ms
-            && compiled.end_ms <= waiting.end_ms
+            && compiled_is_waiting_break(compiled, waiting)
         {
             active_start = Some(lines.len());
             lines.push(waiting_countdown_line(
@@ -447,8 +439,23 @@ struct BlockLineMeta {
     index: usize,
     active: bool,
     focus: bool,
+    countdown_slot: bool,
     max_height: u16,
     rows: usize,
+}
+
+fn has_waiting_break_slot(lines: &[CompiledLine], waiting: Option<WaitingGap>) -> bool {
+    waiting.is_some_and(|waiting| {
+        lines
+            .iter()
+            .any(|line| compiled_is_waiting_break(line, waiting))
+    })
+}
+
+fn compiled_is_waiting_break(line: &CompiledLine, waiting: WaitingGap) -> bool {
+    line.role == LineRole::InstrumentalBreak
+        && line.start_ms >= waiting.start_ms
+        && line.end_ms <= waiting.end_ms
 }
 
 fn render_block_synced(
@@ -476,11 +483,15 @@ fn render_block_synced(
         .saturating_add(BLOCK_WINDOW_AFTER)
         .saturating_add(1)
         .min(timeline.lines.len());
+    let has_break_slot = has_waiting_break_slot(&timeline.lines[start..end], cursor.waiting);
     let mut metas = Vec::new();
-    let mut total_rows = 0usize;
+    let mut total_rows = usize::from(cursor.waiting.is_some() && !has_break_slot);
 
     for index in start..end {
         let compiled = &timeline.lines[index];
+        let countdown_slot = cursor
+            .waiting
+            .is_some_and(|waiting| compiled_is_waiting_break(compiled, waiting));
         let active = cursor.active_line_idx == Some(index);
         let focus = index == anchor;
         let max_height = block_line_height(
@@ -489,20 +500,25 @@ fn render_block_synced(
             focus,
             compiled.wrapped_annotations.len(),
         );
-        let text = block_source_text(track, compiled);
-        let layout = cache.layout_for(
-            index,
-            text,
-            wrap_width,
-            max_height,
-            timeline.context.ambiguous_width,
-        );
-        let rows = usize::from(layout.height).saturating_add(compiled.wrapped_annotations.len());
+        let rows = if countdown_slot {
+            1
+        } else {
+            let text = block_source_text(track, compiled);
+            let layout = cache.layout_for(
+                index,
+                text,
+                wrap_width,
+                max_height,
+                timeline.context.ambiguous_width,
+            );
+            usize::from(layout.height).saturating_add(compiled.wrapped_annotations.len())
+        };
         total_rows = total_rows.saturating_add(rows);
         metas.push(BlockLineMeta {
             index,
             active,
             focus,
+            countdown_slot,
             max_height,
             rows,
         });
@@ -512,7 +528,7 @@ fn render_block_synced(
         let Some(farthest) = metas
             .iter()
             .enumerate()
-            .filter(|(_, meta)| !meta.active && !meta.focus)
+            .filter(|(_, meta)| !meta.active && !meta.focus && !meta.countdown_slot)
             .max_by_key(|(_, meta)| meta.index.abs_diff(anchor))
             .map(|(position, _)| position)
         else {
@@ -526,9 +542,39 @@ fn render_block_synced(
     let mut lines = Vec::new();
     let mut active_start = None;
     let mut active_end = None;
+    let mut countdown_rendered = false;
+
+    if let Some(waiting) = cursor.waiting
+        && waiting.kind == WaitKind::Intro
+        && !has_break_slot
+    {
+        active_start = Some(lines.len());
+        lines.push(waiting_countdown_line(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+        ));
+        active_end = Some(lines.len());
+        countdown_rendered = true;
+    }
 
     for meta in metas {
         let compiled = &timeline.lines[meta.index];
+        if meta.countdown_slot
+            && let Some(waiting) = cursor.waiting
+            && !countdown_rendered
+        {
+            active_start = Some(lines.len());
+            lines.push(waiting_countdown_line(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+            ));
+            active_end = Some(lines.len());
+            countdown_rendered = true;
+            continue;
+        }
+
         let text = block_source_text(track, compiled);
         let layout = cache.layout_for(
             meta.index,
@@ -538,7 +584,8 @@ fn render_block_synced(
             timeline.context.ambiguous_width,
         );
         let alignment = styles.alignment(compiled.role, viewport_width);
-        if meta.focus {
+        let is_focus = meta.focus && cursor.waiting.is_none();
+        if is_focus {
             active_start = Some(lines.len());
         }
         lines.extend(render_block_lines(
@@ -559,8 +606,24 @@ fn render_block_synced(
                     .alignment(alignment),
             );
         }
-        if meta.focus {
+        if is_focus {
             active_end = Some(lines.len());
+        }
+
+        if let Some(waiting) = cursor.waiting
+            && !countdown_rendered
+            && !has_break_slot
+            && meta.focus
+            && matches!(waiting.kind, WaitKind::Instrumental | WaitKind::Outro)
+        {
+            active_start = Some(lines.len());
+            lines.push(waiting_countdown_line(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+            ));
+            active_end = Some(lines.len());
+            countdown_rendered = true;
         }
     }
 
@@ -650,7 +713,7 @@ fn waiting_countdown_line(waiting: WaitingGap, effective_ms: u64, unicode: bool)
         Style::default().add_modifier(Modifier::BOLD),
     ));
 
-    Line::from(spans)
+    Line::from(spans).alignment(Alignment::Center)
 }
 
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {

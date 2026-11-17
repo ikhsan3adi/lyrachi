@@ -22,7 +22,7 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 pub fn ribbon_line(state: &UiState) -> Line<'static> {
-    let display_mode = "normal";
+    let display_mode = state.effective_display_mode().as_str();
     let style_name = "default";
     let source = source_label(state);
     let word_hl = if word_highlight_active(state) {
@@ -68,13 +68,14 @@ fn source_label(state: &UiState) -> String {
 }
 
 fn word_highlight_active(state: &UiState) -> bool {
-    state.lyrics_track().is_some_and(|track| {
-        !track.is_instrumental
-            && matches!(
-                track.granularity,
-                SyncGranularity::Word | SyncGranularity::Syllable
-            )
-    })
+    state.word_highlight
+        && state.lyrics_track().is_some_and(|track| {
+            !track.is_instrumental
+                && matches!(
+                    track.granularity,
+                    SyncGranularity::Word | SyncGranularity::Syllable
+                )
+        })
 }
 
 #[cfg(test)]
@@ -146,6 +147,14 @@ mod tests {
         assert_eq!(
             ribbon_line(&state).to_string(),
             "normal | default | error | word-hl: off | +150 ms"
+        );
+
+        state.set_lyrics(sample_track(SyncGranularity::Word));
+        state.toggle_display_mode();
+        state.toggle_word_highlight();
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "block | default | lrclib (word) | word-hl: off | +150 ms"
         );
     }
 

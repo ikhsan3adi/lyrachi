@@ -54,6 +54,20 @@ pub(super) enum CacheCommand {
         preference: TrackPreference,
         reply: oneshot::Sender<Result<(), CacheError>>,
     },
+    SetPinnedLyrics {
+        track_key: TrackKey,
+        provider: Provider,
+        track_id: Option<String>,
+        payload_json: Vec<u8>,
+        now: i64,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
+    SetPinnedStyle {
+        track_key: TrackKey,
+        style: Option<String>,
+        now: i64,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
     ClearPinnedLyrics {
         track_key: TrackKey,
         now: i64,
@@ -71,6 +85,8 @@ impl CacheCommand {
             Self::Lookup { now, .. }
             | Self::Store { now, .. }
             | Self::RecordNegative { now, .. }
+            | Self::SetPinnedLyrics { now, .. }
+            | Self::SetPinnedStyle { now, .. }
             | Self::ClearPinnedLyrics { now, .. }
             | Self::Shutdown { now, .. } => *now,
             Self::MarkUpgradeAttempted { .. }
@@ -171,6 +187,30 @@ impl Worker {
                     reply,
                 } => {
                     let _ = reply.send(self.set_track_preference(&track_key, &preference));
+                }
+                CacheCommand::SetPinnedLyrics {
+                    track_key,
+                    provider,
+                    track_id,
+                    payload_json,
+                    now,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_pinned_lyrics(
+                        &track_key,
+                        provider,
+                        track_id.as_deref(),
+                        &payload_json,
+                        now,
+                    ));
+                }
+                CacheCommand::SetPinnedStyle {
+                    track_key,
+                    style,
+                    now,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_pinned_style(&track_key, style.as_deref(), now));
                 }
                 CacheCommand::ClearPinnedLyrics {
                     track_key,
@@ -590,6 +630,75 @@ impl Worker {
                 preference.updated_at,
             ],
         )?;
+        Ok(())
+    }
+
+    fn set_pinned_lyrics(
+        &mut self,
+        track_key: &TrackKey,
+        provider: Provider,
+        track_id: Option<&str>,
+        payload_json: &[u8],
+        now: i64,
+    ) -> Result<(), CacheError> {
+        self.connection.execute(
+            "INSERT INTO track_preferences (
+                track_key, preferred_provider, preferred_track_id,
+                pinned_payload_json, preferred_style, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+             ON CONFLICT(track_key) DO UPDATE SET
+                preferred_provider = excluded.preferred_provider,
+                preferred_track_id = excluded.preferred_track_id,
+                pinned_payload_json = excluded.pinned_payload_json,
+                updated_at = excluded.updated_at",
+            params![
+                track_key.as_slice(),
+                provider.as_str(),
+                track_id,
+                payload_json,
+                now,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn set_pinned_style(
+        &mut self,
+        track_key: &TrackKey,
+        style: Option<&str>,
+        now: i64,
+    ) -> Result<(), CacheError> {
+        let tx = self.connection.transaction()?;
+        if let Some(style) = style {
+            tx.execute(
+                "INSERT INTO track_preferences (
+                    track_key, preferred_provider, preferred_track_id,
+                    pinned_payload_json, preferred_style, updated_at
+                 ) VALUES (?1, NULL, NULL, NULL, ?2, ?3)
+                 ON CONFLICT(track_key) DO UPDATE SET
+                    preferred_style = excluded.preferred_style,
+                    updated_at = excluded.updated_at",
+                params![track_key.as_slice(), style, now],
+            )?;
+        } else {
+            tx.execute(
+                "UPDATE track_preferences
+                 SET preferred_style = NULL,
+                     updated_at = ?1
+                 WHERE track_key = ?2",
+                params![now, track_key.as_slice()],
+            )?;
+            tx.execute(
+                "DELETE FROM track_preferences
+                 WHERE track_key = ?1
+                   AND preferred_provider IS NULL
+                   AND preferred_track_id IS NULL
+                   AND pinned_payload_json IS NULL
+                   AND preferred_style IS NULL",
+                params![track_key.as_slice()],
+            )?;
+        }
+        tx.commit()?;
         Ok(())
     }
 

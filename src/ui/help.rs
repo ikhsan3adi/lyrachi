@@ -10,11 +10,13 @@ use crate::app::keys::global_help_rows;
 
 const MAX_MODAL_WIDTH: u16 = 56;
 const MIN_KEY_COLUMN_WIDTH: usize = 10;
+pub const MIN_AREA_WIDTH: u16 = 20;
+pub const MIN_AREA_HEIGHT: u16 = 8;
 
 pub fn render(frame: &mut Frame, area: Rect) {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
-    if available_width < 18 || available_height < 6 {
+    if available_width < MIN_AREA_WIDTH - 2 || available_height < MIN_AREA_HEIGHT - 2 {
         return;
     }
 

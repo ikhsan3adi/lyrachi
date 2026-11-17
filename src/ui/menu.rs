@@ -5,12 +5,17 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
+
+use crate::core::text::{display_width, truncate_to_width};
 
 use super::help::centered_rect;
 
 const MAX_MODAL_WIDTH: u16 = 68;
 const MIN_MODAL_WIDTH: u16 = 24;
-const MIN_MODAL_HEIGHT: u16 = 7;
+const MIN_MODAL_HEIGHT: u16 = 6;
+pub const MIN_AREA_WIDTH: u16 = MIN_MODAL_WIDTH + 2;
+pub const MIN_AREA_HEIGHT: u16 = MIN_MODAL_HEIGHT + 2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContextMenuAction {
@@ -244,31 +249,52 @@ fn render_actions(
     let rows = build_action_rows(menu);
     let content_width = rows
         .iter()
-        .map(|label| label.chars().count() + 4)
+        .map(|label| usize::from(display_width(label)) + 4)
         .max()
         .unwrap_or(32)
-        .max(menu.track_label.chars().count() + 4);
+        .max(usize::from(display_width(&menu.track_label)) + 4);
     let width = u16::try_from(content_width + 4)
         .unwrap_or(MAX_MODAL_WIDTH)
         .clamp(36, MAX_MODAL_WIDTH)
         .min(available_width);
-    let height = u16::try_from(rows.len() + 6)
+
+    let compact = available_height < u16::try_from(rows.len() + 6).unwrap_or(u16::MAX);
+    let vertical_pad: u16 = if compact { 0 } else { 1 };
+    let chrome_rows = 2 + vertical_pad * 2;
+    let desired_rows = if compact {
+        rows.len() + 1 + usize::from(chrome_rows)
+    } else {
+        rows.len() + 2 + usize::from(chrome_rows)
+    };
+    let height = u16::try_from(desired_rows)
         .unwrap_or(u16::MAX)
         .min(available_height);
 
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
 
-    let mut lines = Vec::with_capacity(rows.len() + 2);
+    let inner_width = usize::from(popup.width.saturating_sub(4));
+    let inner_height = usize::from(popup.height.saturating_sub(chrome_rows));
+    let mut lines = Vec::with_capacity(inner_height.max(1));
     lines.push(Line::from(Span::styled(
-        truncate_chars(&menu.track_label, usize::from(width.saturating_sub(4))),
+        truncate_display(&menu.track_label, inner_width),
         Style::default()
             .fg(Color::DarkGray)
             .add_modifier(Modifier::BOLD),
     )));
-    lines.push(Line::raw(""));
+    if !compact {
+        lines.push(Line::raw(""));
+    }
 
-    for (index, label) in rows.into_iter().enumerate() {
+    let action_slots = inner_height.saturating_sub(lines.len()).max(1);
+    let start = if selected >= action_slots {
+        selected + 1 - action_slots
+    } else {
+        0
+    };
+    let end = (start + action_slots).min(rows.len());
+
+    for (index, label) in rows.into_iter().enumerate().take(end).skip(start) {
         let is_selected = index == selected;
         let prefix = if is_selected { "> " } else { "  " };
         let style = if is_selected {
@@ -280,7 +306,10 @@ fn render_actions(
         };
         lines.push(Line::from(vec![
             Span::styled(prefix, style),
-            Span::styled(label, style),
+            Span::styled(
+                truncate_display(&label, inner_width.saturating_sub(2)),
+                style,
+            ),
         ]));
     }
 
@@ -288,7 +317,7 @@ fn render_actions(
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::symmetric(1, 1))
+        .padding(Padding::symmetric(1, vertical_pad))
         .title(Line::from(Span::styled(
             " Context Menu ",
             Style::default().add_modifier(Modifier::BOLD),
@@ -360,7 +389,7 @@ fn render_candidates(
     let inner_width = usize::from(popup.width.saturating_sub(4));
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(Span::styled(
-        truncate_chars(&format!("Query: {query_label}"), inner_width),
+        truncate_display(&format!("Query: {query_label}"), inner_width),
         Style::default().fg(Color::DarkGray),
     )));
 
@@ -374,7 +403,7 @@ fn render_candidates(
         lines.push(Line::raw(""));
         let msg = status_message.unwrap_or("No candidates found.");
         lines.push(Line::from(Span::styled(
-            truncate_chars(msg, inner_width),
+            truncate_display(msg, inner_width),
             Style::default().fg(Color::Yellow),
         )));
     } else {
@@ -389,7 +418,7 @@ fn render_candidates(
             let is_selected = idx == selected;
             let prefix = if is_selected { "> " } else { "  " };
             let formatted = format_candidate_line(item);
-            let truncated = truncate_chars(&formatted, inner_width.saturating_sub(2));
+            let truncated = truncate_display(&formatted, inner_width.saturating_sub(2));
             let style = if is_selected {
                 Style::default()
                     .fg(Color::Cyan)
@@ -409,7 +438,7 @@ fn render_candidates(
             )));
         } else if let Some(msg) = status_message {
             lines.push(Line::from(Span::styled(
-                truncate_chars(msg, inner_width),
+                truncate_display(msg, inner_width),
                 Style::default().fg(Color::Red),
             )));
         }
@@ -523,7 +552,7 @@ fn render_input_row(frame: &mut Frame, area: Rect, label: &str, value: &str, act
         Style::default().fg(Color::DarkGray)
     };
     let max_val_len = usize::from(area.width).saturating_sub(marker.len() + label.len() + 3);
-    let visible = tail_chars(value, max_val_len);
+    let visible = tail_display(value, max_val_len);
     let line = Line::from(vec![
         Span::styled(marker, label_style),
         Span::styled(format!("{label}: "), label_style),
@@ -560,31 +589,38 @@ fn format_duration_ms(ms: u64) -> String {
     format!("{:02}:{:02}", secs / 60, secs % 60)
 }
 
-fn truncate_chars(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+fn truncate_display(text: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
         return String::new();
     }
-    let count = text.chars().count();
-    if count <= max_chars {
+    if usize::from(display_width(text)) <= max_cols {
         return text.to_string();
     }
-    if max_chars <= 3 {
-        return text.chars().take(max_chars).collect();
+    let max_u16 = u16::try_from(max_cols).unwrap_or(u16::MAX);
+    if max_cols <= 3 {
+        return truncate_to_width(text, max_u16).to_string();
     }
-    let mut out: String = text.chars().take(max_chars - 3).collect();
-    out.push_str("...");
-    out
+    format!("{}...", truncate_to_width(text, max_u16 - 3))
 }
 
-fn tail_chars(text: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
+fn tail_display(text: &str, max_cols: usize) -> String {
+    if max_cols == 0 {
         return String::new();
     }
-    let count = text.chars().count();
-    if count <= max_chars {
+    if usize::from(display_width(text)) <= max_cols {
         return text.to_string();
     }
-    text.chars().skip(count - max_chars).collect()
+    let mut used = 0usize;
+    let mut start_byte = text.len();
+    for (byte_idx, grapheme) in text.grapheme_indices(true).rev() {
+        let width = usize::from(display_width(grapheme));
+        if used + width > max_cols {
+            break;
+        }
+        used += width;
+        start_byte = byte_idx;
+    }
+    text[start_byte..].to_string()
 }
 
 #[cfg(test)]
@@ -763,5 +799,40 @@ mod tests {
             text.contains("(16/20)"),
             "expected title to display (16/20) scroll indicator, got:\n{text}"
         );
+    }
+
+    #[test]
+    fn actions_fit_on_80x9_without_clipping_and_truncate_cjk_by_width() {
+        let backend = TestBackend::new(80, 9);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let menu = ContextMenuState::actions(
+            "夜に駆ける - YOASOBI 日本語タイトル".to_string(),
+            None,
+            None,
+        );
+
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &menu);
+            })
+            .unwrap();
+
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Select lyrics candidate"), "{text}");
+        assert!(text.contains("Manual search query"), "{text}");
+        assert!(text.contains("Reset preferred source"), "{text}");
+        assert!(text.contains("Pin style to track"), "{text}");
+
+        let cjk = "日本語タイトルとても長い曲名テスト";
+        let truncated = truncate_display(cjk, 10);
+        assert!(display_width(&truncated) <= 10, "{truncated}");
+        let tailed = tail_display(cjk, 8);
+        assert!(display_width(&tailed) <= 8, "{tailed}");
     }
 }

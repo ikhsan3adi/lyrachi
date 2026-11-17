@@ -544,6 +544,7 @@ impl ProviderResolver {
 
         let now = tokio::time::Instant::now();
         let mut seen = HashSet::new();
+        let mut in_flight_network = HashSet::new();
         let mut tasks = JoinSet::new();
 
         for (priority, &provider) in self.order.iter().enumerate() {
@@ -554,6 +555,9 @@ impl ProviderResolver {
                 && (!self.network || !self.breakers.can_attempt(provider, now))
             {
                 continue;
+            }
+            if provider != Provider::Local {
+                in_flight_network.insert(provider);
             }
 
             let query = query.clone();
@@ -612,7 +616,7 @@ impl ProviderResolver {
 
         let deadline = now + CANDIDATE_SEARCH_TIMEOUT;
         let mut all_candidates: Vec<(usize, CandidateSummary)> = Vec::new();
-        let mut succeeded = 0usize;
+        let mut network_succeeded = 0usize;
         let mut timed_out = false;
         let mut first_error: Option<ProviderError> = None;
 
@@ -636,6 +640,7 @@ impl ProviderResolver {
                     };
 
                     if provider != Provider::Local {
+                        in_flight_network.remove(&provider);
                         let now = tokio::time::Instant::now();
                         match &result {
                             Ok(_) => self.breakers.record_success(provider),
@@ -645,7 +650,9 @@ impl ProviderResolver {
 
                     match result {
                         Ok(list) => {
-                            succeeded += 1;
+                            if provider != Provider::Local {
+                                network_succeeded += 1;
+                            }
                             for item in list {
                                 all_candidates.push((priority, item));
                             }
@@ -662,13 +669,18 @@ impl ProviderResolver {
                 _ = sleep_until(deadline) => {
                     debug!("candidate search timed out; returning collected results");
                     timed_out = true;
+                    let timeout_now = tokio::time::Instant::now();
+                    for provider in in_flight_network.drain() {
+                        self.breakers
+                            .record_error(provider, &ProviderError::Timeout, timeout_now);
+                    }
                     tasks.abort_all();
                     break;
                 }
             }
         }
 
-        if all_candidates.is_empty() && succeeded == 0 {
+        if all_candidates.is_empty() && network_succeeded == 0 {
             if let Some(error) = first_error {
                 return Err(error);
             }
@@ -705,6 +717,14 @@ impl ProviderResolver {
                 if !self.network {
                     return Ok(None);
                 }
+                if !self
+                    .breakers
+                    .can_attempt(Provider::YtMusic, tokio::time::Instant::now())
+                {
+                    return Err(ProviderError::Unavailable(
+                        "ytmusic circuit breaker open".to_string(),
+                    ));
+                }
                 let limiter = self.limiters.get_or_create(Provider::YtMusic);
                 let result = self
                     .ytmusic
@@ -736,6 +756,9 @@ fn sort_candidates(candidates: &mut [(usize, CandidateSummary)]) {
             .then_with(|| left_pri.cmp(right_pri))
             .then_with(|| right.confidence.total_cmp(&left.confidence))
             .then_with(|| left.source_track_id.cmp(&right.source_track_id))
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.artist.cmp(&right.artist))
+            .then_with(|| left.local_path.cmp(&right.local_path))
     });
 }
 
@@ -1291,5 +1314,84 @@ mod tests {
         assert_eq!(answer.provider, Provider::YtMusic);
         assert_eq!(next_hits.load(Ordering::SeqCst), 1);
         assert_eq!(browse_hits.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn search_candidates_does_not_swallow_network_failure_when_local_is_empty() {
+        let dir = temp_dir("empty-local-net-fail");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let base_url = format!("http://{addr}");
+
+        let server = tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Ok((mut stream, _)) = listener.accept().await {
+                    use tokio::io::AsyncWriteExt;
+                    let _ = stream
+                        .write_all(b"HTTP/1.1 503 Service Unavailable\r\nContent-Length: 0\r\n\r\n")
+                        .await;
+                }
+            }
+        });
+
+        let resolver = ProviderResolver::with_config_and_base_url(
+            vec![dir.clone()],
+            vec![Provider::Local, Provider::Lrclib],
+            true,
+            base_url,
+        )
+        .unwrap();
+
+        let q = TrackQuery::from_meta(&meta("Yellow", "Coldplay", None, Some(269_000)), 0);
+        let err = resolver
+            .search_candidates(&q, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(!matches!(err, ProviderError::Cancelled));
+
+        server.abort();
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "ytmusic")]
+    #[tokio::test]
+    async fn hydrate_candidate_rejects_when_ytmusic_breaker_is_open() {
+        let breakers = Arc::new(engine::CircuitBreakers::default());
+        let now = tokio::time::Instant::now();
+        let server_err = ProviderError::Unavailable("http 503".to_string());
+        for _ in 0..3 {
+            breakers.record_error(Provider::YtMusic, &server_err, now);
+        }
+        assert!(!breakers.can_attempt(Provider::YtMusic, now));
+
+        let resolver = ProviderResolver::with_config_and_breakers(
+            Vec::new(),
+            vec![Provider::YtMusic],
+            true,
+            Arc::clone(&breakers),
+        )
+        .unwrap();
+
+        let summary = CandidateSummary {
+            provider: Provider::YtMusic,
+            source_track_id: Some("dQw4w9WgXcQ".to_string()),
+            title: "Yellow".to_string(),
+            artist: Some("Coldplay".to_string()),
+            album: None,
+            duration_ms: Some(269_000),
+            tier: Tier::Line,
+            confidence: 0.9,
+            local_path: None,
+            browse_hint: Some("MPREb_test".to_string()),
+            query_duration_ms: Some(269_000),
+            query_user_offset_ms: 0,
+            hydrated: None,
+        };
+
+        let err = resolver
+            .hydrate_candidate(&summary, &CancellationToken::new())
+            .await
+            .unwrap_err();
+        assert!(matches!(err, ProviderError::Unavailable(_)));
     }
 }

@@ -101,10 +101,9 @@ impl LrclibClient {
         }
 
         let candidates = self.search(query, cancel).await?;
-        let ranked =
-            score::rank_candidates(query, &candidates[..candidates.len().min(MAX_CANDIDATES)]);
+        let ranked = score::rank_candidates(query, &candidates);
 
-        for (candidate, confidence) in ranked {
+        for (candidate, confidence) in ranked.into_iter().take(MAX_CANDIDATES) {
             if let Some(answer) = Self::record_to_track(candidate, confidence, query)? {
                 return Ok(Some(answer));
             }
@@ -871,6 +870,50 @@ mod tests {
         assert_eq!(candidates.len(), MAX_CANDIDATES);
         assert!(candidates.iter().all(|c| c.provider == Provider::Lrclib));
         assert!(candidates.iter().all(CandidateSummary::is_hydrated));
+    }
+
+    #[tokio::test]
+    async fn resolve_scores_all_candidates_before_capping() {
+        let mut records: Vec<serde_json::Value> = (1..=23)
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "trackName": "Yellow (Wrong Live Cover Remix)",
+                    "artistName": "Cover Band",
+                    "albumName": "Covers",
+                    "duration": 100.0,
+                    "syncedLyrics": format!("[00:01.00]Wrong {id}"),
+                })
+            })
+            .collect();
+        records.push(serde_json::json!({
+            "id": 999,
+            "trackName": "Yellow",
+            "artistName": "Coldplay",
+            "albumName": "Parachutes",
+            "duration": 269.0,
+            "syncedLyrics": "[00:01.00]Look at the stars",
+        }));
+
+        let payload = serde_json::to_string(&records).unwrap();
+        let (url, recorded, handle) = spawn_mock_server(vec![
+            ("404 Not Found", "{}".to_string()),
+            ("200 OK", payload),
+        ])
+        .await;
+        let client = LrclibClient::with_base_url(url).unwrap();
+        let cancel = CancellationToken::new();
+
+        let answer = client
+            .resolve_with_cancel(&query(), &cancel)
+            .await
+            .unwrap()
+            .expect("candidate at index 23 should be found and selected");
+        handle.await.unwrap();
+
+        assert_eq!(recorded.lock().unwrap().len(), 2);
+        assert_eq!(answer.track.source_track_id.as_deref(), Some("999"));
+        assert_eq!(answer.track.lines[0].text, "Look at the stars");
     }
 
     #[tokio::test]

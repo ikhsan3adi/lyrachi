@@ -170,7 +170,7 @@ fn should_recover(error: &CacheError) -> bool {
             rusqlite::Error::SqliteFailure(inner, _) => {
                 matches!(
                     inner.code,
-                    ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase | ErrorCode::Unknown
+                    ErrorCode::DatabaseCorrupt | ErrorCode::NotADatabase
                 )
             }
             _ => false,
@@ -449,5 +449,25 @@ mod tests {
 
         drop(conn);
         let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn generic_sqlite_errors_do_not_trigger_corrupt_backup_recovery() {
+        let generic = CacheError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_ERROR),
+            Some("generic sql error".to_string()),
+        ));
+        let corrupt = CacheError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_CORRUPT),
+            None,
+        ));
+        let not_db = CacheError::Database(rusqlite::Error::SqliteFailure(
+            rusqlite::ffi::Error::new(rusqlite::ffi::SQLITE_NOTADB),
+            None,
+        ));
+
+        assert!(!should_recover(&generic));
+        assert!(should_recover(&corrupt));
+        assert!(should_recover(&not_db));
     }
 }

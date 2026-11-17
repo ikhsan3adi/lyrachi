@@ -260,6 +260,49 @@ impl CacheHandle {
         response.await.map_err(|_| CacheError::WorkerStopped)?
     }
 
+    pub async fn set_pinned_lyrics(
+        &self,
+        key: &CanonicalTrackKey,
+        provider: Provider,
+        track_id: Option<String>,
+        track: &SyncedTrack,
+    ) -> Result<(), CacheError> {
+        let mut clean_track = track.clone();
+        clean_track.user_offset_ms = 0;
+        let payload_json = serde_json::to_vec(&clean_track)?;
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::SetPinnedLyrics {
+                track_key: blake3_track_key(key),
+                provider,
+                track_id,
+                payload_json,
+                now: now_secs(),
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn set_pinned_style(
+        &self,
+        key: &CanonicalTrackKey,
+        style: Option<String>,
+    ) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::SetPinnedStyle {
+                track_key: blake3_track_key(key),
+                style,
+                now: now_secs(),
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
     pub async fn clear_pinned_lyrics(&self, key: &CanonicalTrackKey) -> Result<(), CacheError> {
         self.clear_pinned_lyrics_at(key, now_secs()).await
     }
@@ -610,6 +653,45 @@ mod tests {
         assert!(cleared_pref.preferred_track_id.is_none());
         assert!(cleared_pref.pinned_payload_json.is_none());
         assert_eq!(cleared_pref.preferred_style.as_deref(), Some("tokyo-night"));
+
+        handle.shutdown().await.unwrap();
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn atomic_pin_lyrics_and_pin_style_do_not_clobber_each_other() {
+        let path = temp_path("atomic-pref-columns");
+        let handle = CacheHandle::open(&path).unwrap();
+        let key = sample_key();
+        let answer = sample_answer();
+
+        handle
+            .set_pinned_style(&key, Some("builtin:dark".to_string()))
+            .await
+            .unwrap();
+        handle
+            .set_pinned_lyrics(
+                &key,
+                Provider::Lrclib,
+                Some("999".to_string()),
+                &answer.track,
+            )
+            .await
+            .unwrap();
+
+        let lookup = handle.lookup(&key).await.unwrap();
+        assert!(lookup.is_pinned);
+        let pref = lookup.preference.expect("preference must exist");
+        assert_eq!(pref.preferred_provider.as_deref(), Some("lrclib"));
+        assert_eq!(pref.preferred_track_id.as_deref(), Some("999"));
+        assert_eq!(pref.preferred_style.as_deref(), Some("builtin:dark"));
+
+        handle.set_pinned_style(&key, None).await.unwrap();
+        let lookup_after_unpin_style = handle.lookup(&key).await.unwrap();
+        assert!(lookup_after_unpin_style.is_pinned);
+        let pref2 = lookup_after_unpin_style.preference.unwrap();
+        assert_eq!(pref2.preferred_provider.as_deref(), Some("lrclib"));
+        assert_eq!(pref2.preferred_style, None);
 
         handle.shutdown().await.unwrap();
         cleanup(&path);
