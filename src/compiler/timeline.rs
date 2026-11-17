@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::core::clock::PlaybackStatus;
 use crate::core::model::{LineRole, SyncGranularity, SyncedTrack, WordToken};
 use crate::core::text::wrap_text_with_ambiguous;
 
@@ -79,11 +80,40 @@ pub struct CompiledLine {
     pub words: Vec<WordToken>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WaitKind {
+    Intro,
+    Instrumental,
+    Outro,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WaitingGap {
+    pub start_ms: u64,
+    pub end_ms: u64,
+    pub kind: WaitKind,
+}
+
+impl WaitingGap {
+    pub fn duration_ms(self) -> u64 {
+        self.end_ms.saturating_sub(self.start_ms)
+    }
+
+    pub fn remaining_ms(self, effective_ms: u64) -> u64 {
+        self.end_ms.saturating_sub(effective_ms)
+    }
+
+    pub fn progress(self, effective_ms: u64) -> f32 {
+        interval_progress(self.start_ms, self.end_ms, effective_ms)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct ActiveStageCursor {
     pub active_line_idx: Option<usize>,
     pub active_word_idx: Option<usize>,
     pub progress: f32,
+    pub waiting: Option<WaitingGap>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -146,27 +176,124 @@ impl CompiledTimeline {
     }
 
     pub fn evaluate(&self, effective_ms: u64) -> ActiveStageCursor {
-        let Some(active_line_idx) = self.line_index(effective_ms) else {
+        self.evaluate_for_status(effective_ms, PlaybackStatus::Playing)
+    }
+
+    pub fn evaluate_for_status(
+        &self,
+        effective_ms: u64,
+        status: PlaybackStatus,
+    ) -> ActiveStageCursor {
+        if self.granularity == SyncGranularity::Unsynced || self.lines.is_empty() {
             return ActiveStageCursor {
                 active_line_idx: None,
                 active_word_idx: None,
                 progress: 0.0,
+                waiting: None,
+            };
+        }
+
+        let active_line_idx = self.line_index(effective_ms);
+        let waiting = if status == PlaybackStatus::Stopped {
+            None
+        } else {
+            self.waiting_gap(effective_ms, active_line_idx)
+        };
+
+        let Some(active_line_idx) = active_line_idx else {
+            return ActiveStageCursor {
+                active_line_idx: None,
+                active_word_idx: None,
+                progress: waiting.map_or(0.0, |gap| gap.progress(effective_ms)),
+                waiting,
             };
         };
         let line = &self.lines[active_line_idx];
         let active_word_idx = self.word_index(line, effective_ms);
-        let progress = match active_word_idx {
-            Some(word_idx) => {
+        let progress = match (active_word_idx, waiting) {
+            (Some(word_idx), _) => {
                 let word = &line.words[word_idx];
                 interval_progress(word.start_ms, word.end_ms, effective_ms)
             }
-            None => interval_progress(line.start_ms, line.end_ms, effective_ms),
+            (None, Some(gap)) => gap.progress(effective_ms),
+            (None, None) => interval_progress(line.start_ms, line.end_ms, effective_ms),
         };
 
         ActiveStageCursor {
             active_line_idx: Some(active_line_idx),
             active_word_idx,
             progress,
+            waiting,
+        }
+    }
+
+    fn waiting_gap(&self, effective_ms: u64, active_line_idx: Option<usize>) -> Option<WaitingGap> {
+        if let Some(idx) = active_line_idx {
+            if self.lines[idx].role != LineRole::InstrumentalBreak {
+                return None;
+            }
+            let prev_lyric = self.lines[..idx]
+                .iter()
+                .rfind(|line| line.role != LineRole::InstrumentalBreak);
+            let next_lyric = self.lines[idx + 1..]
+                .iter()
+                .find(|line| line.role != LineRole::InstrumentalBreak);
+            return self.waiting_gap_from_bounds(
+                effective_ms,
+                prev_lyric,
+                next_lyric,
+                Some(self.lines[idx].end_ms),
+            );
+        }
+
+        let next_idx = self
+            .lines
+            .partition_point(|line| line.start_ms <= effective_ms);
+        let prev_lyric = self.lines[..next_idx]
+            .iter()
+            .rfind(|line| line.role != LineRole::InstrumentalBreak);
+        let next_lyric = self.lines[next_idx..]
+            .iter()
+            .find(|line| line.role != LineRole::InstrumentalBreak);
+        self.waiting_gap_from_bounds(effective_ms, prev_lyric, next_lyric, None)
+    }
+
+    fn waiting_gap_from_bounds(
+        &self,
+        effective_ms: u64,
+        prev_lyric: Option<&CompiledLine>,
+        next_lyric: Option<&CompiledLine>,
+        outro_fallback_end_ms: Option<u64>,
+    ) -> Option<WaitingGap> {
+        let min_gap_ms = self.context.min_gap_ms;
+        match (prev_lyric, next_lyric) {
+            (None, Some(next)) => (effective_ms < next.start_ms && next.start_ms >= min_gap_ms)
+                .then_some(WaitingGap {
+                    start_ms: 0,
+                    end_ms: next.start_ms,
+                    kind: WaitKind::Intro,
+                }),
+            (Some(prev), Some(next)) => (next.start_ms.saturating_sub(prev.end_ms) >= min_gap_ms)
+                .then_some(WaitingGap {
+                    start_ms: prev.end_ms,
+                    end_ms: next.start_ms,
+                    kind: WaitKind::Instrumental,
+                }),
+            (Some(prev), None) => {
+                let end_ms = match (self.context.track_duration_ms, outro_fallback_end_ms) {
+                    (Some(duration), Some(fallback)) => duration.max(fallback),
+                    (Some(duration), None) => duration,
+                    (None, Some(fallback)) => fallback,
+                    (None, None) => return None,
+                };
+                (effective_ms < end_ms && end_ms.saturating_sub(prev.end_ms) >= min_gap_ms)
+                    .then_some(WaitingGap {
+                        start_ms: prev.end_ms,
+                        end_ms,
+                        kind: WaitKind::Outro,
+                    })
+            }
+            (None, None) => None,
         }
     }
 
@@ -534,5 +661,148 @@ mod tests {
             assert_ne!(variant.options_hash(), base.options_hash());
         }
         assert_eq!(TimelineContext::new(40).options_hash(), base.options_hash());
+    }
+
+    #[test]
+    fn evaluates_intro_instrumental_and_outro_waiting_gaps() {
+        let gap_track = SyncedTrack {
+            source_provider: "test".to_string(),
+            source_track_id: None,
+            parser_version: 2,
+            is_instrumental: false,
+            granularity: SyncGranularity::Line,
+            intrinsic_offset_ms: 0,
+            user_offset_ms: 0,
+            match_confidence: 1.0,
+            lines: vec![
+                LyricLine {
+                    start_ms: 8_000,
+                    end_ms: 10_000,
+                    role: LineRole::Primary,
+                    text: "first line".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                },
+                LyricLine {
+                    start_ms: 10_001,
+                    end_ms: 19_999,
+                    role: LineRole::InstrumentalBreak,
+                    text: "[Instrumental]".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                },
+                LyricLine {
+                    start_ms: 20_000,
+                    end_ms: 22_000,
+                    role: LineRole::Primary,
+                    text: "second line".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                },
+                LyricLine {
+                    start_ms: 27_000,
+                    end_ms: 29_000,
+                    role: LineRole::Primary,
+                    text: "third line".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                },
+            ],
+        };
+
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 4_000;
+        context.track_duration_ms = Some(35_000);
+        let timeline = CompiledTimeline::compile(&gap_track, context);
+
+        // Intro gap: 0..8_000
+        let intro = timeline.evaluate_for_status(2_000, PlaybackStatus::Playing);
+        assert_eq!(
+            intro.waiting,
+            Some(WaitingGap {
+                start_ms: 0,
+                end_ms: 8_000,
+                kind: WaitKind::Intro,
+            })
+        );
+        assert!((intro.progress - 0.25).abs() < 0.0001);
+
+        // Active lyric line clears waiting gap
+        assert_eq!(
+            timeline
+                .evaluate_for_status(9_000, PlaybackStatus::Playing)
+                .waiting,
+            None
+        );
+
+        // Explicit InstrumentalBreak line: 10_000..20_000
+        let inst_break = timeline.evaluate_for_status(15_000, PlaybackStatus::Playing);
+        assert_eq!(
+            inst_break.waiting,
+            Some(WaitingGap {
+                start_ms: 10_000,
+                end_ms: 20_000,
+                kind: WaitKind::Instrumental,
+            })
+        );
+        assert!((inst_break.progress - 0.5).abs() < 0.0001);
+
+        // Silent inter-line gap without InstrumentalBreak: 22_000..27_000
+        let inter_gap = timeline.evaluate_for_status(24_500, PlaybackStatus::Playing);
+        assert_eq!(
+            inter_gap.waiting,
+            Some(WaitingGap {
+                start_ms: 22_000,
+                end_ms: 27_000,
+                kind: WaitKind::Instrumental,
+            })
+        );
+        assert!((inter_gap.progress - 0.5).abs() < 0.0001);
+
+        // Outro gap: 29_000..35_000
+        let outro = timeline.evaluate_for_status(32_000, PlaybackStatus::Playing);
+        assert_eq!(
+            outro.waiting,
+            Some(WaitingGap {
+                start_ms: 29_000,
+                end_ms: 35_000,
+                kind: WaitKind::Outro,
+            })
+        );
+        assert!((outro.progress - 0.5).abs() < 0.0001);
+
+        // Stopped and Unsynced produce no waiting gap; Paused preserves frozen progress
+        assert_eq!(
+            timeline
+                .evaluate_for_status(2_000, PlaybackStatus::Stopped)
+                .waiting,
+            None
+        );
+        let paused = timeline.evaluate_for_status(2_000, PlaybackStatus::Paused);
+        assert_eq!(paused.waiting, intro.waiting);
+        assert!((paused.progress - 0.25).abs() < 0.0001);
+
+        let mut unsynced = gap_track;
+        unsynced.granularity = SyncGranularity::Unsynced;
+        let unsynced_timeline = CompiledTimeline::compile(&unsynced, context);
+        assert_eq!(
+            unsynced_timeline
+                .evaluate_for_status(2_000, PlaybackStatus::Playing)
+                .waiting,
+            None
+        );
+    }
+
+    #[test]
+    fn skips_waiting_gaps_below_min_gap_or_without_duration() {
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 5_000;
+        context.track_duration_ms = None;
+
+        // track() starts at 1_000, gap between line 0 and 1 is 1_000 ms, no duration -> no WaitingGap anywhere
+        let timeline = CompiledTimeline::compile(&track(), context);
+        assert_eq!(timeline.evaluate(500).waiting, None);
+        assert_eq!(timeline.evaluate(3_500).waiting, None);
+        assert_eq!(timeline.evaluate(6_000).waiting, None);
     }
 }

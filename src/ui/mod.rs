@@ -1,3 +1,4 @@
+pub mod help;
 pub mod render;
 pub mod status;
 
@@ -23,6 +24,11 @@ pub enum LyricsView {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum UiModal {
+    Help,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
     pub player: Option<String>,
@@ -38,6 +44,7 @@ pub struct UiState {
     pub show_header: bool,
     pub show_status: bool,
     pub terminal_unicode: bool,
+    pub modal: Option<UiModal>,
     pub transient_banner: Option<(String, Instant)>,
     fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
@@ -69,6 +76,7 @@ impl UiState {
             show_header: true,
             show_status: true,
             terminal_unicode: true,
+            modal: None,
             transient_banner: None,
             fullscreen_restore: None,
             scroll: 0,
@@ -77,6 +85,25 @@ impl UiState {
             timeline_options_hash: TimelineContext::default().options_hash(),
             timeline_context: TimelineContext::default(),
         }
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.modal = match self.modal {
+            Some(UiModal::Help) => None,
+            None => Some(UiModal::Help),
+        };
+    }
+
+    pub fn open_help(&mut self) {
+        self.modal = Some(UiModal::Help);
+    }
+
+    pub fn close_modal(&mut self) {
+        self.modal = None;
+    }
+
+    pub fn is_modal_open(&self) -> bool {
+        self.modal.is_some()
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -594,5 +621,29 @@ mod tests {
         state.adjust_offset(100);
         state.set_no_player();
         assert_eq!(state.user_offset_ms, 0);
+    }
+
+    #[test]
+    fn help_modal_toggles_without_recompiling_timeline() {
+        let mut state = UiState::new();
+        state.set_lyrics(track(SyncGranularity::Line));
+        let timeline = state.timeline().unwrap().clone();
+        let hash = state.timeline_options_hash;
+
+        assert!(!state.is_modal_open());
+        state.toggle_help();
+        assert_eq!(state.modal, Some(UiModal::Help));
+        assert!(state.is_modal_open());
+        assert_eq!(state.timeline(), Some(&timeline));
+        assert_eq!(state.timeline_options_hash, hash);
+
+        state.toggle_help();
+        assert_eq!(state.modal, None);
+        assert!(!state.is_modal_open());
+
+        state.open_help();
+        assert_eq!(state.modal, Some(UiModal::Help));
+        state.close_modal();
+        assert_eq!(state.modal, None);
     }
 }

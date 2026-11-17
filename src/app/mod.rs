@@ -3,7 +3,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use crossterm::event::{Event, EventStream, KeyCode, KeyEventKind, KeyModifiers};
+use crossterm::event::{Event, EventStream};
 use futures_util::StreamExt;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
@@ -19,15 +19,17 @@ use crate::{
     prefs::{self, UiPrefs},
     providers::engine::EngineUpdate,
     providers::{ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery},
-    ui::{UiState, render},
+    ui::{UiModal, UiState, render},
 };
 
 pub mod event;
+pub mod keys;
 pub mod pipe;
 pub mod resolve;
 pub mod status;
 
 use event::AppEvent;
+use keys::{KeyAction, KeyScope, resolve_key};
 use resolve::{ResolveCoordinator, TrackPlan, resolve_with_updates};
 
 #[derive(Clone, Copy)]
@@ -105,7 +107,7 @@ pub async fn run(
     state.set_terminal_unicode(config.unicode.is_full());
     refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
-    let runtime = AppRuntime::default();
+    let mut runtime = AppRuntime::default();
     let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
@@ -138,6 +140,7 @@ pub async fn run(
 
             draw_frame(terminal, &mut state, &clock)?;
 
+            runtime.animation.countdown_active = is_countdown_active(&state, &clock, now);
             let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
                 .time_until_flush(now)
@@ -522,14 +525,17 @@ fn handle_input(
     let Event::Key(key) = event else {
         return InputOutcome::default();
     };
-    if key.kind != KeyEventKind::Press {
+    let active_scope = match state.modal {
+        Some(UiModal::Help) => KeyScope::Help,
+        None => KeyScope::Global,
+    };
+    let Some(action) = resolve_key(active_scope, key) else {
         return InputOutcome::default();
-    }
+    };
 
-    match key.code {
-        KeyCode::Char('q') => InputOutcome::quit(),
-        KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => InputOutcome::quit(),
-        KeyCode::Char('r') => match coordinator.force_refetch_current_track() {
+    match action {
+        KeyAction::Quit => InputOutcome::quit(),
+        KeyAction::Refetch => match coordinator.force_refetch_current_track() {
             Some(plan) => {
                 state.refetching = true;
                 InputOutcome::refetch(plan)
@@ -539,45 +545,52 @@ fn handle_input(
                 InputOutcome::default()
             }
         },
-        KeyCode::Char('f') => {
+        KeyAction::ToggleFullscreen => {
             state.toggle_fullscreen();
             persist_layout(state, config_file, now);
             InputOutcome::default()
         }
-        KeyCode::Char('t') => {
+        KeyAction::ToggleHeader => {
             state.toggle_header();
             persist_layout(state, config_file, now);
             InputOutcome::default()
         }
-        KeyCode::Char('s') => {
+        KeyAction::ToggleStatus => {
             state.toggle_status();
             persist_layout(state, config_file, now);
             InputOutcome::default()
         }
-        KeyCode::Char('[') => {
+        KeyAction::OffsetBack => {
             state.adjust_offset(-100);
             record_offset(state, coordinator, offsets);
             InputOutcome::default()
         }
-        KeyCode::Char(']') => {
+        KeyAction::OffsetForward => {
             state.adjust_offset(100);
             record_offset(state, coordinator, offsets);
             InputOutcome::default()
         }
-        KeyCode::Char('\\') => {
+        KeyAction::OffsetReset => {
             state.reset_offset();
             record_offset(state, coordinator, offsets);
             InputOutcome::default()
         }
-        KeyCode::Up => {
+        KeyAction::ScrollUp => {
             state.scroll_up();
             InputOutcome::default()
         }
-        KeyCode::Down => {
+        KeyAction::ScrollDown => {
             state.scroll_down();
             InputOutcome::default()
         }
-        _ => InputOutcome::default(),
+        KeyAction::ToggleHelp => {
+            state.toggle_help();
+            InputOutcome::default()
+        }
+        KeyAction::CloseModal => {
+            state.close_modal();
+            InputOutcome::default()
+        }
     }
 }
 
@@ -637,12 +650,32 @@ fn track_label(track: &TrackMeta) -> String {
     }
 }
 
+fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> bool {
+    if state.is_modal_open() || !matches!(clock.state(), ClockState::Playing { .. }) {
+        return false;
+    }
+    if state.is_unsynced() || state.is_instrumental() {
+        return false;
+    }
+    let Some(timeline) = state.timeline() else {
+        return false;
+    };
+    let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
+    timeline
+        .evaluate_for_status(effective_ms, state.playback)
+        .waiting
+        .is_some()
+}
+
 fn next_wait(
     state: &UiState,
     clock: &PlaybackClock,
     now: Instant,
     animation: AnimationStatus,
 ) -> Duration {
+    if state.is_modal_open() {
+        return Duration::from_secs(1);
+    }
     if animation.needs_frame_tick() {
         return Duration::from_millis(16);
     }
@@ -657,7 +690,7 @@ fn next_wait(
     }
 
     let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
-    let cursor = timeline.evaluate(effective_ms);
+    let cursor = timeline.evaluate_for_status(effective_ms, state.playback);
     let next = timeline
         .next_boundary_ms(effective_ms)
         .unwrap_or_else(|| effective_ms.saturating_add(1_000));
@@ -666,7 +699,7 @@ fn next_wait(
     let wall_ms = ((media_delta_ms as f64) / rate).round().clamp(1.0, 1_000.0) as u64;
     let boundary_wait = Duration::from_millis(wall_ms);
 
-    if cursor.active_word_idx.is_some() {
+    if cursor.active_word_idx.is_some() || cursor.waiting.is_some() {
         boundary_wait.min(Duration::from_millis(16))
     } else {
         boundary_wait
@@ -1403,5 +1436,110 @@ mod tests {
         assert_eq!(state.banner_message(), Some("invalid config: unknown key"));
 
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn help_modal_routes_keys_and_freezes_background_ticks() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut gap_track = track();
+        gap_track.lines[0].start_ms = 6_000;
+        gap_track.lines[0].end_ms = 8_000;
+        gap_track.lines[0].words[0].start_ms = 6_000;
+        gap_track.lines[0].words[0].end_ms = 8_000;
+        state.set_lyrics(gap_track);
+        state.playback = PlaybackStatus::Playing;
+
+        let now = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, now);
+
+        assert!(is_countdown_active(&state, &clock, now));
+        assert_eq!(
+            next_wait(&state, &clock, now, AnimationStatus::default()),
+            Duration::from_millis(16)
+        );
+
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let key_event = |code: KeyCode, modifiers: KeyModifiers| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            })
+        };
+
+        // '?' opens Help modal
+        let outcome = handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Char('?'), KeyModifiers::SHIFT),
+        );
+        assert!(!outcome.quit);
+        assert_eq!(state.modal, Some(UiModal::Help));
+        assert!(!is_countdown_active(&state, &clock, now));
+        assert_eq!(
+            next_wait(
+                &state,
+                &clock,
+                now,
+                AnimationStatus {
+                    effects_active: true,
+                    countdown_active: true,
+                    ribbon_animating: true,
+                }
+            ),
+            Duration::from_secs(1)
+        );
+
+        // 'q' is blocked while Help modal is open
+        let blocked_quit = handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Char('q'), KeyModifiers::NONE),
+        );
+        assert!(!blocked_quit.quit);
+        assert_eq!(state.modal, Some(UiModal::Help));
+
+        // Esc closes Help modal
+        handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert_eq!(state.modal, None);
+        assert!(is_countdown_active(&state, &clock, now));
+
+        // Re-open with '?' and close again with '?'
+        handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.modal, Some(UiModal::Help));
+        handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Char('?'), KeyModifiers::NONE),
+        );
+        assert_eq!(state.modal, None);
     }
 }

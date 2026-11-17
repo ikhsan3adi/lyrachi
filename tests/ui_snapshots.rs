@@ -470,3 +470,55 @@ fn midline_pause_preserves_sung_and_unsung_word_styles() {
         }
     }
 }
+
+#[test]
+fn waiting_countdown_80x24() {
+    snapshot(&mut word_sync(), 80, 24, 14_500, "80x24_waiting_countdown");
+}
+
+#[test]
+fn waiting_countdown_120x40() {
+    snapshot(
+        &mut word_sync(),
+        120,
+        40,
+        14_500,
+        "120x40_waiting_countdown",
+    );
+}
+
+#[test]
+fn help_overlay_80x24() {
+    let mut state = word_sync();
+    state.open_help();
+    snapshot(&mut state, 80, 24, 9_500, "80x24_help_overlay");
+}
+
+#[test]
+fn help_overlay_120x40() {
+    let mut state = word_sync();
+    state.open_help();
+    snapshot(&mut state, 120, 40, 9_500, "120x40_help_overlay");
+}
+
+#[test]
+fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
+    let mut state = word_sync();
+    state.terminal_unicode = false;
+    let ascii = render_state(&mut state, 80, 24, 14_500);
+    assert!(
+        ascii.contains("Instrumental  * * .  3s"),
+        "expected ASCII countdown dots, got:\n{ascii}"
+    );
+
+    let mut paused = word_sync();
+    paused.playback = PlaybackStatus::Paused;
+    let paused_out = render_state(&mut paused, 80, 24, 14_500);
+    assert!(paused_out.contains("Instrumental  ● ● ○  3s"));
+
+    let mut stopped = word_sync();
+    stopped.playback = PlaybackStatus::Stopped;
+    let stopped_out = render_state(&mut stopped, 80, 24, 14_500);
+    assert!(!stopped_out.contains("●"));
+    assert!(stopped_out.contains("[Instrumental]"));
+}
