@@ -614,6 +614,9 @@ mod tests {
 
         state.expire_banner(Instant::now() + BANNER_DURATION);
         assert_eq!(state.body_rows(), 24);
+
+        state.configure_ribbon(RibbonMode::Top);
+        assert_eq!(state.body_rows(), 23);
     }
 
     #[test]

@@ -554,4 +554,16 @@ fn ribbon_hides_below_8_rows() {
         tall.contains("word-hl:"),
         "expected ribbon on 8 rows:\n{tall}"
     );
+
+    state.configure_ribbon(RibbonMode::Bottom);
+    let bottom_short = render_state(&mut state, 80, 7, 9_500);
+    assert!(
+        !bottom_short.contains("word-hl:"),
+        "unexpected bottom ribbon on 7 rows:\n{bottom_short}"
+    );
+    let bottom_tall = render_state(&mut state, 80, 8, 9_500);
+    assert!(
+        bottom_tall.contains("word-hl:"),
+        "expected bottom ribbon on 8 rows:\n{bottom_tall}"
+    );
 }

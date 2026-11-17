@@ -680,6 +680,9 @@ fn next_wait(
     now: Instant,
     animation: AnimationStatus,
 ) -> Duration {
+    if state.is_modal_open() {
+        return Duration::from_secs(1);
+    }
     let wait = base_next_wait(state, clock, now, animation);
     state
         .time_until_ribbon_expiry(now)

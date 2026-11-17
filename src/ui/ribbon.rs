@@ -120,6 +120,33 @@ mod tests {
             ribbon_line(&state).to_string(),
             "normal | default | lrclib (syllable) | word-hl: on | +150 ms"
         );
+
+        let mut instrumental = sample_track(SyncGranularity::Line);
+        instrumental.is_instrumental = true;
+        state.set_lyrics(instrumental);
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "normal | default | lrclib (instrumental) | word-hl: off | +150 ms"
+        );
+
+        state.refetching = true;
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "normal | default | refetching... | word-hl: off | +150 ms"
+        );
+        state.refetching = false;
+
+        state.set_not_found();
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "normal | default | not found | word-hl: off | +150 ms"
+        );
+
+        state.set_error("API timeout".to_string());
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "normal | default | error | word-hl: off | +150 ms"
+        );
     }
 
     #[test]

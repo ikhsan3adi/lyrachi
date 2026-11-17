@@ -587,4 +587,14 @@ l1_entries = 8
             fs::remove_file(path).unwrap();
         }
     }
+
+    #[test]
+    fn warns_on_invalid_ribbon_mode() {
+        let path = temp_file("ribbon-invalid", "[ui]\nribbon = \"invalid\"\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.ribbon, RibbonMode::Auto);
+        assert!(!outcome.warnings.is_empty());
+        assert!(outcome.warnings[0].contains("unknown variant"));
+        fs::remove_file(path).unwrap();
+    }
 }
