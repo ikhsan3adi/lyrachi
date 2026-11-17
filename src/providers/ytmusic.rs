@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::time::Duration;
 
 use reqwest::StatusCode;
@@ -7,7 +8,10 @@ use tokio_util::sync::CancellationToken;
 use super::http;
 use super::sanitize::{clean_artist, clean_title, normalize_for_match, split_artist_title};
 use super::score;
-use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{
+    CandidateSummary, Provider, ProviderAnswer, ProviderError, Tier, TokenBucketRateLimiter,
+    TrackQuery,
+};
 use crate::core::model::LineRole;
 use crate::core::normalize::{normalize_plain, normalize_track_checked};
 use crate::core::parse::{ParsedLine, ParsedMetadata, ParsedTrack};
@@ -21,6 +25,17 @@ const SEARCH_CLIENT_VERSION: &str = "2.0";
 const SEARCH_CLIENT_ID: &str = "85";
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(8);
 const REFERER: &str = "https://music.youtube.com/";
+const MAX_SEARCH_CANDIDATES: usize = 5;
+
+#[derive(Debug, Clone)]
+struct YtSearchCandidate {
+    video_id: String,
+    title: String,
+    artist: Option<String>,
+    album: Option<String>,
+    duration_ms: Option<u64>,
+    score: f32,
+}
 
 #[derive(Clone)]
 pub struct YtMusicProvider {
@@ -93,11 +108,111 @@ impl YtMusicProvider {
             .await
     }
 
+    pub async fn search_candidates(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<CandidateSummary>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if !query.is_usable() {
+            return Ok(Vec::new());
+        }
+
+        let candidates = self.search_raw(query, cancel).await?;
+        Ok(candidates
+            .into_iter()
+            .take(MAX_SEARCH_CANDIDATES)
+            .map(|item| CandidateSummary {
+                provider: Provider::YtMusic,
+                source_track_id: Some(item.video_id.clone()),
+                title: if item.title.is_empty() {
+                    query.title.clone()
+                } else {
+                    item.title
+                },
+                artist: item
+                    .artist
+                    .or_else(|| (!query.artist.is_empty()).then(|| query.artist.clone())),
+                album: item.album.or_else(|| query.album.clone()),
+                duration_ms: item.duration_ms.or(query.duration_ms),
+                tier: Tier::Plain,
+                confidence: item.score,
+                local_path: None,
+                browse_hint: Some(item.video_id),
+                query_duration_ms: query.duration_ms,
+                query_user_offset_ms: query.user_offset_ms,
+                hydrated: None,
+            })
+            .collect())
+    }
+
+    pub async fn hydrate_candidate(
+        &self,
+        summary: &CandidateSummary,
+        limiter: Option<&TokenBucketRateLimiter>,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let Some(video_id) = summary
+            .browse_hint
+            .as_deref()
+            .or(summary.source_track_id.as_deref())
+        else {
+            return Ok(None);
+        };
+
+        if let Some(limiter) = limiter {
+            limiter.acquire(cancel).await?;
+        }
+        let Some(browse_id) = self.get_lyrics_browse_id(video_id, cancel).await? else {
+            return Ok(None);
+        };
+
+        if let Some(limiter) = limiter {
+            limiter.acquire(cancel).await?;
+        }
+        let hydrate_query = TrackQuery::from_meta(
+            &crate::media::TrackMeta {
+                title: summary.title.clone(),
+                artist: summary.artist.clone().unwrap_or_default(),
+                album: summary.album.clone(),
+                duration_ms: summary.query_duration_ms.or(summary.duration_ms),
+                track_id: summary.source_track_id.clone(),
+                url: None,
+            },
+            summary.query_user_offset_ms,
+        );
+        self.fetch_lyrics(
+            &browse_id,
+            video_id,
+            summary.confidence,
+            &hydrate_query,
+            cancel,
+        )
+        .await
+    }
+
     async fn search_track(
         &self,
         query: &TrackQuery,
         cancel: &CancellationToken,
     ) -> Result<Option<(String, f32)>, ProviderError> {
+        let candidates = self.search_raw(query, cancel).await?;
+        Ok(candidates
+            .into_iter()
+            .find(|item| score::is_confident(item.score))
+            .map(|item| (item.video_id, item.score)))
+    }
+
+    async fn search_raw(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<YtSearchCandidate>, ProviderError> {
         let query_text = format!("{} {}", query.artist, query.title);
         let payload = serde_json::json!({
             "context": {
@@ -122,14 +237,14 @@ impl YtMusicProvider {
         };
 
         match response.status() {
-            StatusCode::NOT_FOUND => Ok(None),
+            StatusCode::NOT_FOUND => Ok(Vec::new()),
             status if status.is_success() => {
                 let body = tokio::select! {
                     biased;
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
                     res = http::read_limited_text(response) => res?,
                 };
-                self.parse_search_response(&body, query)
+                self.parse_search_candidates(&body, query)
             }
             StatusCode::TOO_MANY_REQUESTS => Err(ProviderError::RateLimited {
                 retry_after_ms: http::retry_after_ms(&response),
@@ -143,14 +258,14 @@ impl YtMusicProvider {
         }
     }
 
-    fn parse_search_response(
+    fn parse_search_candidates(
         &self,
         body: &str,
         query: &TrackQuery,
-    ) -> Result<Option<(String, f32)>, ProviderError> {
+    ) -> Result<Vec<YtSearchCandidate>, ProviderError> {
         let body = body.trim();
         if body.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
         let val: Value = serde_json::from_str(body).map_err(invalid_json)?;
 
@@ -159,30 +274,53 @@ impl YtMusicProvider {
         find_compact_video_items(&val, &mut items);
 
         if items.is_empty() {
-            return Ok(None);
+            return Ok(Vec::new());
         }
 
-        let mut best: Option<(String, f32)> = None;
+        let mut seen = HashSet::new();
+        let mut results = Vec::new();
 
         for item in items {
             let Some(video_id) = extract_item_video_id(item) else {
                 continue;
             };
-            let (title, artist, _album, duration_sec) = extract_item_metadata(item);
-            let title = title.as_deref().unwrap_or_default();
-            let artist = artist.as_deref().unwrap_or_default();
-
-            let score = score::score_metadata(query, title, artist, duration_sec);
-
-            if score::is_confident(score) {
-                let is_higher = best.as_ref().is_none_or(|(_, s)| score > *s);
-                if is_higher {
-                    best = Some((video_id, score));
-                }
+            if !seen.insert(video_id.clone()) {
+                continue;
             }
+            let (title, artist, album, duration_sec) = extract_item_metadata(item);
+            let title_str = title.as_deref().unwrap_or_default();
+            let artist_str = artist.as_deref().unwrap_or_default();
+
+            let score = score::score_metadata(query, title_str, artist_str, duration_sec);
+            let duration_ms = duration_sec
+                .filter(|d| d.is_finite() && *d > 0.0)
+                .map(|d| (d * 1_000.0).round() as u64);
+
+            results.push(YtSearchCandidate {
+                video_id,
+                title: title.unwrap_or_default(),
+                artist: artist.filter(|a| !a.trim().is_empty()),
+                album: album.filter(|a| !a.trim().is_empty()),
+                duration_ms,
+                score,
+            });
         }
 
-        Ok(best)
+        results.sort_by(|left, right| right.score.total_cmp(&left.score));
+        Ok(results)
+    }
+
+    #[cfg(test)]
+    fn parse_search_response(
+        &self,
+        body: &str,
+        query: &TrackQuery,
+    ) -> Result<Option<(String, f32)>, ProviderError> {
+        let candidates = self.parse_search_candidates(body, query)?;
+        Ok(candidates
+            .into_iter()
+            .find(|item| score::is_confident(item.score))
+            .map(|item| (item.video_id, item.score)))
     }
 
     async fn get_lyrics_browse_id(
@@ -1049,6 +1187,140 @@ mod tests {
         assert_eq!(answer.provider, Provider::YtMusic);
         assert_eq!(answer.tier, Tier::Line);
         assert_eq!(answer.track.lines.len(), 4);
+    }
+
+    #[tokio::test]
+    async fn search_candidates_caps_at_5_and_delays_next_browse_until_hydrate() {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+
+        let fixture = include_str!("../../tests/fixtures/ytmusic_response.json");
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+
+        let search_hits = Arc::new(AtomicUsize::new(0));
+        let next_hits = Arc::new(AtomicUsize::new(0));
+        let browse_hits = Arc::new(AtomicUsize::new(0));
+
+        let search_hits_srv = Arc::clone(&search_hits);
+        let next_hits_srv = Arc::clone(&next_hits);
+        let browse_hits_srv = Arc::clone(&browse_hits);
+
+        tokio::spawn(async move {
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let n = socket.read(&mut buf).await.unwrap_or(0);
+                if n == 0 {
+                    continue;
+                }
+                let req_text = String::from_utf8_lossy(&buf[..n]).into_owned();
+
+                if req_text.contains("POST /search") {
+                    search_hits_srv.fetch_add(1, Ordering::SeqCst);
+                    let items = (1..=7)
+                        .map(|idx| {
+                            serde_json::json!({
+                                "musicResponsiveListItemRenderer": {
+                                    "playlistItemData": { "videoId": format!("vid0000000{idx}") },
+                                    "flexColumns": [
+                                        {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                                "text": {
+                                                    "runs": [{ "text": "Yellow" }]
+                                                }
+                                            }
+                                        },
+                                        {
+                                            "musicResponsiveListItemFlexColumnRenderer": {
+                                                "text": {
+                                                    "runs": [
+                                                        { "text": "Coldplay" },
+                                                        { "text": " • " },
+                                                        { "text": format!("Album {idx}") },
+                                                        { "text": " • " },
+                                                        { "text": "4:29" }
+                                                    ]
+                                                }
+                                            }
+                                        }
+                                    ]
+                                }
+                            })
+                        })
+                        .collect::<Vec<_>>();
+                    let search_body = serde_json::json!({ "contents": items }).to_string();
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        search_body.len(),
+                        search_body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                } else if req_text.contains("POST /next") {
+                    next_hits_srv.fetch_add(1, Ordering::SeqCst);
+                    let next_body = r#"{
+                        "contents": {
+                            "singleColumnMusicWatchNextResultsRenderer": {
+                                "tabbedRenderer": {
+                                    "watchNextTabbedResultsRenderer": {
+                                        "tabs": [{
+                                            "tabRenderer": {
+                                                "title": "Lyrics",
+                                                "endpoint": { "browseEndpoint": { "browseId": "MPLYt_123" } },
+                                                "unselectable": false
+                                            }
+                                        }]
+                                    }
+                                }
+                            }
+                        }
+                    }"#;
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        next_body.len(),
+                        next_body
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                } else if req_text.contains("POST /browse") {
+                    browse_hits_srv.fetch_add(1, Ordering::SeqCst);
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
+                        fixture.len(),
+                        fixture
+                    );
+                    let _ = socket.write_all(resp.as_bytes()).await;
+                }
+            }
+        });
+
+        let provider = YtMusicProvider::with_base_url(format!("http://{addr}")).unwrap();
+        let cancel = CancellationToken::new();
+        let summaries = provider.search_candidates(&query(), &cancel).await.unwrap();
+
+        assert_eq!(summaries.len(), MAX_SEARCH_CANDIDATES);
+        assert!(summaries.iter().all(|s| s.provider == Provider::YtMusic));
+        assert!(summaries.iter().all(|s| !s.is_hydrated()));
+        assert_eq!(search_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            next_hits.load(Ordering::SeqCst),
+            0,
+            "/next must NOT be called during search_candidates"
+        );
+        assert_eq!(
+            browse_hits.load(Ordering::SeqCst),
+            0,
+            "/browse must NOT be called during search_candidates"
+        );
+
+        let answer = provider
+            .hydrate_candidate(&summaries[0], None, &cancel)
+            .await
+            .unwrap()
+            .expect("should hydrate selected summary");
+        assert_eq!(answer.provider, Provider::YtMusic);
+        assert_eq!(answer.tier, Tier::Line);
+        assert_eq!(answer.track.lines.len(), 4);
+        assert_eq!(next_hits.load(Ordering::SeqCst), 1);
+        assert_eq!(browse_hits.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

@@ -12,7 +12,7 @@ use tracing::{info, warn};
 use super::sanitize::{
     clean_artist, clean_title, normalize_for_match, split_artist_title, strip_dash_qualifier,
 };
-use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, Tier, TrackQuery};
 use crate::core::normalize::normalize_track;
 use crate::core::parse::lrc::parse_lrc;
 
@@ -73,8 +73,7 @@ impl LocalProvider {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
-        let title_key = &query.canonical.norm_title;
-        if query.title.is_empty() || title_key.is_empty() {
+        if !query.is_usable() {
             return Ok(None);
         }
 
@@ -88,6 +87,101 @@ impl LocalProvider {
             return Ok(None);
         }
 
+        let index = self.get_index(cancel).await?;
+        let matches = collect_index_matches(index, query);
+
+        for (_, _, file) in matches {
+            if let Some(answer) = read_and_parse_local(
+                &file.path,
+                query.duration_ms,
+                query.user_offset_ms,
+                1.0,
+                cancel,
+            )
+            .await?
+            {
+                return Ok(Some(answer));
+            }
+        }
+
+        Ok(None)
+    }
+
+    pub async fn search_candidates(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<CandidateSummary>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if !query.is_usable() {
+            return Ok(Vec::new());
+        }
+
+        let mut results = Vec::new();
+        let mut seen = HashSet::new();
+
+        if let Some(audio_path) = query.track_url.as_deref().and_then(file_url_path)
+            && let Some(stem) = audio_path.file_stem().and_then(|stem| stem.to_str())
+        {
+            for extension in ["elrc", "lrc"] {
+                if cancel.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+                let path = audio_path.with_file_name(format!("{stem}.{extension}"));
+                if file_exists(&path, cancel).await? && seen.insert(path.clone()) {
+                    results.push(build_local_summary(path, query, extension == "elrc", 1.0));
+                }
+            }
+        }
+
+        if !self.dirs.is_empty() {
+            let index = self.get_index(cancel).await?;
+            for (rank, _, file) in collect_index_matches(index, query) {
+                if cancel.is_cancelled() {
+                    return Err(ProviderError::Cancelled);
+                }
+                if seen.insert(file.path.clone()) {
+                    let confidence = if rank == 0 { 0.95 } else { 0.85 };
+                    results.push(build_local_summary(
+                        file.path.clone(),
+                        query,
+                        file.is_elrc,
+                        confidence,
+                    ));
+                }
+            }
+        }
+
+        Ok(results)
+    }
+
+    pub async fn hydrate_candidate(
+        &self,
+        summary: &CandidateSummary,
+        cancel: &CancellationToken,
+    ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        let Some(path) = summary.local_path.as_deref() else {
+            return Ok(None);
+        };
+        read_and_parse_local(
+            path,
+            summary.query_duration_ms.or(summary.duration_ms),
+            summary.query_user_offset_ms,
+            summary.confidence,
+            cancel,
+        )
+        .await
+    }
+
+    async fn get_index(
+        &self,
+        cancel: &CancellationToken,
+    ) -> Result<&[IndexedLyricFile], ProviderError> {
         let init_fut = self.index.get_or_init(|| async {
             let dirs = self.dirs.clone();
             match tokio::task::spawn_blocking(move || scan_dirs(&dirs)).await {
@@ -98,75 +192,11 @@ impl LocalProvider {
                 }
             }
         });
-        let index = tokio::select! {
+        tokio::select! {
             biased;
-            _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
-            files = init_fut => files,
-        };
-
-        let artist_key = &query.canonical.norm_artist;
-        let combined_dash_artist_key = (!artist_key.is_empty() && query.artist.contains(" - "))
-            .then(|| normalize_for_match(&format!("{} {}", query.artist, query.title)));
-
-        let mut matches = index
-            .iter()
-            .filter_map(|file| {
-                let rank = if !artist_key.is_empty()
-                    && (file
-                        .artist_title_key
-                        .as_ref()
-                        .is_some_and(|(artist, title)| artist == artist_key && title == title_key)
-                        || combined_dash_artist_key.as_ref() == Some(&file.stem_key))
-                {
-                    0_u8
-                } else if file.stem_key == *title_key && file.artist_title_key.is_none() {
-                    1_u8
-                } else {
-                    return None;
-                };
-
-                let ext_rank = u8::from(!file.is_elrc);
-                Some((rank, ext_rank, &file.path))
-            })
-            .collect::<Vec<_>>();
-
-        matches.sort_by(|left, right| {
-            left.0
-                .cmp(&right.0)
-                .then_with(|| left.1.cmp(&right.1))
-                .then_with(|| left.2.cmp(right.2))
-        });
-
-        for (_, _, path) in matches {
-            if cancel.is_cancelled() {
-                return Err(ProviderError::Cancelled);
-            }
-            let Some(content) = read_lyric_text(path, cancel).await? else {
-                continue;
-            };
-            match parse_lrc(&content, query.duration_ms) {
-                Ok(parsed) => {
-                    let track = normalize_track(
-                        parsed,
-                        Provider::Local.as_str(),
-                        Some(path.to_string_lossy().into_owned()),
-                        1.0,
-                        query.duration_ms,
-                        query.user_offset_ms,
-                    );
-                    if !track.is_instrumental && track.lines.is_empty() {
-                        warn!(path = %path.display(), "local lyric file produced no usable lines");
-                        continue;
-                    }
-                    return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
-                }
-                Err(error) => {
-                    warn!(%error, path = %path.display(), "invalid local lyric file");
-                }
-            }
+            _ = cancel.cancelled() => Err(ProviderError::Cancelled),
+            files = init_fut => Ok(files.as_slice()),
         }
-
-        Ok(None)
     }
 
     async fn find_sidecar(
@@ -180,36 +210,131 @@ impl LocalProvider {
         };
 
         for extension in ["elrc", "lrc"] {
-            if cancel.is_cancelled() {
-                return Err(ProviderError::Cancelled);
-            }
             let path = audio_path.with_file_name(format!("{stem}.{extension}"));
-            let Some(content) = read_lyric_text(&path, cancel).await? else {
-                continue;
-            };
-            match parse_lrc(&content, query.duration_ms) {
-                Ok(parsed) => {
-                    let track = normalize_track(
-                        parsed,
-                        Provider::Local.as_str(),
-                        Some(path.to_string_lossy().into_owned()),
-                        1.0,
-                        query.duration_ms,
-                        query.user_offset_ms,
-                    );
-                    if track.is_instrumental || !track.lines.is_empty() {
-                        return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
-                    }
-                    warn!(path = %path.display(), "local sidecar produced no usable lines");
-                }
-                Err(error) => {
-                    warn!(%error, path = %path.display(), "invalid local sidecar");
-                }
+            if let Some(answer) =
+                read_and_parse_local(&path, query.duration_ms, query.user_offset_ms, 1.0, cancel)
+                    .await?
+            {
+                return Ok(Some(answer));
             }
         }
 
         Ok(None)
     }
+}
+
+fn collect_index_matches<'a>(
+    index: &'a [IndexedLyricFile],
+    query: &TrackQuery,
+) -> Vec<(u8, u8, &'a IndexedLyricFile)> {
+    let title_key = &query.canonical.norm_title;
+    let artist_key = &query.canonical.norm_artist;
+    let combined_dash_artist_key = (!artist_key.is_empty() && query.artist.contains(" - "))
+        .then(|| normalize_for_match(&format!("{} {}", query.artist, query.title)));
+
+    let mut matches = index
+        .iter()
+        .filter_map(|file| {
+            let rank = if !artist_key.is_empty()
+                && (file
+                    .artist_title_key
+                    .as_ref()
+                    .is_some_and(|(artist, title)| artist == artist_key && title == title_key)
+                    || combined_dash_artist_key.as_ref() == Some(&file.stem_key))
+            {
+                0_u8
+            } else if file.stem_key == *title_key && file.artist_title_key.is_none() {
+                1_u8
+            } else {
+                return None;
+            };
+
+            let ext_rank = u8::from(!file.is_elrc);
+            Some((rank, ext_rank, file))
+        })
+        .collect::<Vec<_>>();
+
+    matches.sort_by(|left, right| {
+        left.0
+            .cmp(&right.0)
+            .then_with(|| left.1.cmp(&right.1))
+            .then_with(|| left.2.path.cmp(&right.2.path))
+    });
+    matches
+}
+
+fn build_local_summary(
+    path: PathBuf,
+    query: &TrackQuery,
+    is_elrc: bool,
+    confidence: f32,
+) -> CandidateSummary {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(str::to_string)
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| query.title.clone());
+    let path_str = path.to_string_lossy().into_owned();
+    CandidateSummary {
+        provider: Provider::Local,
+        source_track_id: Some(path_str),
+        title: stem,
+        artist: (!query.artist.is_empty()).then(|| query.artist.clone()),
+        album: query.album.clone(),
+        duration_ms: query.duration_ms,
+        tier: if is_elrc { Tier::Word } else { Tier::Line },
+        confidence,
+        local_path: Some(path),
+        browse_hint: None,
+        query_duration_ms: query.duration_ms,
+        query_user_offset_ms: query.user_offset_ms,
+        hydrated: None,
+    }
+}
+
+async fn file_exists(path: &Path, cancel: &CancellationToken) -> Result<bool, ProviderError> {
+    let meta = tokio::select! {
+        biased;
+        _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+        result = fs::metadata(path) => result,
+    };
+    Ok(meta.is_ok_and(|m| m.is_file()))
+}
+
+async fn read_and_parse_local(
+    path: &Path,
+    duration_ms: Option<u64>,
+    user_offset_ms: i64,
+    confidence: f32,
+    cancel: &CancellationToken,
+) -> Result<Option<ProviderAnswer>, ProviderError> {
+    if cancel.is_cancelled() {
+        return Err(ProviderError::Cancelled);
+    }
+    let Some(content) = read_lyric_text(path, cancel).await? else {
+        return Ok(None);
+    };
+    match parse_lrc(&content, duration_ms) {
+        Ok(parsed) => {
+            let track = normalize_track(
+                parsed,
+                Provider::Local.as_str(),
+                Some(path.to_string_lossy().into_owned()),
+                confidence,
+                duration_ms,
+                user_offset_ms,
+            );
+            if track.is_instrumental || !track.lines.is_empty() {
+                return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
+            }
+            warn!(path = %path.display(), "local lyric file produced no usable lines");
+        }
+        Err(error) => {
+            warn!(%error, path = %path.display(), "invalid local lyric file");
+        }
+    }
+    Ok(None)
 }
 
 async fn read_lyric_text(
@@ -812,5 +937,42 @@ mod tests {
         );
 
         assert_eq!(parsed, Some(PathBuf::from("/home/tester/Musik")));
+    }
+
+    #[tokio::test]
+    async fn search_candidates_exposes_sidecar_and_all_index_matches_with_dedup_and_hydration() {
+        let dir = temp_dir("local-multi-candidates");
+        let audio_path = dir.join("Song.flac");
+        let sidecar_elrc = dir.join("Song.elrc");
+        let sidecar_lrc = dir.join("Song.lrc");
+        let artist_lrc = dir.join("Artist - Song.lrc");
+
+        std::fs::write(&audio_path, b"audio").unwrap();
+        std::fs::write(&sidecar_elrc, "[00:01.00]<00:01.00>Sidecar eLRC\n").unwrap();
+        std::fs::write(&sidecar_lrc, "[00:01.00]Sidecar LRC\n").unwrap();
+        std::fs::write(&artist_lrc, "[00:01.00]Artist LRC\n").unwrap();
+
+        let provider = LocalProvider::with_dirs(vec![dir.clone()]);
+        let q = query_with_url(
+            "Song",
+            "Artist",
+            None,
+            Some(format!("file://{}", audio_path.display())),
+        );
+        let cancel = CancellationToken::new();
+
+        let candidates = provider.search_candidates(&q, &cancel).await.unwrap();
+        assert_eq!(candidates.len(), 3);
+        assert!(candidates.iter().all(|c| !c.is_hydrated()));
+
+        let hydrated = provider
+            .hydrate_candidate(&candidates[2], &cancel)
+            .await
+            .unwrap()
+            .expect("should hydrate selected local file");
+        assert_eq!(hydrated.provider, Provider::Local);
+        assert_eq!(hydrated.track.lines[0].text, "Artist LRC");
+
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }

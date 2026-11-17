@@ -8,7 +8,7 @@ use tracing::warn;
 
 use super::http;
 use super::score;
-use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, TrackQuery};
 use crate::core::model::{Annotation, AnnotationKind, LineRole};
 use crate::core::normalize::normalize_track_checked;
 use crate::core::parse::ttml::parse_ttml;
@@ -143,6 +143,47 @@ impl LyricsPlusProvider {
         query: &TrackQuery,
         cancel: &CancellationToken,
     ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        let Some(body) = self.fetch_raw(query, cancel).await? else {
+            return Ok(None);
+        };
+        Self::parse_response(&body, query)
+    }
+
+    pub async fn search_candidates(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<CandidateSummary>, ProviderError> {
+        let Some(body) = self.fetch_raw(query, cancel).await? else {
+            return Ok(Vec::new());
+        };
+        let Some(answer) = Self::parse_response(&body, query)? else {
+            return Ok(Vec::new());
+        };
+
+        let (title, artist, album, duration_ms) = extract_response_summary_meta(&body, query);
+        Ok(vec![CandidateSummary {
+            provider: Provider::LyricsPlus,
+            source_track_id: answer.track.source_track_id.clone(),
+            title,
+            artist,
+            album,
+            duration_ms,
+            tier: answer.tier,
+            confidence: answer.confidence,
+            local_path: None,
+            browse_hint: None,
+            query_duration_ms: query.duration_ms,
+            query_user_offset_ms: query.user_offset_ms,
+            hydrated: Some(answer),
+        }])
+    }
+
+    async fn fetch_raw(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Option<String>, ProviderError> {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
@@ -169,7 +210,7 @@ impl LyricsPlusProvider {
                     _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
                     res = http::read_limited_text(response) => res?,
                 };
-                Self::parse_response(&body, query)
+                Ok(Some(body))
             }
             StatusCode::TOO_MANY_REQUESTS => Err(ProviderError::RateLimited {
                 retry_after_ms: http::retry_after_ms(&response),
@@ -262,6 +303,69 @@ fn ttml_answer(
     track.user_offset_ms = query.user_offset_ms;
 
     Ok(Some(ProviderAnswer::new(Provider::LyricsPlus, track)))
+}
+
+fn extract_response_summary_meta(
+    body: &str,
+    query: &TrackQuery,
+) -> (String, Option<String>, Option<String>, Option<u64>) {
+    let trimmed = body.trim();
+    if trimmed.is_empty()
+        || trimmed.starts_with('<')
+        || serde_json::from_str::<LyricsPlusResponse>(trimmed).is_err()
+    {
+        return (
+            query.title.clone(),
+            (!query.artist.is_empty()).then(|| query.artist.clone()),
+            query.album.clone(),
+            query.duration_ms,
+        );
+    }
+
+    let response: LyricsPlusResponse = serde_json::from_str(trimmed).unwrap_or_default();
+    let selected = response.processing_time.selected_song_metadata.as_ref();
+
+    let title = response
+        .metadata
+        .title
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            selected
+                .and_then(|m| m.title.as_deref())
+                .filter(|s| !s.trim().is_empty())
+        })
+        .map(str::to_string)
+        .unwrap_or_else(|| query.title.clone());
+
+    let artist = response
+        .metadata
+        .artist
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .or_else(|| {
+            selected
+                .and_then(|m| m.artist.as_deref())
+                .filter(|s| !s.trim().is_empty())
+        })
+        .map(str::to_string)
+        .or_else(|| (!query.artist.is_empty()).then(|| query.artist.clone()));
+
+    let album = response
+        .metadata
+        .album
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| query.album.clone());
+
+    let duration_ms = selected
+        .and_then(|m| m.duration)
+        .filter(|d| d.is_finite() && *d > 0.0)
+        .map(|d| (d * 1_000.0).round() as u64)
+        .or(query.duration_ms);
+
+    (title, artist, album, duration_ms)
 }
 
 fn response_to_parsed(response: &LyricsPlusResponse) -> Result<ParsedTrack, ProviderError> {
@@ -892,6 +996,25 @@ mod tests {
             .unwrap_err();
 
         assert!(matches!(error, ProviderError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn search_candidates_returns_at_most_one_prehydrated_summary() {
+        let (base_url, requests, server) =
+            spawn_mock_server(vec![MockResponse::new("200 OK", fixture_body())]).await;
+        let client = LyricsPlusProvider::with_base_url(base_url).unwrap();
+        let cancel = CancellationToken::new();
+
+        let candidates = client.search_candidates(&query(), &cancel).await.unwrap();
+        server.await.unwrap();
+
+        assert_eq!(requests.lock().unwrap().len(), 1);
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].provider, Provider::LyricsPlus);
+        assert_eq!(candidates[0].tier, Tier::Syllable);
+        assert!(candidates[0].is_hydrated());
+        assert_eq!(candidates[0].title, "Yellow");
+        assert_eq!(candidates[0].artist.as_deref(), Some("Coldplay"));
     }
 
     #[tokio::test]
