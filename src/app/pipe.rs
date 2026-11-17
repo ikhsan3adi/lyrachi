@@ -158,12 +158,14 @@ async fn run_events_with_cache<W: Write>(
                 }
             }
             Some(event) = app_rx.recv() => {
-                let AppEvent::Lyrics {
+                if let AppEvent::Lyrics {
                     epoch,
                     result,
                     is_final,
-                } = event;
-                handle_resolved(&mut state, &mut coordinator, epoch, result, is_final);
+                } = event
+                {
+                    handle_resolved(&mut state, &mut coordinator, epoch, result, is_final);
+                }
             }
             _ = tokio::time::sleep(wait) => {}
         }

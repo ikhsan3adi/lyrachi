@@ -8,8 +8,9 @@ use tracing::warn;
 
 use super::{
     CACHE_CHANNEL_CAPACITY, CACHE_MAX_ENTRY_AGE_SECS, CACHE_NEGATIVE_TTL_SECS,
-    CACHE_PRUNE_CHECK_SECS, CACHE_PRUNE_INTERVAL_SECS, CACHE_TOUCH_DEBOUNCE_SECS,
-    CACHE_UPGRADE_INTERVAL_SECS, CacheError, CacheHandle, CacheLookup, now_secs, schema,
+    CACHE_PREFERENCES_MAX_AGE_SECS, CACHE_PREFERENCES_MAX_ENTRIES, CACHE_PRUNE_CHECK_SECS,
+    CACHE_PRUNE_INTERVAL_SECS, CACHE_TOUCH_DEBOUNCE_SECS, CACHE_UPGRADE_INTERVAL_SECS, CacheError,
+    CacheHandle, CacheLookup, TrackPreference, now_secs, schema,
 };
 use crate::core::model::{PARSER_VERSION, SyncedTrack};
 use crate::providers::{Provider, ProviderAnswer, Tier};
@@ -44,6 +45,20 @@ pub(super) enum CacheCommand {
         track_key: TrackKey,
         reply: oneshot::Sender<Result<(), CacheError>>,
     },
+    GetTrackPreference {
+        track_key: TrackKey,
+        reply: oneshot::Sender<Result<Option<TrackPreference>, CacheError>>,
+    },
+    SetTrackPreference {
+        track_key: TrackKey,
+        preference: TrackPreference,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
+    ClearPinnedLyrics {
+        track_key: TrackKey,
+        now: i64,
+        reply: oneshot::Sender<Result<(), CacheError>>,
+    },
     Shutdown {
         now: i64,
         reply: oneshot::Sender<Result<(), CacheError>>,
@@ -56,8 +71,12 @@ impl CacheCommand {
             Self::Lookup { now, .. }
             | Self::Store { now, .. }
             | Self::RecordNegative { now, .. }
+            | Self::ClearPinnedLyrics { now, .. }
             | Self::Shutdown { now, .. } => *now,
-            Self::MarkUpgradeAttempted { .. } | Self::InvalidateTrack { .. } => now_secs(),
+            Self::MarkUpgradeAttempted { .. }
+            | Self::InvalidateTrack { .. }
+            | Self::GetTrackPreference { .. }
+            | Self::SetTrackPreference { .. } => now_secs(),
         }
     }
 }
@@ -143,6 +162,23 @@ impl Worker {
                 CacheCommand::InvalidateTrack { track_key, reply } => {
                     let _ = reply.send(self.invalidate_track(&track_key));
                 }
+                CacheCommand::GetTrackPreference { track_key, reply } => {
+                    let _ = reply.send(self.get_track_preference(&track_key));
+                }
+                CacheCommand::SetTrackPreference {
+                    track_key,
+                    preference,
+                    reply,
+                } => {
+                    let _ = reply.send(self.set_track_preference(&track_key, &preference));
+                }
+                CacheCommand::ClearPinnedLyrics {
+                    track_key,
+                    now,
+                    reply,
+                } => {
+                    let _ = reply.send(self.clear_pinned_lyrics(&track_key, now));
+                }
                 CacheCommand::Shutdown { now, reply } => {
                     let _ = reply.send(self.flush_touches(now));
                     break;
@@ -183,6 +219,43 @@ impl Worker {
             providers
         };
 
+        let preference = self.get_track_preference(track_key)?;
+        if let Some(ref pref) = preference
+            && let Some(ref payload) = pref.pinned_payload_json
+        {
+            match serde_json::from_slice::<SyncedTrack>(payload) {
+                Ok(mut track) if track.parser_version == PARSER_VERSION => {
+                    track.user_offset_ms = 0;
+                    let provider = pref
+                        .provider()
+                        .or_else(|| Provider::from_config_name(&track.source_provider))
+                        .unwrap_or(Provider::Lrclib);
+                    let tier = Tier::from_track(&track);
+                    let confidence = finite_confidence(track.match_confidence);
+                    let answer = ProviderAnswer {
+                        provider,
+                        tier,
+                        confidence,
+                        track,
+                    };
+                    return Ok(CacheLookup {
+                        answer: Some(answer),
+                        needs_upgrade: false,
+                        negative_providers,
+                        is_pinned: true,
+                        preference,
+                    });
+                }
+                Ok(_) => {
+                    warn!("ignoring pinned lyric payload with incompatible parser version");
+                }
+                Err(error) => {
+                    warn!(%error, "ignoring invalid pinned lyric payload");
+                }
+            }
+        }
+
+        let preferred_provider = preference.as_ref().and_then(TrackPreference::provider);
         let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
         let best = {
             let mut statement = self.connection.prepare(
@@ -245,7 +318,25 @@ impl Worker {
                     confidence,
                     track,
                 };
-                if is_better(&answer, best.as_ref().map(|(answer, _, _)| answer)) {
+
+                let should_replace = match best.as_ref() {
+                    None => true,
+                    Some((current_best, _, _)) => {
+                        if preferred_provider == Some(answer.provider)
+                            && preferred_provider != Some(current_best.provider)
+                        {
+                            true
+                        } else if preferred_provider == Some(current_best.provider)
+                            && preferred_provider != Some(answer.provider)
+                        {
+                            false
+                        } else {
+                            is_better(&answer, Some(current_best))
+                        }
+                    }
+                };
+
+                if should_replace {
                     best = Some((answer, last_accessed_at, upgrade_after));
                 }
             }
@@ -257,6 +348,8 @@ impl Worker {
                 answer: None,
                 needs_upgrade: false,
                 negative_providers,
+                is_pinned: false,
+                preference,
             });
         };
         self.touch(track_key, answer.provider, now, last_accessed_at)?;
@@ -266,6 +359,8 @@ impl Worker {
             answer: Some(answer),
             needs_upgrade,
             negative_providers,
+            is_pinned: false,
+            preference,
         })
     }
 
@@ -427,6 +522,7 @@ impl Worker {
         }
 
         let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
+        let pref_cutoff = now.saturating_sub(CACHE_PREFERENCES_MAX_AGE_SECS);
         let transaction = self.connection.transaction()?;
         transaction.execute(
             "DELETE FROM lyric_entries WHERE last_accessed_at < ?1",
@@ -436,12 +532,84 @@ impl Worker {
             "DELETE FROM negative_cache WHERE expires_at <= ?1",
             params![now],
         )?;
+        prune_preferences_in_tx(&transaction, pref_cutoff, CACHE_PREFERENCES_MAX_ENTRIES)?;
         transaction.execute(
             "INSERT INTO meta (key, value) VALUES ('last_prune', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
             params![now.to_string()],
         )?;
         transaction.commit()?;
+        Ok(())
+    }
+
+    fn get_track_preference(
+        &mut self,
+        track_key: &TrackKey,
+    ) -> Result<Option<TrackPreference>, CacheError> {
+        let mut statement = self.connection.prepare(
+            "SELECT preferred_provider, preferred_track_id, pinned_payload_json, preferred_style, updated_at
+             FROM track_preferences
+             WHERE track_key = ?1",
+        )?;
+        let row = statement
+            .query_row(params![track_key.as_slice()], |row| {
+                Ok(TrackPreference {
+                    preferred_provider: row.get(0)?,
+                    preferred_track_id: row.get(1)?,
+                    pinned_payload_json: row.get(2)?,
+                    preferred_style: row.get(3)?,
+                    updated_at: row.get(4)?,
+                })
+            })
+            .optional()?;
+        Ok(row)
+    }
+
+    fn set_track_preference(
+        &mut self,
+        track_key: &TrackKey,
+        preference: &TrackPreference,
+    ) -> Result<(), CacheError> {
+        self.connection.execute(
+            "INSERT INTO track_preferences (
+                track_key, preferred_provider, preferred_track_id,
+                pinned_payload_json, preferred_style, updated_at
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(track_key) DO UPDATE SET
+                preferred_provider = excluded.preferred_provider,
+                preferred_track_id = excluded.preferred_track_id,
+                pinned_payload_json = excluded.pinned_payload_json,
+                preferred_style = excluded.preferred_style,
+                updated_at = excluded.updated_at",
+            params![
+                track_key.as_slice(),
+                preference.preferred_provider.as_deref(),
+                preference.preferred_track_id.as_deref(),
+                preference.pinned_payload_json.as_deref(),
+                preference.preferred_style.as_deref(),
+                preference.updated_at,
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn clear_pinned_lyrics(&mut self, track_key: &TrackKey, now: i64) -> Result<(), CacheError> {
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE track_preferences
+             SET preferred_provider = NULL,
+                 preferred_track_id = NULL,
+                 pinned_payload_json = NULL,
+                 updated_at = ?1
+             WHERE track_key = ?2",
+            params![now, track_key.as_slice()],
+        )?;
+        tx.execute(
+            "DELETE FROM track_preferences
+             WHERE track_key = ?1 AND preferred_style IS NULL",
+            params![track_key.as_slice()],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -488,6 +656,27 @@ fn is_better(candidate: &ProviderAnswer, current: Option<&ProviderAnswer>) -> bo
             Ordering::Equal => candidate.provider.as_str() < current.provider.as_str(),
         },
     }
+}
+
+fn prune_preferences_in_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    pref_cutoff: i64,
+    max_entries: usize,
+) -> Result<(), CacheError> {
+    transaction.execute(
+        "DELETE FROM track_preferences WHERE updated_at < ?1",
+        params![pref_cutoff],
+    )?;
+    transaction.execute(
+        "DELETE FROM track_preferences
+         WHERE rowid NOT IN (
+             SELECT rowid FROM track_preferences
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT ?1
+         )",
+        params![i64::try_from(max_entries).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
 }
 
 fn finite_confidence(confidence: f32) -> f32 {
@@ -1032,5 +1221,195 @@ mod tests {
 
         drop(worker);
         std::fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn prune_removes_preferences_older_than_180_days() {
+        let path = temp_path("prune-preferences");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let old_key = sample_key("old", "artist");
+        let old_track_key = crate::providers::sanitize::blake3_track_key(&old_key);
+        let old_pref = TrackPreference {
+            preferred_provider: Some("lrclib".to_string()),
+            preferred_track_id: None,
+            pinned_payload_json: None,
+            preferred_style: None,
+            updated_at: now - CACHE_PREFERENCES_MAX_AGE_SECS - 1,
+        };
+        worker
+            .set_track_preference(&old_track_key, &old_pref)
+            .unwrap();
+
+        let fresh_key = sample_key("fresh", "artist");
+        let fresh_track_key = crate::providers::sanitize::blake3_track_key(&fresh_key);
+        let fresh_pref = TrackPreference {
+            preferred_provider: Some("lyricsplus".to_string()),
+            preferred_track_id: None,
+            pinned_payload_json: None,
+            preferred_style: None,
+            updated_at: now,
+        };
+        worker
+            .set_track_preference(&fresh_track_key, &fresh_pref)
+            .unwrap();
+
+        write_last_prune(&path, now - CACHE_PRUNE_INTERVAL_SECS - 1);
+        worker.prune_if_due(now).unwrap();
+
+        assert!(
+            worker
+                .get_track_preference(&old_track_key)
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            worker
+                .get_track_preference(&fresh_track_key)
+                .unwrap()
+                .is_some()
+        );
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pinned_lyrics_survive_90_day_prune_while_lyric_entries_are_pruned() {
+        let path = temp_path("prune-90-day-pin");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let key = sample_key("pinned", "artist");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let answer = sample_answer(Provider::Lrclib, "Pinned Track", SyncGranularity::Line);
+
+        // Insert lyric_entries at `now - 100 days` (should be pruned)
+        insert_row(
+            &path,
+            &track_key,
+            Provider::Lrclib,
+            i64::from(PARSER_VERSION),
+            now - CACHE_MAX_ENTRY_AGE_SECS - 10,
+            &answer.track,
+        );
+
+        // Insert pinned track_preferences at `now - 100 days` (< 180 days, MUST survive!)
+        let mut pref = TrackPreference::with_pinned_track(
+            Provider::Lrclib,
+            Some("id-1".to_string()),
+            &answer.track,
+            None,
+        )
+        .unwrap();
+        pref.updated_at = now - CACHE_MAX_ENTRY_AGE_SECS - 10;
+        worker.set_track_preference(&track_key, &pref).unwrap();
+
+        write_last_prune(&path, now - CACHE_PRUNE_INTERVAL_SECS - 1);
+        worker.prune_if_due(now).unwrap();
+
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &track_key, Provider::Lrclib),
+            0,
+            "90-day old lyric_entries should be pruned"
+        );
+
+        let lookup = worker.lookup(&track_key, now).unwrap();
+        assert!(
+            lookup.is_pinned,
+            "100-day old pin must survive 90-day prune"
+        );
+        assert!(lookup.answer.is_some());
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prune_caps_preferences_at_max_entries_limit() {
+        let path = temp_path("prune-cap-preferences");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        for idx in 0..5 {
+            let key = sample_key(&format!("artist-{idx}"), "song");
+            let track_key = crate::providers::sanitize::blake3_track_key(&key);
+            let pref = TrackPreference {
+                preferred_provider: Some("lrclib".to_string()),
+                preferred_track_id: None,
+                pinned_payload_json: None,
+                preferred_style: None,
+                updated_at: now + idx,
+            };
+            worker.set_track_preference(&track_key, &pref).unwrap();
+        }
+
+        let tx = worker.connection.transaction().unwrap();
+        prune_preferences_in_tx(&tx, now - 10, 3).unwrap();
+        tx.commit().unwrap();
+
+        let remaining: i64 = worker
+            .connection
+            .query_row("SELECT COUNT(*) FROM track_preferences", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 3);
+
+        // Oldest two (idx 0 and 1) must be gone; newest three (2, 3, 4) kept
+        for idx in 0..5 {
+            let key = sample_key(&format!("artist-{idx}"), "song");
+            let track_key = crate::providers::sanitize::blake3_track_key(&key);
+            let exists = worker.get_track_preference(&track_key).unwrap().is_some();
+            assert_eq!(exists, idx >= 2, "unexpected presence for idx {idx}");
+        }
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preference_preserves_unavailable_provider_string_without_losing_pinned_payload() {
+        let path = temp_path("preserve-unavailable-provider");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let key = sample_key("artist", "ytmusic-track");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let mut track = sample_answer(
+            Provider::LyricsPlus,
+            "YTMusic Lyrics",
+            SyncGranularity::Line,
+        )
+        .track;
+        track.source_provider = "ytmusic".to_string();
+        let payload = serde_json::to_vec(&track).unwrap();
+
+        let pref = TrackPreference {
+            preferred_provider: Some("ytmusic_future_or_disabled".to_string()),
+            preferred_track_id: Some("yt-1".to_string()),
+            pinned_payload_json: Some(payload),
+            preferred_style: None,
+            updated_at: now,
+        };
+        worker.set_track_preference(&track_key, &pref).unwrap();
+
+        let stored = worker.get_track_preference(&track_key).unwrap().unwrap();
+        assert_eq!(
+            stored.preferred_provider.as_deref(),
+            Some("ytmusic_future_or_disabled")
+        );
+
+        let lookup = worker.lookup(&track_key, now).unwrap();
+        assert!(lookup.is_pinned);
+        assert!(lookup.answer.is_some());
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
     }
 }

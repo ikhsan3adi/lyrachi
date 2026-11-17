@@ -7,7 +7,7 @@ use tracing::warn;
 
 use super::http;
 use super::score;
-use super::{Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, TrackQuery};
 use crate::core::model::SyncGranularity;
 use crate::core::normalize::{normalize_instrumental, normalize_plain, normalize_track_checked};
 use crate::core::parse::lrc::parse_lrc;
@@ -111,6 +111,81 @@ impl LrclibClient {
         }
 
         Ok(None)
+    }
+
+    pub async fn search_candidates(
+        &self,
+        query: &TrackQuery,
+        cancel: &CancellationToken,
+    ) -> Result<Vec<CandidateSummary>, ProviderError> {
+        if cancel.is_cancelled() {
+            return Err(ProviderError::Cancelled);
+        }
+        if !query.is_usable() {
+            return Ok(Vec::new());
+        }
+
+        let records = self.search(query, cancel).await?;
+        let mut scored = records
+            .iter()
+            .map(|record| (record, score::score_candidate(query, record)))
+            .collect::<Vec<_>>();
+        scored.sort_by(|(left_rec, left_score), (right_rec, right_score)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| left_rec.id.cmp(&right_rec.id))
+        });
+
+        let mut summaries = Vec::new();
+        for (record, confidence) in scored {
+            if summaries.len() >= MAX_CANDIDATES {
+                break;
+            }
+            if cancel.is_cancelled() {
+                return Err(ProviderError::Cancelled);
+            }
+            match Self::record_to_track(record, confidence, query) {
+                Ok(Some(answer)) => {
+                    let duration_ms = record
+                        .duration
+                        .filter(|d| d.is_finite() && *d > 0.0)
+                        .map(|d| (d * 1_000.0).round() as u64);
+                    let title = record.title();
+                    summaries.push(CandidateSummary {
+                        provider: Provider::Lrclib,
+                        source_track_id: answer.track.source_track_id.clone(),
+                        title: if title.is_empty() {
+                            query.title.clone()
+                        } else {
+                            title.to_string()
+                        },
+                        artist: record.artist_name.clone().filter(|a| !a.trim().is_empty()),
+                        album: record.album_name.clone().filter(|a| !a.trim().is_empty()),
+                        duration_ms,
+                        tier: answer.tier,
+                        confidence,
+                        local_path: None,
+                        browse_hint: None,
+                        query_duration_ms: query.duration_ms,
+                        query_user_offset_ms: query.user_offset_ms,
+                        hydrated: Some(answer),
+                    });
+                }
+                Ok(None) => {}
+                Err(error) => {
+                    warn!(id = record.id, %error, "ignoring unparseable LRCLIB candidate");
+                }
+            }
+        }
+
+        summaries.sort_by(|left, right| {
+            right
+                .confidence
+                .total_cmp(&left.confidence)
+                .then_with(|| right.tier.cmp(&left.tier))
+                .then_with(|| left.source_track_id.cmp(&right.source_track_id))
+        });
+        Ok(summaries)
     }
 
     async fn get(
@@ -766,6 +841,36 @@ mod tests {
             .unwrap_err();
         server.abort();
         assert!(matches!(err, ProviderError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn mock_search_candidates_caps_at_20_and_prehydrates() {
+        let records = (1..=25)
+            .map(|id| {
+                serde_json::json!({
+                    "id": id,
+                    "trackName": format!("Yellow {id}"),
+                    "artistName": "Coldplay",
+                    "albumName": "Parachutes",
+                    "duration": 269.0,
+                    "syncedLyrics": format!("[00:01.00]Line {id}"),
+                })
+            })
+            .collect::<Vec<_>>();
+        let payload = serde_json::to_string(&records).unwrap();
+
+        let (url, recorded, handle) = spawn_mock_server(vec![("200 OK", payload)]).await;
+        let client = LrclibClient::with_base_url(url).unwrap();
+        let cancel = CancellationToken::new();
+
+        let candidates = client.search_candidates(&query(), &cancel).await.unwrap();
+        handle.await.unwrap();
+
+        assert_eq!(recorded.lock().unwrap().len(), 1);
+        assert!(recorded.lock().unwrap()[0].starts_with("/api/search"));
+        assert_eq!(candidates.len(), MAX_CANDIDATES);
+        assert!(candidates.iter().all(|c| c.provider == Provider::Lrclib));
+        assert!(candidates.iter().all(CandidateSummary::is_hydrated));
     }
 
     #[tokio::test]

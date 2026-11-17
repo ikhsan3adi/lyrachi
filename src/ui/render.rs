@@ -7,16 +7,17 @@ use ratatui::{
 };
 
 use crate::compiler::timeline::{
-    ActiveStageCursor, CompiledLine, CompiledTimeline, WrappedSubLine,
+    ActiveStageCursor, CompiledLine, CompiledTimeline, WaitKind, WaitingGap, WrappedSubLine,
 };
 use crate::core::model::{LineRole, SyncedTrack, WordToken};
 
 use super::{
-    LyricsView, UiState,
+    LyricsView, RibbonPlacement, UiModal, UiState,
     block::{
         BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockStageCache,
         render::{BlockRenderContext, BlockStyles, render_lines as render_block_lines},
     },
+    help, menu, ribbon,
     status::footer_line,
 };
 
@@ -36,11 +37,20 @@ pub fn render_with_cache(
     effective_ms: u64,
 ) {
     let area = frame.area();
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let placement = state.ribbon_placement_for_height(area.height);
     let header_rows = u16::from(state.show_header);
+    let top_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Top));
+    let bottom_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Bottom));
     let footer_rows = u16::from(state.footer_visible());
-    let [header, body, footer] = Layout::vertical([
+    let [header, top_ribbon, body, bottom_ribbon, footer] = Layout::vertical([
         Constraint::Length(header_rows),
+        Constraint::Length(top_ribbon_rows),
         Constraint::Min(1),
+        Constraint::Length(bottom_ribbon_rows),
         Constraint::Length(footer_rows),
     ])
     .areas(area);
@@ -49,6 +59,9 @@ pub fn render_with_cache(
     if header_rows > 0 {
         render_header(frame, content_area(header, padding), state);
     }
+    if top_ribbon_rows > 0 {
+        ribbon::render(frame, content_area(top_ribbon, padding), state);
+    }
     render_body(
         frame,
         content_area(body, padding),
@@ -56,8 +69,16 @@ pub fn render_with_cache(
         block_cache,
         effective_ms,
     );
+    if bottom_ribbon_rows > 0 {
+        ribbon::render(frame, content_area(bottom_ribbon, padding), state);
+    }
     if let Some(line) = footer_line(state) {
         frame.render_widget(Paragraph::new(line), footer);
+    }
+    match &state.modal {
+        Some(UiModal::Help) => help::render(frame, area),
+        Some(UiModal::ContextMenu(menu_state)) => menu::render(frame, area, menu_state),
+        None => {}
     }
 }
 
@@ -278,15 +299,15 @@ fn render_body(
             render_block_synced(
                 frame,
                 area,
+                state,
                 timeline,
                 track,
                 block_cache,
                 effective_ms,
-                state.word_highlight,
             );
         }
         LyricsView::Loaded { timeline, .. } => {
-            render_synced(frame, area, timeline, effective_ms, state.word_highlight);
+            render_synced(frame, area, state, timeline, effective_ms);
         }
     }
 }
@@ -323,16 +344,16 @@ fn centered_message(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
 fn render_synced(
     frame: &mut Frame,
     area: Rect,
+    state: &UiState,
     timeline: &CompiledTimeline,
     effective_ms: u64,
-    word_highlight: bool,
 ) {
     if timeline.lines.is_empty() {
         centered_message(frame, area, "No lyrics found", "");
         return;
     }
 
-    let cursor = timeline.evaluate(effective_ms);
+    let cursor = timeline.evaluate_for_status(effective_ms, state.playback);
     let total = timeline.lines.len();
     let anchor = timeline.anchor_line_index(effective_ms).unwrap_or(0);
     let start = anchor.saturating_sub(2);
@@ -341,24 +362,80 @@ fn render_synced(
         cursor,
         effective_ms,
         plain: false,
-        word_highlight,
+        word_highlight: state.word_highlight,
         viewport_width: timeline.context.viewport_width,
         styles: StageStyle::default(),
     };
     let mut lines = Vec::new();
     let mut active_start = None;
     let mut active_end = None;
+    let mut countdown_rendered = false;
+
+    let has_break_slot = cursor.waiting.is_some_and(|waiting| {
+        timeline.lines[start..end].iter().any(|line| {
+            line.role == LineRole::InstrumentalBreak
+                && line.start_ms >= waiting.start_ms
+                && line.end_ms <= waiting.end_ms
+        })
+    });
+
+    if let Some(waiting) = cursor.waiting
+        && waiting.kind == WaitKind::Intro
+        && !has_break_slot
+    {
+        active_start = Some(lines.len());
+        lines.push(waiting_countdown_line(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+        ));
+        active_end = Some(lines.len());
+        countdown_rendered = true;
+    }
 
     for index in start..end {
         let compiled = &timeline.lines[index];
+        if let Some(waiting) = cursor.waiting
+            && !countdown_rendered
+            && compiled.role == LineRole::InstrumentalBreak
+            && compiled.start_ms >= waiting.start_ms
+            && compiled.end_ms <= waiting.end_ms
+        {
+            active_start = Some(lines.len());
+            lines.push(waiting_countdown_line(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+            ));
+            active_end = Some(lines.len());
+            countdown_rendered = true;
+            continue;
+        }
+
         let active = cursor.active_line_idx == Some(index);
-        let is_focus = index == anchor;
+        let is_focus = index == anchor && cursor.waiting.is_none();
         if is_focus {
             active_start = Some(lines.len());
         }
         push_compiled_line(&mut lines, compiled, stage, active);
         if is_focus {
             active_end = Some(lines.len());
+        }
+
+        if let Some(waiting) = cursor.waiting
+            && !countdown_rendered
+            && !has_break_slot
+            && index == anchor
+            && matches!(waiting.kind, WaitKind::Instrumental | WaitKind::Outro)
+        {
+            active_start = Some(lines.len());
+            lines.push(waiting_countdown_line(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+            ));
+            active_end = Some(lines.len());
+            countdown_rendered = true;
         }
     }
 
@@ -377,18 +454,19 @@ struct BlockLineMeta {
 fn render_block_synced(
     frame: &mut Frame,
     area: Rect,
+    state: &UiState,
     timeline: &CompiledTimeline,
     track: &SyncedTrack,
     cache: &mut BlockStageCache,
     effective_ms: u64,
-    word_highlight: bool,
 ) {
     if timeline.lines.is_empty() {
         centered_message(frame, area, "No lyrics found", "");
         return;
     }
 
-    let cursor = timeline.evaluate(effective_ms);
+    let word_highlight = state.word_highlight;
+    let cursor = timeline.evaluate_for_status(effective_ms, state.playback);
     let anchor = timeline.anchor_line_index(effective_ms).unwrap_or(0);
     let wrap_width = timeline.context.wrap_width().min(area.width).max(1);
     cache.prepare(timeline.context.options_hash(), Some(anchor));
@@ -532,6 +610,49 @@ fn block_source_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a
         .map_or("", |line| line.text.as_str())
 }
 
+fn waiting_countdown_line(waiting: WaitingGap, effective_ms: u64, unicode: bool) -> Line<'static> {
+    let label = match waiting.kind {
+        WaitKind::Intro => "Intro",
+        WaitKind::Instrumental => "Instrumental",
+        WaitKind::Outro => "Outro",
+    };
+    let progress = waiting.progress(effective_ms);
+    let filled_count = ((progress * 4.0).floor() as usize).clamp(0, 3);
+    let (filled_glyph, empty_glyph) = if unicode { ("●", "○") } else { ("*", ".") };
+
+    let mut spans = vec![Span::styled(
+        format!("{label}  "),
+        Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
+    )];
+
+    for idx in 0..3 {
+        if idx > 0 {
+            spans.push(Span::raw(" "));
+        }
+        if idx < filled_count {
+            spans.push(Span::styled(
+                filled_glyph,
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        } else {
+            spans.push(Span::styled(
+                empty_glyph,
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+        }
+    }
+
+    let remaining_secs = waiting.remaining_ms(effective_ms).div_ceil(1_000);
+    spans.push(Span::styled(
+        format!("  {remaining_secs}s"),
+        Style::default().add_modifier(Modifier::BOLD),
+    ));
+
+    Line::from(spans)
+}
+
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {
     let mut lines = Vec::new();
     let start = state.scroll.min(timeline.lines.len());
@@ -540,6 +661,7 @@ fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &Co
             active_line_idx: None,
             active_word_idx: None,
             progress: 0.0,
+            waiting: None,
         },
         effective_ms: 0,
         plain: true,

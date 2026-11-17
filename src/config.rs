@@ -29,6 +29,7 @@ pub struct RuntimeConfig {
     pub show_status: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub ribbon: RibbonMode,
     pub ambiguous_width: u8,
     pub unicode: TerminalUnicode,
 }
@@ -48,6 +49,7 @@ impl Default for RuntimeConfig {
             show_status: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
+            ribbon: RibbonMode::default(),
             ambiguous_width: 1,
             unicode: TerminalUnicode::Full,
         }
@@ -163,6 +165,9 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     }
     if let Some(word_highlight) = file.ui.word_highlight {
         config.word_highlight = word_highlight;
+    }
+    if let Some(ribbon) = file.ui.ribbon {
+        config.ribbon = ribbon;
     }
     if let Some(ambiguous_width) = file.terminal.ambiguous_width {
         config.ambiguous_width =
@@ -306,6 +311,28 @@ pub struct UiSection {
     pub show_status: Option<bool>,
     pub display_mode: Option<String>,
     pub word_highlight: Option<bool>,
+    pub ribbon: Option<RibbonMode>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum RibbonMode {
+    #[default]
+    Auto,
+    Top,
+    Bottom,
+    Off,
+}
+
+impl RibbonMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Top => "top",
+            Self::Bottom => "bottom",
+            Self::Off => "off",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -588,6 +615,35 @@ l1_entries = 8
             ]
         );
 
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_ui_ribbon_modes() {
+        for (raw, expected) in [
+            ("auto", RibbonMode::Auto),
+            ("top", RibbonMode::Top),
+            ("bottom", RibbonMode::Bottom),
+            ("off", RibbonMode::Off),
+        ] {
+            let path = temp_file(
+                &format!("ribbon-{raw}"),
+                &format!("[ui]\nribbon = \"{raw}\"\n"),
+            );
+            let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+            assert!(outcome.warnings.is_empty());
+            assert_eq!(outcome.config.ribbon, expected);
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn warns_on_invalid_ribbon_mode() {
+        let path = temp_file("ribbon-invalid", "[ui]\nribbon = \"invalid\"\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.ribbon, RibbonMode::Auto);
+        assert!(!outcome.warnings.is_empty());
+        assert!(outcome.warnings[0].contains("unknown variant"));
         fs::remove_file(path).unwrap();
     }
 }

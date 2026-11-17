@@ -2,7 +2,9 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{DocumentMut, Item, Table, Value, value};
+
+use crate::config::RibbonMode;
 
 use crate::ui::DisplayMode;
 
@@ -13,6 +15,7 @@ pub struct UiPrefs {
     pub show_status: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub ribbon: RibbonMode,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -63,30 +66,17 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
         });
     };
 
-    set_bool(ui, "fullscreen", prefs.fullscreen);
-    set_bool(ui, "show_header", prefs.show_header);
-    set_bool(ui, "show_status", prefs.show_status);
-    set_str(ui, "display_mode", prefs.display_mode.as_str());
-    set_bool(ui, "word_highlight", prefs.word_highlight);
+    set_value(ui, "fullscreen", prefs.fullscreen);
+    set_value(ui, "show_header", prefs.show_header);
+    set_value(ui, "show_status", prefs.show_status);
+    set_value(ui, "display_mode", prefs.display_mode.as_str());
+    set_value(ui, "word_highlight", prefs.word_highlight);
+    set_value(ui, "ribbon", prefs.ribbon.as_str());
 
     write_atomic(&target, document.to_string().as_bytes())
 }
 
-fn set_bool(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: bool) {
-    let mut item = value(new_value);
-    if let Some(existing) = ui.get_mut(key) {
-        if let Some(decor) = existing.as_value().map(|value| value.decor().clone())
-            && let Some(value) = item.as_value_mut()
-        {
-            *value.decor_mut() = decor;
-        }
-        *existing = item;
-    } else {
-        ui.insert(key, item);
-    }
-}
-
-fn set_str(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: &str) {
+fn set_value(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: impl Into<Value>) {
     let mut item = value(new_value);
     if let Some(existing) = ui.get_mut(key) {
         if let Some(decor) = existing.as_value().map(|value| value.decor().clone())
@@ -172,6 +162,7 @@ mod tests {
             show_status: false,
             display_mode: DisplayMode::Block,
             word_highlight: false,
+            ribbon: RibbonMode::Top,
         }
     }
 
@@ -208,6 +199,7 @@ mod tests {
         assert!(saved.contains("show_status = false"));
         assert!(saved.contains("display_mode = \"block\""));
         assert!(saved.contains("word_highlight = false"));
+        assert!(saved.contains("ribbon = \"top\""));
 
         fs::remove_dir_all(dir).unwrap();
     }

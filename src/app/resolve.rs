@@ -155,6 +155,10 @@ impl ResolveCoordinator {
         self.active_key.as_ref()
     }
 
+    pub fn active_query(&self) -> Option<&TrackQuery> {
+        self.active_query.as_ref()
+    }
+
     pub fn cache(&self) -> &L1Cache {
         &self.cache
     }
@@ -244,6 +248,27 @@ impl ResolveCoordinator {
             cancel: token,
             bypass_cache: true,
         })
+    }
+
+    pub fn apply_manual_candidate(
+        &mut self,
+        expected_key: &CanonicalTrackKey,
+        mut answer: ProviderAnswer,
+    ) -> Option<(u64, ProviderAnswer)> {
+        if self.active_key.as_ref() != Some(expected_key) {
+            return None;
+        }
+        if let Some(token) = self.active_token.take() {
+            token.cancel();
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+
+        let user_offset_ms = self.user_offsets.get(expected_key).copied().unwrap_or(0);
+        answer.track.user_offset_ms = user_offset_ms;
+        self.cache.insert(expected_key.clone(), answer.clone());
+
+        Some((epoch, answer))
     }
 
     pub fn complete_epoch(
@@ -737,5 +762,50 @@ mod cache_tests {
 
         cache.shutdown().await.unwrap();
         cleanup(&root);
+    }
+
+    #[test]
+    fn apply_manual_candidate_cancels_in_flight_and_ignores_stale_epoch() {
+        let mut coordinator = ResolveCoordinator::new();
+        let plan = coordinator.prepare_track(&meta());
+        let (epoch_1, token) = match plan {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        assert!(!token.is_cancelled());
+        let active_key = coordinator.active_key().cloned().unwrap();
+        coordinator.seed_user_offset(active_key.clone(), 200);
+
+        // Stale track key must be rejected cleanly
+        let wrong_key = CanonicalTrackKey {
+            norm_artist: "other".to_string(),
+            norm_title: "song".to_string(),
+            norm_album: None,
+            duration_bucket_sec: Some(120),
+        };
+        assert!(
+            coordinator
+                .apply_manual_candidate(&wrong_key, answer("wrong"))
+                .is_none()
+        );
+
+        let mut manual_answer = answer("manual-pick");
+        manual_answer.provider = Provider::LyricsPlus;
+        let (new_epoch, applied) = coordinator
+            .apply_manual_candidate(&active_key, manual_answer)
+            .expect("matching key must apply");
+        assert_eq!(new_epoch, epoch_1 + 1);
+        assert_eq!(applied.track.user_offset_ms, 200);
+        assert!(token.is_cancelled(), "previous token must be cancelled");
+
+        let stale_result = coordinator.complete_epoch(epoch_1, Some(answer("old")), true);
+        assert!(stale_result.is_none(), "stale epoch must return None");
+
+        let cached = coordinator
+            .cache_mut()
+            .get(&active_key)
+            .expect("manual candidate should be in cache");
+        assert_eq!(cached.provider, Provider::LyricsPlus);
+        assert_eq!(cached.track.user_offset_ms, 200);
     }
 }

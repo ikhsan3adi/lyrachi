@@ -1,3 +1,4 @@
+use lyrachi::config::RibbonMode;
 use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
@@ -5,7 +6,7 @@ use lyrachi::core::model::{
 use lyrachi::core::parse::ttml::parse_ttml;
 use lyrachi::core::text::display_width;
 use lyrachi::media::TrackMeta;
-use lyrachi::ui::{DisplayMode, LyricsView, UiState, render};
+use lyrachi::ui::{CandidateMenuItem, DisplayMode, LyricsView, UiState, render};
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -911,4 +912,205 @@ fn midline_pause_preserves_sung_and_unsung_word_styles() {
             assert!(hello_cell.modifier.contains(Modifier::DIM));
         }
     }
+}
+
+#[test]
+fn waiting_countdown_80x24() {
+    snapshot(&mut word_sync(), 80, 24, 14_500, "80x24_waiting_countdown");
+}
+
+#[test]
+fn waiting_countdown_120x40() {
+    snapshot(
+        &mut word_sync(),
+        120,
+        40,
+        14_500,
+        "120x40_waiting_countdown",
+    );
+}
+
+#[test]
+fn help_overlay_80x24() {
+    let mut state = word_sync();
+    state.open_help();
+    snapshot(&mut state, 80, 24, 9_500, "80x24_help_overlay");
+}
+
+#[test]
+fn help_overlay_120x40() {
+    let mut state = word_sync();
+    state.open_help();
+    snapshot(&mut state, 120, 40, 9_500, "120x40_help_overlay");
+}
+
+#[test]
+fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
+    let mut state = word_sync();
+    state.terminal_unicode = false;
+    let ascii = render_state(&mut state, 80, 24, 14_500);
+    assert!(
+        ascii.contains("Instrumental  * * .  3s"),
+        "expected ASCII countdown dots, got:\n{ascii}"
+    );
+
+    let mut paused = word_sync();
+    paused.playback = PlaybackStatus::Paused;
+    let paused_out = render_state(&mut paused, 80, 24, 14_500);
+    assert!(paused_out.contains("Instrumental  ● ● ○  3s"));
+
+    let mut stopped = word_sync();
+    stopped.playback = PlaybackStatus::Stopped;
+    let stopped_out = render_state(&mut stopped, 80, 24, 14_500);
+    assert!(!stopped_out.contains("●"));
+    assert!(stopped_out.contains("[Instrumental]"));
+}
+
+#[test]
+fn ribbon_top_80x24() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Top);
+    snapshot(&mut state, 80, 24, 9_500, "80x24_ribbon_top");
+}
+
+#[test]
+fn ribbon_bottom_120x40() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Bottom);
+    snapshot(&mut state, 120, 40, 9_500, "120x40_ribbon_bottom");
+}
+
+#[test]
+fn ribbon_hides_below_8_rows() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Top);
+
+    let short = render_state(&mut state, 80, 7, 9_500);
+    assert!(
+        !short.contains("word-hl:"),
+        "unexpected ribbon on 7 rows:\n{short}"
+    );
+
+    let tall = render_state(&mut state, 80, 8, 9_500);
+    assert!(
+        tall.contains("word-hl:"),
+        "expected ribbon on 8 rows:\n{tall}"
+    );
+
+    state.configure_ribbon(RibbonMode::Bottom);
+    let bottom_short = render_state(&mut state, 80, 7, 9_500);
+    assert!(
+        !bottom_short.contains("word-hl:"),
+        "unexpected bottom ribbon on 7 rows:\n{bottom_short}"
+    );
+    let bottom_tall = render_state(&mut state, 80, 8, 9_500);
+    assert!(
+        bottom_tall.contains("word-hl:"),
+        "expected bottom ribbon on 8 rows:\n{bottom_tall}"
+    );
+}
+
+#[test]
+fn context_menu_actions_80x24() {
+    let mut state = word_sync();
+    state.pinned_source_label = Some("lrclib".to_string());
+    assert!(state.open_context_menu());
+    snapshot(&mut state, 80, 24, 9_500, "80x24_context_menu_actions");
+}
+
+#[test]
+fn context_menu_actions_120x40() {
+    let mut state = word_sync();
+    state.pinned_source_label = Some("lrclib".to_string());
+    state.pinned_style = Some("builtin:default".to_string());
+    assert!(state.open_context_menu());
+    snapshot(&mut state, 120, 40, 9_500, "120x40_context_menu_actions");
+}
+
+#[test]
+fn context_menu_candidates_80x24() {
+    let mut state = word_sync();
+    state.open_candidate_loading("Coldplay - Yellow".to_string());
+    state.set_candidate_results(
+        vec![
+            CandidateMenuItem {
+                provider_label: "lyricsplus".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "syllable",
+                score_pct: 99,
+                is_active: false,
+            },
+            CandidateMenuItem {
+                provider_label: "lrclib".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "word",
+                score_pct: 97,
+                is_active: true,
+            },
+            CandidateMenuItem {
+                provider_label: "local".to_string(),
+                title: "Yellow (Live)".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: None,
+                duration_ms: Some(271_000),
+                tier_label: "line",
+                score_pct: 84,
+                is_active: false,
+            },
+        ],
+        None,
+    );
+    snapshot(&mut state, 80, 24, 9_500, "80x24_context_menu_candidates");
+}
+
+#[test]
+fn context_menu_candidates_120x40() {
+    let mut state = word_sync();
+    state.open_candidate_loading("Coldplay - Yellow".to_string());
+    state.set_candidate_results(
+        vec![
+            CandidateMenuItem {
+                provider_label: "lyricsplus".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "syllable",
+                score_pct: 99,
+                is_active: false,
+            },
+            CandidateMenuItem {
+                provider_label: "lrclib".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "word",
+                score_pct: 97,
+                is_active: true,
+            },
+        ],
+        None,
+    );
+    snapshot(&mut state, 120, 40, 9_500, "120x40_context_menu_candidates");
+}
+
+#[test]
+fn context_menu_search_input_80x24() {
+    let mut state = word_sync();
+    state.open_search_input("Coldplay".to_string(), "Yellow".to_string());
+    snapshot(&mut state, 80, 24, 9_500, "80x24_search_input");
+}
+
+#[test]
+fn context_menu_search_input_120x40() {
+    let mut state = word_sync();
+    state.open_search_input("Coldplay".to_string(), "Yellow (Acoustic)".to_string());
+    snapshot(&mut state, 120, 40, 9_500, "120x40_search_input");
 }

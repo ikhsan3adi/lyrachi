@@ -1,16 +1,33 @@
 pub mod block;
+pub mod help;
+pub mod menu;
 pub mod render;
+pub mod ribbon;
 pub mod status;
+
+pub use menu::{
+    CandidateMenuItem, ContextMenuAction, ContextMenuState, ContextMenuView, SearchField,
+    SearchInputState,
+};
 
 use std::time::{Duration, Instant};
 
 use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
+use crate::config::RibbonMode;
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 
 const BANNER_DURATION: Duration = Duration::from_secs(3);
+pub const RIBBON_AUTO_HIDE_DURATION: Duration = Duration::from_secs(3);
+pub const MIN_RIBBON_TERMINAL_HEIGHT: u16 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RibbonPlacement {
+    Top,
+    Bottom,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum DisplayMode {
@@ -55,6 +72,12 @@ pub enum LyricsView {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiModal {
+    Help,
+    ContextMenu(Box<menu::ContextMenuState>),
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
     pub player: Option<String>,
@@ -69,9 +92,15 @@ pub struct UiState {
     pub config_warning: Option<String>,
     pub show_header: bool,
     pub show_status: bool,
+    pub ribbon_mode: RibbonMode,
+    pub ribbon_visible_until: Option<Instant>,
+    pub ribbon_temp_hidden: bool,
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub modal: Option<UiModal>,
+    pub pinned_source_label: Option<String>,
+    pub pinned_style: Option<String>,
     pub transient_banner: Option<(String, Instant)>,
     fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
@@ -102,9 +131,15 @@ impl UiState {
             config_warning: None,
             show_header: true,
             show_status: true,
+            ribbon_mode: RibbonMode::default(),
+            ribbon_visible_until: None,
+            ribbon_temp_hidden: false,
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
+            modal: None,
+            pinned_source_label: None,
+            pinned_style: None,
             transient_banner: None,
             fullscreen_restore: None,
             scroll: 0,
@@ -113,6 +148,144 @@ impl UiState {
             timeline_options_hash: TimelineContext::default().options_hash(),
             timeline_context: TimelineContext::default(),
         }
+    }
+
+    pub fn toggle_help(&mut self) {
+        self.modal = match self.modal {
+            Some(UiModal::Help) => None,
+            Some(UiModal::ContextMenu(_)) | None => Some(UiModal::Help),
+        };
+    }
+
+    pub fn open_help(&mut self) {
+        self.modal = Some(UiModal::Help);
+    }
+
+    pub fn open_context_menu(&mut self) -> bool {
+        let Some(track) = &self.track else {
+            return false;
+        };
+        let label = if track.artist.is_empty() {
+            track.title.clone()
+        } else {
+            format!("{} - {}", track.artist, track.title)
+        };
+        self.modal = Some(UiModal::ContextMenu(Box::new(ContextMenuState::actions(
+            label,
+            self.pinned_source_label.clone(),
+            self.pinned_style.clone(),
+        ))));
+        true
+    }
+
+    pub fn context_menu(&self) -> Option<&ContextMenuState> {
+        match &self.modal {
+            Some(UiModal::ContextMenu(menu)) => Some(menu),
+            _ => None,
+        }
+    }
+
+    pub fn context_menu_mut(&mut self) -> Option<&mut ContextMenuState> {
+        match &mut self.modal {
+            Some(UiModal::ContextMenu(menu)) => Some(menu),
+            _ => None,
+        }
+    }
+
+    pub fn open_search_input(&mut self, artist: String, title: String) {
+        let search = ContextMenuView::SearchInput(SearchInputState {
+            artist,
+            title,
+            active_field: SearchField::Artist,
+        });
+        if let Some(menu) = self.context_menu_mut() {
+            menu.view = search;
+        } else if self.open_context_menu()
+            && let Some(menu) = self.context_menu_mut()
+        {
+            menu.view = search;
+        }
+    }
+
+    pub fn open_candidate_loading(&mut self, query_label: String) {
+        let candidates = ContextMenuView::Candidates {
+            query_label,
+            items: Vec::new(),
+            selected: 0,
+            loading: true,
+            hydrating: false,
+            status_message: None,
+        };
+        if let Some(menu) = self.context_menu_mut() {
+            menu.view = candidates;
+        } else if self.open_context_menu()
+            && let Some(menu) = self.context_menu_mut()
+        {
+            menu.view = candidates;
+        }
+    }
+
+    pub fn set_candidate_results(
+        &mut self,
+        items: Vec<CandidateMenuItem>,
+        status_message: Option<String>,
+    ) {
+        if let Some(menu) = self.context_menu_mut()
+            && let ContextMenuView::Candidates {
+                items: slot,
+                selected,
+                loading,
+                hydrating,
+                status_message: status_slot,
+                ..
+            } = &mut menu.view
+        {
+            *slot = items;
+            *selected = 0;
+            *loading = false;
+            *hydrating = false;
+            *status_slot = status_message;
+        }
+    }
+
+    pub fn set_candidate_hydrating(
+        &mut self,
+        hydrating_flag: bool,
+        status_message: Option<String>,
+    ) {
+        if let Some(menu) = self.context_menu_mut()
+            && let ContextMenuView::Candidates {
+                hydrating,
+                status_message: status_slot,
+                ..
+            } = &mut menu.view
+        {
+            *hydrating = hydrating_flag;
+            *status_slot = status_message;
+        }
+    }
+
+    pub fn sync_menu_preferences(&mut self) {
+        let source = self.pinned_source_label.clone();
+        let style = self.pinned_style.clone();
+        if let Some(menu) = self.context_menu_mut() {
+            menu.pinned_source_label = source;
+            menu.pinned_style = style;
+        }
+    }
+
+    pub fn close_context_menu(&mut self) {
+        if matches!(self.modal, Some(UiModal::ContextMenu(_))) {
+            self.modal = None;
+        }
+    }
+
+    pub fn close_modal(&mut self) {
+        self.modal = None;
+    }
+
+    pub fn is_modal_open(&self) -> bool {
+        self.modal.is_some()
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
@@ -212,6 +385,66 @@ impl UiState {
         self.clamp_scroll();
     }
 
+    pub fn configure_ribbon(&mut self, mode: RibbonMode) {
+        self.ribbon_mode = mode;
+        self.ribbon_visible_until = None;
+        self.ribbon_temp_hidden = false;
+        self.clamp_scroll();
+    }
+
+    pub fn toggle_ribbon(&mut self, now: Instant) {
+        match self.ribbon_mode {
+            RibbonMode::Auto | RibbonMode::Off => {
+                if self
+                    .ribbon_visible_until
+                    .is_some_and(|visible_until| now < visible_until)
+                {
+                    self.ribbon_visible_until = None;
+                } else {
+                    self.ribbon_visible_until = Some(now + RIBBON_AUTO_HIDE_DURATION);
+                }
+            }
+            RibbonMode::Top | RibbonMode::Bottom => {
+                self.ribbon_temp_hidden = !self.ribbon_temp_hidden;
+            }
+        }
+        self.clamp_scroll();
+    }
+
+    pub fn expire_ribbon(&mut self, now: Instant) {
+        if let Some(visible_until) = self.ribbon_visible_until
+            && now >= visible_until
+        {
+            self.ribbon_visible_until = None;
+            self.clamp_scroll();
+        }
+    }
+
+    pub fn time_until_ribbon_expiry(&self, now: Instant) -> Option<Duration> {
+        if !matches!(self.ribbon_mode, RibbonMode::Auto | RibbonMode::Off) {
+            return None;
+        }
+        let visible_until = self.ribbon_visible_until?;
+        Some(visible_until.saturating_duration_since(now))
+    }
+
+    pub fn ribbon_placement(&self) -> Option<RibbonPlacement> {
+        self.ribbon_placement_for_height(self.viewport_height)
+    }
+
+    pub fn ribbon_placement_for_height(&self, height: u16) -> Option<RibbonPlacement> {
+        if height < MIN_RIBBON_TERMINAL_HEIGHT {
+            return None;
+        }
+        match self.ribbon_mode {
+            RibbonMode::Auto | RibbonMode::Off => {
+                self.ribbon_visible_until.map(|_| RibbonPlacement::Top)
+            }
+            RibbonMode::Top => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Top),
+            RibbonMode::Bottom => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Bottom),
+        }
+    }
+
     pub fn is_fullscreen(&self) -> bool {
         !self.show_header && !self.show_status
     }
@@ -260,6 +493,9 @@ impl UiState {
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
@@ -272,6 +508,9 @@ impl UiState {
         self.lyrics = LyricsView::Loading;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
@@ -280,6 +519,9 @@ impl UiState {
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
@@ -368,10 +610,11 @@ impl UiState {
 
     fn body_rows(&self) -> usize {
         let header_rows = u16::from(self.show_header);
+        let ribbon_rows = u16::from(self.ribbon_placement().is_some());
         let footer_rows = u16::from(self.footer_visible());
         usize::from(
             self.viewport_height
-                .saturating_sub(header_rows + footer_rows)
+                .saturating_sub(header_rows + ribbon_rows + footer_rows)
                 .max(1),
         )
     }
@@ -598,6 +841,9 @@ mod tests {
 
         state.expire_banner(Instant::now() + BANNER_DURATION);
         assert_eq!(state.body_rows(), 24);
+
+        state.configure_ribbon(RibbonMode::Top);
+        assert_eq!(state.body_rows(), 23);
     }
 
     #[test]
@@ -682,5 +928,86 @@ mod tests {
         state.adjust_offset(100);
         state.set_no_player();
         assert_eq!(state.user_offset_ms, 0);
+    }
+
+    #[test]
+    fn help_modal_toggles_without_recompiling_timeline() {
+        let mut state = UiState::new();
+        state.set_lyrics(track(SyncGranularity::Line));
+        let timeline = state.timeline().unwrap().clone();
+        let hash = state.timeline_options_hash;
+
+        assert!(!state.is_modal_open());
+        state.toggle_help();
+        assert_eq!(state.modal, Some(UiModal::Help));
+        assert!(state.is_modal_open());
+        assert_eq!(state.timeline(), Some(&timeline));
+        assert_eq!(state.timeline_options_hash, hash);
+
+        state.toggle_help();
+        assert_eq!(state.modal, None);
+        assert!(!state.is_modal_open());
+
+        state.open_help();
+        assert_eq!(state.modal, Some(UiModal::Help));
+        state.close_modal();
+        assert_eq!(state.modal, None);
+    }
+
+    #[test]
+    fn ribbon_state_machine_covers_all_modes_and_breakpoint() {
+        let mut state = UiState::new();
+        let t0 = Instant::now();
+
+        // Auto: hidden by default, Tab toggles 3s visibility, expires at >= 3s
+        state.configure_ribbon(RibbonMode::Auto);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        assert_eq!(
+            state.time_until_ribbon_expiry(t0 + Duration::from_secs(1)),
+            Some(Duration::from_secs(2))
+        );
+        state.expire_ribbon(t0 + Duration::from_secs(2));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Auto: second Tab before expiry hides immediately
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Off: same 3s peek behavior on Tab
+        state.configure_ribbon(RibbonMode::Off);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Top: permanently visible, Tab toggles temporary hide/show
+        state.configure_ribbon(RibbonMode::Top);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        assert_eq!(state.time_until_ribbon_expiry(t0), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+
+        // Bottom: permanently visible at bottom, Tab toggles temporary hide/show
+        state.configure_ribbon(RibbonMode::Bottom);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
+
+        // Terminal height < 8 rows automatically hides ribbon in all modes
+        state.resize(80, 7);
+        assert_eq!(state.ribbon_placement(), None);
+        state.resize(80, 8);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
     }
 }
