@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                Yellow  Coldplay
+
+
+
+
+
+
+
+                                Look at the stars
+                                 Luk at de stars
+                              Lihat bintang-bintang
+                                                                        Yellow
+                                                                        Kuning
+                                   Ooh, yellow
+                                      echo
+
+
+
+
+
+
+
+
+limusic | playing | lyricsplus | +0 ms | 93% | word

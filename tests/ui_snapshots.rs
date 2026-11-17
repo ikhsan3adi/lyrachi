@@ -2,13 +2,17 @@ use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
 };
+use lyrachi::core::parse::ttml::parse_ttml;
 use lyrachi::media::TrackMeta;
 use lyrachi::ui::{LyricsView, UiState, render};
 use ratatui::{
     Terminal,
     backend::TestBackend,
+    buffer::Buffer,
     style::{Color, Modifier},
 };
+
+const SAMPLE_TTML: &str = include_str!("fixtures/sample_syllable.ttml");
 
 fn meta() -> TrackMeta {
     TrackMeta {
@@ -30,7 +34,8 @@ fn word(_text: &str, start: usize, end: usize, start_ms: u64, end_ms: u64) -> Wo
     }
 }
 
-fn line(
+fn role_line(
+    role: LineRole,
     start_ms: u64,
     end_ms: u64,
     text: &str,
@@ -40,11 +45,28 @@ fn line(
     LyricLine {
         start_ms,
         end_ms,
-        role: LineRole::Primary,
+        role,
         text: text.to_string(),
         words,
         annotations,
     }
+}
+
+fn line(
+    start_ms: u64,
+    end_ms: u64,
+    text: &str,
+    words: Vec<WordToken>,
+    annotations: Vec<Annotation>,
+) -> LyricLine {
+    role_line(
+        LineRole::Primary,
+        start_ms,
+        end_ms,
+        text,
+        words,
+        annotations,
+    )
 }
 
 fn word_track() -> SyncedTrack {
@@ -212,6 +234,82 @@ fn word_sync() -> UiState {
     state
 }
 
+fn duet_ttml() -> UiState {
+    let mut state = base_state();
+    state.set_lyrics(parse_ttml(SAMPLE_TTML, "ttml-fixture").unwrap());
+    state
+}
+
+fn lyricsplus_vocals_track() -> SyncedTrack {
+    SyncedTrack {
+        source_provider: "lyricsplus".to_string(),
+        source_track_id: Some("lp-1".to_string()),
+        parser_version: 1,
+        is_instrumental: false,
+        granularity: SyncGranularity::Word,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 0.93,
+        lines: vec![
+            line(
+                33_370,
+                36_740,
+                "Look at the stars",
+                vec![
+                    word("Look ", 0, 5, 33_370, 34_000),
+                    word("at ", 5, 8, 34_000, 34_400),
+                    word("the ", 8, 12, 34_500, 34_900),
+                    word("stars", 12, 17, 35_000, 36_740),
+                ],
+                vec![
+                    Annotation {
+                        kind: AnnotationKind::Romanization,
+                        text: "Luk at de stars".to_string(),
+                    },
+                    Annotation {
+                        kind: AnnotationKind::Translation,
+                        text: "Lihat bintang-bintang".to_string(),
+                    },
+                ],
+            ),
+            role_line(
+                LineRole::DuetSecondary,
+                37_000,
+                39_500,
+                "Yellow",
+                vec![
+                    word("Yel", 0, 3, 37_000, 38_200),
+                    word("low", 3, 6, 38_200, 39_500),
+                ],
+                vec![Annotation {
+                    kind: AnnotationKind::Translation,
+                    text: "Kuning".to_string(),
+                }],
+            ),
+            role_line(
+                LineRole::BackgroundVocal,
+                40_000,
+                42_000,
+                "Ooh, yellow",
+                vec![
+                    word("Ooh, ", 0, 5, 40_000, 40_600),
+                    word("yellow", 5, 11, 40_600, 42_000),
+                ],
+                vec![Annotation {
+                    kind: AnnotationKind::Secondary,
+                    text: "echo".to_string(),
+                }],
+            ),
+        ],
+    }
+}
+
+fn background_lyricsplus() -> UiState {
+    let mut state = base_state();
+    state.set_lyrics(lyricsplus_vocals_track());
+    state
+}
+
 fn instrumental() -> UiState {
     let mut state = base_state();
     state.set_lyrics(instrumental_track());
@@ -224,15 +322,30 @@ fn fullscreen() -> UiState {
     state
 }
 
-fn render_state(state: &mut UiState, width: u16, height: u16, effective_ms: u64) -> String {
+fn render_buffer(state: &mut UiState, width: u16, height: u16, effective_ms: u64) -> Buffer {
     state.resize(width, height);
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).unwrap();
     terminal
         .draw(|frame| render::render(frame, state, effective_ms))
         .unwrap();
+    terminal.backend().buffer().clone()
+}
 
-    let buffer = terminal.backend().buffer();
+fn find_text(buffer: &Buffer, needle: &str) -> Option<(u16, u16, String)> {
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()))
+            .collect();
+        if let Some(offset) = row.find(needle) {
+            return Some((u16::try_from(offset).unwrap(), y, row));
+        }
+    }
+    None
+}
+
+fn render_state(state: &mut UiState, width: u16, height: u16, effective_ms: u64) -> String {
+    let buffer = render_buffer(state, width, height, effective_ms);
     let mut output = String::new();
     for y in 0..height {
         for x in 0..width {
@@ -330,6 +443,88 @@ fn fullscreen_80x24() {
 #[test]
 fn fullscreen_120x40() {
     snapshot(&mut fullscreen(), 120, 40, 9_500, "120x40_fullscreen");
+}
+
+#[test]
+fn duet_ttml_80x24() {
+    snapshot(&mut duet_ttml(), 80, 24, 3_500, "80x24_duet_ttml");
+}
+
+#[test]
+fn duet_ttml_120x40() {
+    snapshot(&mut duet_ttml(), 120, 40, 3_500, "120x40_duet_ttml");
+}
+
+#[test]
+fn background_lyricsplus_80x24() {
+    snapshot(
+        &mut background_lyricsplus(),
+        80,
+        24,
+        40_500,
+        "80x24_background_lyricsplus",
+    );
+}
+
+#[test]
+fn background_lyricsplus_120x40() {
+    snapshot(
+        &mut background_lyricsplus(),
+        120,
+        40,
+        40_500,
+        "120x40_background_lyricsplus",
+    );
+}
+
+#[test]
+fn duet_secondary_uses_secondary_accent_and_right_alignment() {
+    let mut state = duet_ttml();
+    let buffer = render_buffer(&mut state, 80, 24, 3_500);
+    let (x, y, row) = find_text(&buffer, "Second voice").expect("duet line was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::LightMagenta);
+    assert!(!cell.modifier.contains(Modifier::DIM));
+    assert!(
+        x > u16::try_from((80 - "Second voice".len()) / 2).unwrap(),
+        "duet line was not right-aligned:\n{row}"
+    );
+}
+
+#[test]
+fn duet_secondary_stays_readable_on_narrow_viewport() {
+    let mut state = duet_ttml();
+    let buffer = render_buffer(&mut state, 40, 24, 3_500);
+    let (x, y, row) = find_text(&buffer, "Second voice").expect("duet line was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+
+    assert_eq!(x, 2);
+    assert_eq!(cell.fg, Color::LightMagenta);
+    assert!(row.trim_end().ends_with("Second voice"));
+}
+
+#[test]
+fn background_vocal_is_dim_italic_and_annotations_are_visible() {
+    let mut state = background_lyricsplus();
+    let buffer = render_buffer(&mut state, 80, 24, 40_500);
+
+    let (x, y, _) = find_text(&buffer, "Ooh, yellow").expect("background line was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::Gray);
+    assert!(cell.modifier.contains(Modifier::ITALIC));
+    assert!(cell.modifier.contains(Modifier::BOLD));
+
+    let (x, y, _) = find_text(&buffer, "yellow").expect("background word was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::DarkGray);
+    assert!(cell.modifier.contains(Modifier::ITALIC));
+
+    for annotation in ["Luk at de stars", "Lihat bintang-bintang", "Kuning", "echo"] {
+        let (x, y, _) =
+            find_text(&buffer, annotation).unwrap_or_else(|| panic!("missing {annotation}"));
+        let cell = buffer.cell((x, y)).unwrap();
+        assert!(cell.modifier.contains(Modifier::DIM | Modifier::ITALIC));
+    }
 }
 
 #[test]

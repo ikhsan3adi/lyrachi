@@ -9,8 +9,11 @@ use ratatui::{
 use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, WrappedSubLine,
 };
+use crate::core::model::{LineRole, WordToken};
 
 use super::{LyricsView, UiState, status::footer_line};
+
+const DUET_RIGHT_ALIGN_MIN_WIDTH: u16 = 60;
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let area = frame.area();
@@ -39,6 +42,127 @@ fn content_area(area: Rect, padding: u16) -> Rect {
         y: area.y,
         width: area.width.saturating_sub(padding.saturating_mul(2)),
         height: area.height,
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StageStyle {
+    accent: Color,
+    duet_accent: Color,
+    background_vocal: Color,
+    background_vocal_active: Color,
+}
+
+impl Default for StageStyle {
+    fn default() -> Self {
+        Self {
+            accent: Color::Cyan,
+            duet_accent: Color::LightMagenta,
+            background_vocal: Color::DarkGray,
+            background_vocal_active: Color::Gray,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum WordState {
+    Active,
+    Sung,
+    Unsung,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StageRender {
+    cursor: ActiveStageCursor,
+    effective_ms: u64,
+    plain: bool,
+    viewport_width: u16,
+    styles: StageStyle,
+}
+
+impl StageStyle {
+    fn line_style(self, role: LineRole, active: bool) -> Style {
+        match role {
+            LineRole::Primary => {
+                if active {
+                    Style::default()
+                } else {
+                    Style::default().add_modifier(Modifier::DIM)
+                }
+            }
+            LineRole::DuetSecondary => {
+                let style = Style::default().fg(self.duet_accent);
+                if active {
+                    style
+                } else {
+                    style.add_modifier(Modifier::DIM)
+                }
+            }
+            LineRole::BackgroundVocal => {
+                let style = Style::default()
+                    .fg(self.background_vocal)
+                    .add_modifier(Modifier::ITALIC);
+                if active {
+                    style
+                } else {
+                    style.add_modifier(Modifier::DIM)
+                }
+            }
+            LineRole::InstrumentalBreak => {
+                Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+            }
+        }
+    }
+
+    fn word_style(self, role: LineRole, state: WordState) -> Style {
+        match role {
+            LineRole::Primary => match state {
+                WordState::Active => Style::default()
+                    .fg(self.accent)
+                    .add_modifier(Modifier::BOLD),
+                WordState::Sung => Style::default(),
+                WordState::Unsung => Style::default().add_modifier(Modifier::DIM),
+            },
+            LineRole::DuetSecondary => {
+                let style = Style::default().fg(self.duet_accent);
+                match state {
+                    WordState::Active => style.add_modifier(Modifier::BOLD),
+                    WordState::Sung => style,
+                    WordState::Unsung => style.add_modifier(Modifier::DIM),
+                }
+            }
+            LineRole::BackgroundVocal => {
+                let style = Style::default()
+                    .fg(self.background_vocal)
+                    .add_modifier(Modifier::ITALIC);
+                match state {
+                    WordState::Active => Style::default()
+                        .fg(self.background_vocal_active)
+                        .add_modifier(Modifier::BOLD | Modifier::ITALIC),
+                    WordState::Sung => style,
+                    WordState::Unsung => style.add_modifier(Modifier::DIM),
+                }
+            }
+            LineRole::InstrumentalBreak => {
+                Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+            }
+        }
+    }
+
+    fn annotation_style(self) -> Style {
+        Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC)
+    }
+
+    fn alignment(self, role: LineRole, viewport_width: u16) -> Alignment {
+        match role {
+            LineRole::DuetSecondary if viewport_width >= DUET_RIGHT_ALIGN_MIN_WIDTH => {
+                Alignment::Right
+            }
+            LineRole::DuetSecondary => Alignment::Left,
+            LineRole::Primary | LineRole::BackgroundVocal | LineRole::InstrumentalBreak => {
+                Alignment::Center
+            }
+        }
     }
 }
 
@@ -162,6 +286,13 @@ fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, eff
     let anchor = timeline.anchor_line_index(effective_ms).unwrap_or(0);
     let start = anchor.saturating_sub(2);
     let end = (anchor + 4).max(start + 5).min(total);
+    let stage = StageRender {
+        cursor,
+        effective_ms,
+        plain: false,
+        viewport_width: timeline.context.viewport_width,
+        styles: StageStyle::default(),
+    };
     let mut lines = Vec::new();
     let mut active_start = None;
     let mut active_end = None;
@@ -173,7 +304,7 @@ fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, eff
         if is_focus {
             active_start = Some(lines.len());
         }
-        push_compiled_line(&mut lines, compiled, &cursor, effective_ms, active, false);
+        push_compiled_line(&mut lines, compiled, stage, active);
         if is_focus {
             active_end = Some(lines.len());
         }
@@ -185,14 +316,20 @@ fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, eff
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {
     let mut lines = Vec::new();
     let start = state.scroll.min(timeline.lines.len());
-    let cursor = ActiveStageCursor {
-        active_line_idx: None,
-        active_word_idx: None,
-        progress: 0.0,
+    let stage = StageRender {
+        cursor: ActiveStageCursor {
+            active_line_idx: None,
+            active_word_idx: None,
+            progress: 0.0,
+        },
+        effective_ms: 0,
+        plain: true,
+        viewport_width: timeline.context.viewport_width,
+        styles: StageStyle::default(),
     };
 
     for compiled in &timeline.lines[start..] {
-        push_compiled_line(&mut lines, compiled, &cursor, 0, false, true);
+        push_compiled_line(&mut lines, compiled, stage, false);
         if lines.len() >= usize::from(area.height) {
             break;
         }
@@ -205,56 +342,62 @@ fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &Co
 fn push_compiled_line(
     lines: &mut Vec<Line<'static>>,
     compiled: &CompiledLine,
-    cursor: &ActiveStageCursor,
-    effective_ms: u64,
+    stage: StageRender,
     active: bool,
-    plain: bool,
 ) {
+    let alignment = stage.styles.alignment(compiled.role, stage.viewport_width);
     for subline in &compiled.wrapped_main {
-        lines.push(Line::from(spans_for_subline(
-            compiled,
-            subline,
-            cursor.active_word_idx,
-            effective_ms,
-            active,
-            plain,
-        )));
+        lines.push(
+            Line::from(spans_for_subline(compiled, subline, active, stage)).alignment(alignment),
+        );
     }
 
     for annotation in &compiled.wrapped_annotations {
-        lines.push(Line::from(Span::styled(
-            annotation.clone(),
-            Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
-        )));
+        lines.push(
+            Line::from(Span::styled(
+                annotation.clone(),
+                stage.styles.annotation_style(),
+            ))
+            .alignment(alignment),
+        );
     }
 }
 
 fn spans_for_subline(
     compiled: &CompiledLine,
     subline: &WrappedSubLine,
-    active_word_idx: Option<usize>,
-    effective_ms: u64,
     active_line: bool,
-    plain: bool,
+    stage: StageRender,
 ) -> Vec<Span<'static>> {
-    if plain {
+    if stage.plain {
         return vec![Span::raw(subline.text.clone())];
     }
     if !active_line {
         return vec![Span::styled(
             subline.text.clone(),
-            Style::default().add_modifier(Modifier::DIM),
+            stage.styles.line_style(compiled.role, false),
         )];
     }
-    if compiled.role == crate::core::model::LineRole::InstrumentalBreak {
+    if compiled.role == LineRole::InstrumentalBreak {
         return vec![Span::styled(
             subline.text.clone(),
-            Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
+            stage.styles.line_style(compiled.role, true),
         )];
     }
     if compiled.words.is_empty() {
-        return vec![Span::styled(subline.text.clone(), active_word_style())];
+        let style = match compiled.role {
+            LineRole::Primary | LineRole::DuetSecondary => {
+                stage.styles.word_style(compiled.role, WordState::Active)
+            }
+            LineRole::BackgroundVocal | LineRole::InstrumentalBreak => {
+                stage.styles.line_style(compiled.role, true)
+            }
+        };
+        return vec![Span::styled(subline.text.clone(), style)];
     }
+
+    let active_word_idx = stage.cursor.active_word_idx;
+    let effective_ms = stage.effective_ms;
 
     let (sub_start, sub_end) = subline.source_byte_range;
     let mut spans = Vec::new();
@@ -269,33 +412,45 @@ fn spans_for_subline(
 
         if cursor < word_start {
             let gap_style = if effective_ms >= word.start_ms {
-                sung_style()
+                stage.styles.word_style(compiled.role, WordState::Sung)
             } else {
-                unsung_style()
+                stage.styles.word_style(compiled.role, WordState::Unsung)
             };
             push_span(&mut spans, subline, cursor, word_start, gap_style);
         }
 
         let style = if Some(index) == active_word_idx {
-            active_word_style()
+            stage.styles.word_style(compiled.role, WordState::Active)
         } else if active_word_idx.is_some_and(|active| index < active) || effective_ms > word.end_ms
         {
-            sung_style()
+            stage.styles.word_style(compiled.role, WordState::Sung)
         } else {
-            unsung_style()
+            stage.styles.word_style(compiled.role, WordState::Unsung)
         };
         push_span(&mut spans, subline, word_start, word_end, style);
         cursor = word_end;
     }
 
     if cursor < sub_end {
-        let trailing_style = trailing_gap_style(&compiled.words, cursor, effective_ms);
+        let trailing_style = trailing_gap_style(
+            compiled.role,
+            stage.styles,
+            &compiled.words,
+            cursor,
+            effective_ms,
+        );
         push_span(&mut spans, subline, cursor, sub_end, trailing_style);
     }
     if spans.is_empty() {
         spans.push(Span::styled(
             subline.text.clone(),
-            trailing_gap_style(&compiled.words, sub_start, effective_ms),
+            trailing_gap_style(
+                compiled.role,
+                stage.styles,
+                &compiled.words,
+                sub_start,
+                effective_ms,
+            ),
         ));
     }
 
@@ -303,20 +458,22 @@ fn spans_for_subline(
 }
 
 fn trailing_gap_style(
-    words: &[crate::core::model::WordToken],
+    role: LineRole,
+    styles: StageStyle,
+    words: &[WordToken],
     byte_pos: usize,
     effective_ms: u64,
 ) -> Style {
     if let Some(next_word) = words.iter().find(|word| word.byte_range.0 >= byte_pos) {
         if effective_ms >= next_word.start_ms {
-            sung_style()
+            styles.word_style(role, WordState::Sung)
         } else {
-            unsung_style()
+            styles.word_style(role, WordState::Unsung)
         }
     } else if words.last().is_some_and(|last| effective_ms > last.end_ms) {
-        sung_style()
+        styles.word_style(role, WordState::Sung)
     } else {
-        unsung_style()
+        styles.word_style(role, WordState::Unsung)
     }
 }
 
@@ -364,18 +521,4 @@ fn render_lines(
     let start = centered.min(lines.len().saturating_sub(height));
     let visible = lines[start..start + height].to_vec();
     frame.render_widget(Paragraph::new(visible).alignment(Alignment::Center), area);
-}
-
-fn sung_style() -> Style {
-    Style::default()
-}
-
-fn unsung_style() -> Style {
-    Style::default().add_modifier(Modifier::DIM)
-}
-
-fn active_word_style() -> Style {
-    Style::default()
-        .fg(Color::Cyan)
-        .add_modifier(Modifier::BOLD)
 }
