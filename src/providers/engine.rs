@@ -445,14 +445,23 @@ async fn resolve_with_specs(
         _ => Default::default(),
     };
     let now = Instant::now();
-    let available: Vec<NetworkSpec> = specs
+    let mut available: Vec<NetworkSpec> = specs
         .into_iter()
         .filter(|spec| !lookup.negative_providers.contains(&spec.provider))
         .filter(|spec| breakers.is_none_or(|b| b.can_attempt(spec.provider, now)))
         .collect();
 
+    if let Some(preferred) = lookup
+        .preference
+        .as_ref()
+        .and_then(|p| p.preferred_provider)
+        && available.iter().any(|spec| spec.provider == preferred)
+    {
+        available.sort_by_key(|spec| if spec.provider == preferred { 0 } else { 1 });
+    }
+
     if let Some(cached) = lookup.answer {
-        if !lookup.needs_upgrade || available.is_empty() {
+        if lookup.is_pinned || !lookup.needs_upgrade || available.is_empty() {
             emit(updates, Ok(Some(cached)), true);
             return Ok(());
         }
@@ -1591,6 +1600,63 @@ mod tests {
             final_ans.track.source_track_id.as_deref(),
             Some("fresh-syllable")
         );
+
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
+    }
+
+    #[tokio::test]
+    async fn pinned_lyrics_return_final_immediately_without_calling_specs() {
+        let root = temp_path("pinned-test");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let cache = CacheHandle::open(&db).unwrap();
+        let query = query();
+
+        let pinned_track = track(Tier::Line, "pinned-candidate");
+        let pref = crate::cache::TrackPreference::with_pinned_track(
+            Provider::Lrclib,
+            Some("pinned-candidate".to_string()),
+            &pinned_track,
+            None,
+        )
+        .unwrap();
+        cache
+            .set_track_preference(&query.canonical, pref)
+            .await
+            .unwrap();
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let specs = vec![spec_for(
+            Provider::LyricsPlus,
+            0,
+            10,
+            Some(Tier::Syllable),
+            "network-syllable",
+            Some(calls.clone()),
+            false,
+        )];
+
+        let cancel = CancellationToken::new();
+        let (updates, mut receiver) = mpsc::unbounded_channel();
+        let result =
+            resolve_with_specs(specs, Some(&cache), None, &query, &cancel, &updates, false).await;
+
+        assert!(result.is_ok());
+        drop(updates);
+        let mut messages = Vec::new();
+        while let Some(update) = receiver.recv().await {
+            messages.push(update);
+        }
+
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].is_final);
+        let final_ans = messages[0].result.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(
+            final_ans.track.source_track_id.as_deref(),
+            Some("pinned-candidate")
+        );
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
 
         cache.shutdown().await.unwrap();
         cleanup(&root);

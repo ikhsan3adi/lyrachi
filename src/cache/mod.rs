@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde_json::Error as JsonError;
 use tokio::sync::{mpsc, oneshot};
 
-use crate::core::model::CanonicalTrackKey;
+use crate::core::model::{CanonicalTrackKey, PARSER_VERSION, SyncedTrack};
 use crate::providers::sanitize::blake3_track_key;
 use crate::providers::{Provider, ProviderAnswer};
 
@@ -18,6 +18,8 @@ pub const CACHE_NEGATIVE_TTL_SECS: i64 = 14 * 24 * 60 * 60;
 pub const CACHE_UPGRADE_INTERVAL_SECS: i64 = 14 * 24 * 60 * 60;
 pub const CACHE_PRUNE_INTERVAL_SECS: i64 = 24 * 60 * 60;
 pub const CACHE_PRUNE_CHECK_SECS: i64 = 60 * 60;
+pub const CACHE_PREFERENCES_MAX_ENTRIES: usize = 5_000;
+pub const CACHE_PREFERENCES_MAX_AGE_SECS: i64 = 180 * 24 * 60 * 60;
 
 #[derive(Debug, thiserror::Error)]
 pub enum CacheError {
@@ -33,11 +35,67 @@ pub enum CacheError {
     WorkerStopped,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TrackPreference {
+    pub preferred_provider: Option<Provider>,
+    pub preferred_track_id: Option<String>,
+    pub pinned_payload_json: Option<Vec<u8>>,
+    pub preferred_style: Option<String>,
+    pub updated_at: i64,
+}
+
+impl Default for TrackPreference {
+    fn default() -> Self {
+        Self {
+            preferred_provider: None,
+            preferred_track_id: None,
+            pinned_payload_json: None,
+            preferred_style: None,
+            updated_at: now_secs(),
+        }
+    }
+}
+
+impl TrackPreference {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_pinned_track(
+        provider: Provider,
+        track_id: Option<String>,
+        track: &SyncedTrack,
+        style: Option<String>,
+    ) -> Result<Self, serde_json::Error> {
+        let mut clean_track = track.clone();
+        clean_track.user_offset_ms = 0;
+        let payload = serde_json::to_vec(&clean_track)?;
+        Ok(Self {
+            preferred_provider: Some(provider),
+            preferred_track_id: track_id,
+            pinned_payload_json: Some(payload),
+            preferred_style: style,
+            updated_at: now_secs(),
+        })
+    }
+
+    pub fn pinned_track(&self) -> Option<SyncedTrack> {
+        let bytes = self.pinned_payload_json.as_deref()?;
+        let track: SyncedTrack = serde_json::from_slice(bytes).ok()?;
+        if track.parser_version != PARSER_VERSION {
+            return None;
+        }
+        Some(track)
+    }
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct CacheLookup {
     pub answer: Option<ProviderAnswer>,
     pub needs_upgrade: bool,
     pub negative_providers: HashSet<Provider>,
+    pub is_pinned: bool,
+    pub preference: Option<TrackPreference>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +208,59 @@ impl CacheHandle {
         self.tx
             .send(worker::CacheCommand::InvalidateTrack {
                 track_key: blake3_track_key(key),
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn get_track_preference(
+        &self,
+        key: &CanonicalTrackKey,
+    ) -> Result<Option<TrackPreference>, CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::GetTrackPreference {
+                track_key: blake3_track_key(key),
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn set_track_preference(
+        &self,
+        key: &CanonicalTrackKey,
+        preference: TrackPreference,
+    ) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::SetTrackPreference {
+                track_key: blake3_track_key(key),
+                preference,
+                reply,
+            })
+            .await
+            .map_err(|_| CacheError::WorkerStopped)?;
+        response.await.map_err(|_| CacheError::WorkerStopped)?
+    }
+
+    pub async fn clear_pinned_lyrics(&self, key: &CanonicalTrackKey) -> Result<(), CacheError> {
+        self.clear_pinned_lyrics_at(key, now_secs()).await
+    }
+
+    pub(crate) async fn clear_pinned_lyrics_at(
+        &self,
+        key: &CanonicalTrackKey,
+        now: i64,
+    ) -> Result<(), CacheError> {
+        let (reply, response) = oneshot::channel();
+        self.tx
+            .send(worker::CacheCommand::ClearPinnedLyrics {
+                track_key: blake3_track_key(key),
+                now,
                 reply,
             })
             .await
@@ -433,6 +544,54 @@ mod tests {
             .unwrap();
         assert_eq!(parser_version, i64::from(PARSER_VERSION));
 
+        cleanup(&path);
+    }
+
+    #[tokio::test]
+    async fn pinned_lyrics_survive_invalidate_track_and_prune() {
+        let path = temp_path("pinned-survives");
+        let handle = CacheHandle::open(&path).unwrap();
+        let key = sample_key();
+        let answer = sample_answer();
+
+        let pref = TrackPreference::with_pinned_track(
+            Provider::Lrclib,
+            Some("12345".to_string()),
+            &answer.track,
+            Some("tokyo-night".to_string()),
+        )
+        .unwrap();
+        handle
+            .set_track_preference(&key, pref.clone())
+            .await
+            .unwrap();
+
+        handle
+            .store(&key, "Coldplay - Yellow", &answer)
+            .await
+            .unwrap();
+
+        let lookup = handle.lookup(&key).await.unwrap();
+        assert!(lookup.is_pinned);
+        assert!(!lookup.needs_upgrade);
+        assert_eq!(
+            lookup.answer.unwrap().track.lines[0].text,
+            answer.track.lines[0].text
+        );
+
+        handle.invalidate_track(&key).await.unwrap();
+
+        let lookup_after_invalid = handle.lookup(&key).await.unwrap();
+        assert!(lookup_after_invalid.is_pinned);
+        assert!(lookup_after_invalid.answer.is_some());
+
+        handle.clear_pinned_lyrics(&key).await.unwrap();
+
+        let lookup_cleared = handle.lookup(&key).await.unwrap();
+        assert!(!lookup_cleared.is_pinned);
+        assert!(lookup_cleared.answer.is_none());
+
+        handle.shutdown().await.unwrap();
         cleanup(&path);
     }
 }

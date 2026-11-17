@@ -246,6 +246,23 @@ impl ResolveCoordinator {
         })
     }
 
+    pub fn apply_manual_candidate(&mut self, answer: ProviderAnswer) -> u64 {
+        if let Some(token) = self.active_token.take() {
+            token.cancel();
+        }
+        self.epoch = self.epoch.wrapping_add(1);
+        let epoch = self.epoch;
+
+        if let Some(key) = self.active_key.clone() {
+            let user_offset_ms = self.user_offsets.get(&key).copied().unwrap_or(0);
+            let mut final_answer = answer;
+            final_answer.track.user_offset_ms = user_offset_ms;
+            self.cache.insert(key, final_answer);
+        }
+
+        epoch
+    }
+
     pub fn complete_epoch(
         &mut self,
         resolved_epoch: u64,
@@ -737,5 +754,34 @@ mod cache_tests {
 
         cache.shutdown().await.unwrap();
         cleanup(&root);
+    }
+
+    #[test]
+    fn apply_manual_candidate_cancels_in_flight_and_ignores_stale_epoch() {
+        let mut coordinator = ResolveCoordinator::new();
+        let plan = coordinator.prepare_track(&meta());
+        let (epoch_1, token) = match plan {
+            TrackPlan::Fetch { epoch, cancel, .. } => (epoch, cancel),
+            other => panic!("expected fetch plan, got {other:?}"),
+        };
+        assert!(!token.is_cancelled());
+        coordinator.seed_user_offset(coordinator.active_key().unwrap().clone(), 200);
+
+        let mut manual_answer = answer("manual-pick");
+        manual_answer.provider = Provider::LyricsPlus;
+        let new_epoch = coordinator.apply_manual_candidate(manual_answer);
+        assert_eq!(new_epoch, epoch_1 + 1);
+        assert!(token.is_cancelled(), "previous token must be cancelled");
+
+        let stale_result = coordinator.complete_epoch(epoch_1, Some(answer("old")), true);
+        assert!(stale_result.is_none(), "stale epoch must return None");
+
+        let active_key = coordinator.active_key().cloned().unwrap();
+        let cached = coordinator
+            .cache_mut()
+            .get(&active_key)
+            .expect("manual candidate should be in cache");
+        assert_eq!(cached.provider, Provider::LyricsPlus);
+        assert_eq!(cached.track.user_offset_ms, 200);
     }
 }
