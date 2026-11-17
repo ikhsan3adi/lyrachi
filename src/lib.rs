@@ -14,4 +14,5 @@ pub mod offsets;
 pub mod paths;
 pub mod prefs;
 pub mod providers;
+pub mod style;
 pub mod ui;

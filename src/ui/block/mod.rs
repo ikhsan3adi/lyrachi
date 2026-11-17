@@ -7,7 +7,11 @@ pub mod layout;
 pub mod render;
 
 pub use font::{BlockFontSize, GlyphBitmap};
-pub use layout::{BlockCell, BlockLayout, Glyph, VisualLine, layout_text};
+pub use layout::{
+    BlockCell, BlockLayout, Glyph, VisualLine, layout_text, layout_text_with_options,
+};
+
+use crate::style::{BigTextMaxSize, BigTextOverflow};
 
 pub const BLOCK_CACHE_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub const BLOCK_WINDOW_BEFORE: usize = 1;
@@ -20,6 +24,8 @@ struct BlockCacheKey {
     max_width: u16,
     max_height: u16,
     ambiguous_width: u8,
+    max_size: BigTextMaxSize,
+    overflow: BigTextOverflow,
 }
 
 #[derive(Debug)]
@@ -63,19 +69,50 @@ impl BlockStageCache {
         max_height: u16,
         ambiguous_width: u8,
     ) -> &BlockLayout {
+        self.layout_for_with_options(
+            line_index,
+            text,
+            max_width,
+            max_height,
+            ambiguous_width,
+            BigTextMaxSize::Auto,
+            BigTextOverflow::Shrink,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn layout_for_with_options(
+        &mut self,
+        line_index: usize,
+        text: &str,
+        max_width: u16,
+        max_height: u16,
+        ambiguous_width: u8,
+        max_size: BigTextMaxSize,
+        overflow: BigTextOverflow,
+    ) -> &BlockLayout {
         let key = BlockCacheKey {
             line_index,
             text_hash: text_hash(text),
             max_width: max_width.max(1),
             max_height: max_height.max(1),
             ambiguous_width: if ambiguous_width == 2 { 2 } else { 1 },
+            max_size,
+            overflow,
         };
 
         if !self.entries.contains_key(&key) {
             self.entries
                 .retain(|existing, _| existing.line_index != line_index);
             self.recompute_bytes();
-            let layout = layout_text(text, key.max_width, key.max_height, key.ambiguous_width);
+            let layout = layout_text_with_options(
+                text,
+                key.max_width,
+                key.max_height,
+                key.ambiguous_width,
+                max_size,
+                overflow,
+            );
             let bytes = layout_bytes(&layout);
             self.entries.insert(key, CachedBlockLine { layout, bytes });
             self.estimated_bytes = self.estimated_bytes.saturating_add(bytes);

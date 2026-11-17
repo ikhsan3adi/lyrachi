@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    style::{Color, Modifier, Style},
+    style::{Modifier, Style},
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -23,7 +23,12 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
 
 pub fn ribbon_line(state: &UiState) -> Line<'static> {
     let display_mode = state.effective_display_mode().as_str();
-    let style_name = "default";
+    let style_name = state
+        .style
+        .name
+        .strip_prefix("builtin:")
+        .unwrap_or(&state.style.name)
+        .to_string();
     let source = source_label(state);
     let word_hl = if word_highlight_active(state) {
         "word-hl: on"
@@ -33,14 +38,13 @@ pub fn ribbon_line(state: &UiState) -> Line<'static> {
     let offset = format!("{:+} ms", state.effective_offset_ms());
 
     let sep = || Span::styled(" | ", Style::default().add_modifier(Modifier::DIM));
+    let mut mode_style = Style::default().add_modifier(Modifier::BOLD);
+    if let Some(accent) = state.style.accent {
+        mode_style = mode_style.fg(accent);
+    }
 
     Line::from(vec![
-        Span::styled(
-            display_mode,
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(display_mode, mode_style),
         sep(),
         Span::styled(style_name, Style::default().add_modifier(Modifier::DIM)),
         sep(),

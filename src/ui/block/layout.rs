@@ -4,6 +4,7 @@ use super::font::{
     BlockFontSize, GlyphBitmap, glyph_bitmap_for_cluster, placeholder_bitmap, space_bitmap,
 };
 use crate::core::text::{cannot_end_line, cannot_start_line, display_width_with_ambiguous, is_cjk};
+use crate::style::{BigTextMaxSize, BigTextOverflow};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Glyph {
@@ -37,6 +38,24 @@ pub struct BlockLayout {
 
 impl BlockLayout {
     pub fn new(text: &str, max_width: u16, max_height: u16, ambiguous_width: u8) -> Self {
+        Self::new_with_options(
+            text,
+            max_width,
+            max_height,
+            ambiguous_width,
+            BigTextMaxSize::Auto,
+            BigTextOverflow::Shrink,
+        )
+    }
+
+    pub fn new_with_options(
+        text: &str,
+        max_width: u16,
+        max_height: u16,
+        ambiguous_width: u8,
+        max_size: BigTextMaxSize,
+        overflow: BigTextOverflow,
+    ) -> Self {
         if max_width == 0 || max_height == 0 {
             return Self::empty();
         }
@@ -49,15 +68,40 @@ impl BlockLayout {
             return Self::empty();
         }
 
-        for size in BlockFontSize::FALLBACKS {
+        let candidates: &[BlockFontSize] = match max_size {
+            BigTextMaxSize::Auto | BigTextMaxSize::Block => BlockFontSize::FALLBACKS.as_slice(),
+            BigTextMaxSize::Compact => &[BlockFontSize::Compact, BlockFontSize::Mini],
+            BigTextMaxSize::Mini => &[BlockFontSize::Mini],
+            BigTextMaxSize::Plain => &[],
+        };
+
+        let sizes_to_try = match overflow {
+            BigTextOverflow::Shrink => candidates,
+            BigTextOverflow::FallbackNormal | BigTextOverflow::Wrap => {
+                if candidates.is_empty() {
+                    &[]
+                } else {
+                    &candidates[..1]
+                }
+            }
+        };
+        let allow_split = overflow == BigTextOverflow::Wrap;
+
+        for &size in sizes_to_try {
             let (glyphs, unsupported, non_space) = glyphs_for(&clusters, size, ambiguous_width);
             let supported = non_space.saturating_sub(unsupported);
             if non_space > 0 && supported.saturating_mul(2) < non_space {
                 continue;
             }
-            if let Some(layout) =
-                try_layout(&units, &glyphs, size, unsupported, max_width, max_height)
-            {
+            if let Some(layout) = try_layout(
+                &units,
+                &glyphs,
+                size,
+                unsupported,
+                max_width,
+                max_height,
+                allow_split,
+            ) {
                 return layout;
             }
         }
@@ -102,6 +146,24 @@ pub fn layout_text(
     ambiguous_width: u8,
 ) -> BlockLayout {
     BlockLayout::new(text, max_width, max_height, ambiguous_width)
+}
+
+pub fn layout_text_with_options(
+    text: &str,
+    max_width: u16,
+    max_height: u16,
+    ambiguous_width: u8,
+    max_size: BigTextMaxSize,
+    overflow: BigTextOverflow,
+) -> BlockLayout {
+    BlockLayout::new_with_options(
+        text,
+        max_width,
+        max_height,
+        ambiguous_width,
+        max_size,
+        overflow,
+    )
 }
 
 #[derive(Debug, Clone)]
@@ -247,14 +309,17 @@ fn try_layout(
     unsupported: usize,
     max_width: u16,
     max_height: u16,
+    allow_split: bool,
 ) -> Option<BlockLayout> {
-    for unit in units.iter().filter(|unit| !unit.is_space) {
-        if unit_width(unit, glyphs) > max_width {
-            return None;
+    if !allow_split {
+        for unit in units.iter().filter(|unit| !unit.is_space) {
+            if unit_width(unit, glyphs) > max_width {
+                return None;
+            }
         }
     }
 
-    let (lines, overflow) = wrap_units(units, glyphs, false, max_width);
+    let (lines, overflow) = wrap_units(units, glyphs, allow_split, max_width);
     if overflow {
         return None;
     }
@@ -479,6 +544,29 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn big_text_max_size_and_overflow_modes_are_enforced() {
+        let compact_only = layout_text_with_options(
+            "Hi",
+            80,
+            24,
+            1,
+            BigTextMaxSize::Compact,
+            BigTextOverflow::Shrink,
+        );
+        assert_eq!(compact_only.font_size, BlockFontSize::Compact);
+
+        let fallback_plain = layout_text_with_options(
+            "Hello World",
+            20,
+            4,
+            1,
+            BigTextMaxSize::Block,
+            BigTextOverflow::FallbackNormal,
+        );
+        assert_eq!(fallback_plain.font_size, BlockFontSize::Plain);
     }
 
     #[test]

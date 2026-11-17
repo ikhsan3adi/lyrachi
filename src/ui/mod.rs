@@ -18,6 +18,7 @@ use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
+use crate::style::{HighlightMode, InstrumentalStyle, ResolvedStyle};
 
 const BANNER_DURATION: Duration = Duration::from_secs(3);
 pub const RIBBON_AUTO_HIDE_DURATION: Duration = Duration::from_secs(3);
@@ -91,6 +92,7 @@ pub struct UiState {
     pub offline: bool,
     pub config_warning: Option<String>,
     pub show_header: bool,
+    pub header_override: Option<bool>,
     pub show_status: bool,
     pub ribbon_mode: RibbonMode,
     pub ribbon_visible_until: Option<Instant>,
@@ -99,6 +101,7 @@ pub struct UiState {
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub style: ResolvedStyle,
     pub modal: Option<UiModal>,
     pub pinned_source_label: Option<String>,
     pub pinned_style: Option<String>,
@@ -131,6 +134,7 @@ impl UiState {
             offline: false,
             config_warning: None,
             show_header: true,
+            header_override: None,
             show_status: true,
             ribbon_mode: RibbonMode::default(),
             ribbon_visible_until: None,
@@ -139,6 +143,7 @@ impl UiState {
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
+            style: ResolvedStyle::default(),
             modal: None,
             pinned_source_label: None,
             pinned_style: None,
@@ -351,6 +356,7 @@ impl UiState {
         if width != self.viewport_width {
             self.viewport_width = width;
             self.timeline_context.viewport_width = width;
+            self.timeline_context.max_width = self.style.resolved_max_width(width);
             self.recompile();
         }
         self.viewport_height = height;
@@ -402,6 +408,41 @@ impl UiState {
         self.word_highlight = !self.word_highlight;
     }
 
+    /// Return whether word-level highlight is active under `[ui].word_highlight` and `[highlight].mode`.
+    pub fn effective_word_highlight(&self) -> bool {
+        self.word_highlight && self.style.highlight_mode == HighlightMode::Word
+    }
+
+    /// Return effective header visibility respecting `fullscreen`, `[ui].show_header`, and `[header].show`.
+    pub fn effective_show_header(&self) -> bool {
+        if !self.show_header {
+            return false;
+        }
+        self.header_override.unwrap_or(self.style.header_show)
+    }
+
+    /// Apply a newly resolved style profile and recompile timeline wrapping when layout inputs change.
+    pub fn set_resolved_style(&mut self, style: ResolvedStyle) {
+        self.timeline_context.viewport_width = self.viewport_width;
+        self.timeline_context.padding_horizontal = style.padding[1];
+        self.timeline_context.max_width = style.resolved_max_width(self.viewport_width);
+        self.timeline_context.min_gap_ms = style.instrumental_min_gap_ms;
+        self.style = style;
+        self.recompile_if_context_changed();
+        self.clamp_scroll();
+    }
+
+    /// Explicitly pin `[ui].show_header` override from config or interactive toggle.
+    pub fn set_header_override(&mut self, override_val: Option<bool>) {
+        self.header_override = override_val;
+        self.clamp_scroll();
+    }
+
+    /// True if instrumental countdown should animate/display for current style.
+    pub fn instrumental_countdown_enabled(&self) -> bool {
+        self.style.instrumental_style != InstrumentalStyle::Hidden
+    }
+
     pub fn timeline_context(&self) -> &TimelineContext {
         &self.timeline_context
     }
@@ -433,7 +474,9 @@ impl UiState {
     }
 
     pub fn toggle_header(&mut self) {
-        self.show_header = !self.show_header;
+        let next = !self.effective_show_header();
+        self.show_header = next;
+        self.header_override = Some(next);
         self.fullscreen_restore = None;
         self.clamp_scroll();
     }
@@ -673,7 +716,7 @@ impl UiState {
     }
 
     fn body_rows(&self) -> usize {
-        let header_rows = u16::from(self.show_header);
+        let header_rows = u16::from(self.effective_show_header());
         let ribbon_rows = u16::from(self.ribbon_placement().is_some());
         let footer_rows = u16::from(self.footer_visible());
         usize::from(

@@ -22,6 +22,11 @@ use crate::{
     providers::{
         CandidateSummary, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery,
     },
+    style::{
+        DEFAULT_STYLE_NAME,
+        color::{ColorCapability, detect_process_color_capability},
+        loader::load_style_name_or_default,
+    },
     ui::{
         CandidateMenuItem, ContextMenuAction, ContextMenuView, UiModal, UiState,
         block::BlockStageCache, render,
@@ -59,15 +64,37 @@ impl AnimationStatus {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct AppRuntime {
     pub animation: AnimationStatus,
     pub block_cache: BlockStageCache,
+    pub base_style_name: String,
+    pub styles_dir: Option<PathBuf>,
+    pub color_capability: ColorCapability,
+    pub bg_blend_hint: Option<(u8, u8, u8)>,
     menu_cancel: Option<CancellationToken>,
     menu_request_id: u64,
     preference_revision: u64,
     candidates: Vec<CandidateSummary>,
     candidate_track_key: Option<CanonicalTrackKey>,
+}
+
+impl Default for AppRuntime {
+    fn default() -> Self {
+        Self {
+            animation: AnimationStatus::default(),
+            block_cache: BlockStageCache::default(),
+            base_style_name: DEFAULT_STYLE_NAME.to_string(),
+            styles_dir: None,
+            color_capability: ColorCapability::TrueColor,
+            bg_blend_hint: None,
+            menu_cancel: None,
+            menu_request_id: 0,
+            preference_revision: 0,
+            candidates: Vec::new(),
+            candidate_track_key: None,
+        }
+    }
 }
 
 impl AppRuntime {
@@ -172,6 +199,7 @@ pub async fn run(
     state.offline = !config.network;
     state.config_warning = warnings.first().cloned();
     state.configure_layout(config.fullscreen, config.show_header, config.show_status);
+    state.set_header_override(config.show_header_override);
     state.configure_ribbon(config.ribbon);
     state.set_ambiguous_width(config.ambiguous_width);
     state.set_terminal_unicode(config.unicode.is_full());
@@ -179,7 +207,17 @@ pub async fn run(
     state.word_highlight = config.word_highlight;
     refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
-    let mut runtime = AppRuntime::default();
+    let mut runtime = AppRuntime {
+        base_style_name: config.style.clone(),
+        styles_dir: config_file.parent().map(|dir| dir.join("styles")),
+        color_capability: detect_process_color_capability(config.color_mode),
+        bg_blend_hint: config.bg_blend_hint,
+        ..AppRuntime::default()
+    };
+    if let Ok(size) = terminal.size() {
+        state.resize(size.width, size.height);
+    }
+    apply_active_style(&mut state, &runtime);
     let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
@@ -227,6 +265,12 @@ pub async fn run(
                         break;
                     };
                     let event = event?;
+                    if let Event::Resize(width, height) = event
+                        && width != state.viewport_width
+                    {
+                        state.resize(width, height);
+                        apply_active_style(&mut state, &runtime);
+                    }
                     let outcome = handle_input_with_runtime(
                         &mut state,
                         Some(&mut runtime),
@@ -798,6 +842,29 @@ pub fn handle_track_preference_loaded(
     state.pinned_source_label = pinned_source_label;
     state.pinned_style = pinned_style;
     state.sync_menu_preferences();
+    apply_active_style(state, runtime);
+}
+
+fn apply_active_style(state: &mut UiState, runtime: &AppRuntime) {
+    let desired = state
+        .pinned_style
+        .as_deref()
+        .unwrap_or(runtime.base_style_name.as_str());
+    let outcome =
+        load_style_name_or_default(desired, runtime.styles_dir.as_deref(), state.viewport_width);
+    for warning in &outcome.warnings {
+        warn!("{warning}");
+    }
+    if state.config_warning.is_none()
+        && let Some(first) = outcome.warnings.first()
+    {
+        state.config_warning = Some(first.clone());
+    }
+    let resolved =
+        outcome
+            .profile
+            .resolve(desired, runtime.color_capability, runtime.bg_blend_hint);
+    state.set_resolved_style(resolved);
 }
 
 pub fn handle_search_candidates(
@@ -1227,6 +1294,9 @@ fn handle_menu_select(
             };
             state.pinned_style = next_style.clone();
             state.sync_menu_preferences();
+            if let Some(rt) = runtime.as_deref() {
+                apply_active_style(state, rt);
+            }
             if next_style.is_some() {
                 state.show_banner("Pinned style: builtin:default", now);
             } else {
@@ -1432,7 +1502,7 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
     if state.is_modal_open() || !matches!(clock.state(), ClockState::Playing { .. }) {
         return false;
     }
-    if state.is_unsynced() || state.is_instrumental() {
+    if state.is_unsynced() || state.is_instrumental() || !state.instrumental_countdown_enabled() {
         return false;
     }
     let Some(timeline) = state.timeline() else {

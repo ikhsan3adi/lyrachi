@@ -7,6 +7,10 @@ use serde::Deserialize;
 use crate::app::resolve::L1_CACHE_CAPACITY;
 use crate::cli::Args;
 use crate::providers::Provider;
+use crate::style::{
+    DEFAULT_STYLE_NAME,
+    color::{ColorMode, parse_rgb_hint},
+};
 use crate::ui::DisplayMode;
 
 const MIN_OFFSET_MS: i64 = -30_000;
@@ -26,10 +30,14 @@ pub struct RuntimeConfig {
     pub l1_entries: usize,
     pub fullscreen: bool,
     pub show_header: bool,
+    pub show_header_override: Option<bool>,
     pub show_status: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
     pub ribbon: RibbonMode,
+    pub style: String,
+    pub color_mode: ColorMode,
+    pub bg_blend_hint: Option<(u8, u8, u8)>,
     pub ambiguous_width: u8,
     pub unicode: TerminalUnicode,
 }
@@ -46,10 +54,14 @@ impl Default for RuntimeConfig {
             l1_entries: L1_CACHE_CAPACITY,
             fullscreen: false,
             show_header: true,
+            show_header_override: None,
             show_status: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
             ribbon: RibbonMode::default(),
+            style: DEFAULT_STYLE_NAME.to_string(),
+            color_mode: ColorMode::Auto,
+            bg_blend_hint: None,
             ambiguous_width: 1,
             unicode: TerminalUnicode::Full,
         }
@@ -151,6 +163,7 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     }
     if let Some(show_header) = file.ui.show_header {
         config.show_header = show_header;
+        config.show_header_override = Some(show_header);
     }
     if let Some(show_status) = file.ui.show_status {
         config.show_status = show_status;
@@ -168,6 +181,24 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     }
     if let Some(ribbon) = file.ui.ribbon {
         config.ribbon = ribbon;
+    }
+    if let Some(style) = file.ui.style {
+        if let Some(style) = non_empty(style) {
+            config.style = style;
+        } else {
+            warnings.push(format!(
+                "config: ui.style cannot be empty; using {DEFAULT_STYLE_NAME}"
+            ));
+        }
+    }
+    if let Some(color_mode) = file.terminal.color_mode {
+        config.color_mode = color_mode;
+    }
+    if let Some(hint) = file.terminal.bg_blend_hint {
+        match parse_rgb_hint(&hint) {
+            Ok(rgb) => config.bg_blend_hint = Some(rgb),
+            Err(error) => warnings.push(format!("config: terminal.bg_blend_hint invalid: {error}")),
+        }
     }
     if let Some(ambiguous_width) = file.terminal.ambiguous_width {
         config.ambiguous_width =
@@ -312,6 +343,7 @@ pub struct UiSection {
     pub display_mode: Option<String>,
     pub word_highlight: Option<bool>,
     pub ribbon: Option<RibbonMode>,
+    pub style: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -340,6 +372,8 @@ impl RibbonMode {
 pub struct TerminalSection {
     pub ambiguous_width: Option<u8>,
     pub unicode: Option<TerminalUnicode>,
+    pub color_mode: Option<ColorMode>,
+    pub bg_blend_hint: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -644,6 +678,43 @@ l1_entries = 8
         assert_eq!(outcome.config.ribbon, RibbonMode::Auto);
         assert!(!outcome.warnings.is_empty());
         assert!(outcome.warnings[0].contains("unknown variant"));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_ui_style_and_terminal_color_settings() {
+        let path = temp_file(
+            "style-terminal",
+            "[ui]\nstyle = \"builtin:aurora\"\nshow_header = false\n[terminal]\ncolor_mode = \"256\"\nbg_blend_hint = \"#1a1b26\"\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(outcome.config.style, "builtin:aurora");
+        assert_eq!(outcome.config.show_header_override, Some(false));
+        assert_eq!(outcome.config.color_mode, ColorMode::Ansi256);
+        assert_eq!(outcome.config.bg_blend_hint, Some((0x1a, 0x1b, 0x26)));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn warns_on_invalid_bg_blend_hint() {
+        let path = temp_file(
+            "blend-invalid",
+            "[terminal]\ncolor_mode = \"16\"\nbg_blend_hint = \"reset\"\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.color_mode, ColorMode::Ansi16);
+        assert_eq!(outcome.config.bg_blend_hint, None);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("bg_blend_hint"))
+        );
+
         fs::remove_file(path).unwrap();
     }
 }
