@@ -423,3 +423,74 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
         p99_us: durations_us[(samples * 99).div_ceil(100).saturating_sub(1)],
     }
 }
+
+#[test]
+fn dod_13_synthetic_word_timing_satisfies_utf8_monotonicity_and_leaves_track_intact() {
+    let fixture = include_str!("fixtures/multilingual_cjk_emoji.lrc");
+    let parsed = parse_lrc(fixture, Some(60_000)).unwrap();
+    let track = normalize_track(parsed, "local", None, 1.0, Some(60_000), 0);
+    assert_eq!(
+        track.granularity,
+        lyrachi::core::model::SyncGranularity::Line
+    );
+    let original_track = track.clone();
+
+    let mut context = TimelineContext::new(80);
+    context.synthetic_word_timing = true;
+    let compiled = CompiledTimeline::compile(&track, context);
+    assert!(compiled.has_synthetic_words);
+
+    assert_eq!(track, original_track, "original track must not be mutated");
+
+    for (line_idx, line) in compiled.lines.iter().enumerate() {
+        let source_line = &track.lines[line_idx];
+        assert!(source_line.words.is_empty());
+        assert!(
+            !line.words.is_empty(),
+            "line {line_idx} should have synthetic words"
+        );
+
+        let mut prev_byte = 0;
+        let mut prev_end = line.start_ms;
+        for word in &line.words {
+            let (bs, be) = word.byte_range;
+            assert!(bs >= prev_byte);
+            assert!(bs < be);
+            assert!(be <= source_line.text.len());
+            assert!(source_line.text.is_char_boundary(bs));
+            assert!(source_line.text.is_char_boundary(be));
+            assert!(word.start_ms >= line.start_ms);
+            assert!(word.start_ms >= prev_end);
+            assert!(word.start_ms <= word.end_ms);
+            assert!(word.end_ms <= line.end_ms);
+
+            prev_byte = be;
+            prev_end = word.end_ms;
+        }
+
+        assert_eq!(line.words.first().unwrap().start_ms, line.start_ms);
+        assert_eq!(line.words.last().unwrap().end_ms, line.end_ms);
+    }
+
+    let mut state = UiState::new();
+    state.set_lyrics(track);
+    assert_eq!(state.track_status_label(), Some("line"));
+
+    let mut profile = lyrachi::style::StyleProfile::default();
+    profile.meta.synthetic_word_timing = true;
+    let resolved = profile.resolve(
+        "synth",
+        lyrachi::style::color::ColorCapability::TrueColor,
+        None,
+    );
+    state.set_resolved_style(resolved);
+    assert_eq!(state.track_status_label(), Some("line (est. word)"));
+
+    let default_resolved = lyrachi::style::StyleProfile::default().resolve(
+        "default",
+        lyrachi::style::color::ColorCapability::TrueColor,
+        None,
+    );
+    state.set_resolved_style(default_resolved);
+    assert_eq!(state.track_status_label(), Some("line"));
+}

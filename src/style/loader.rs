@@ -852,6 +852,33 @@ duration_ms = 400
     }
 
     #[test]
+    fn style_loads_synthetic_word_timing_from_meta_section() {
+        let dir = temp_styles_dir("meta-synth");
+        fs::write(
+            dir.join("synth.toml"),
+            r#"
+[meta]
+name = "synth-demo"
+synthetic_word_timing = true
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("synth", Some(&dir), 80).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert!(outcome.profile.meta.synthetic_word_timing);
+
+        let resolved = outcome.profile.resolve(
+            "synth",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        );
+        assert!(resolved.synthetic_word_timing);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn all_builtin_presets_load_without_warnings() {
         for name in super::super::BUILTIN_PRESETS {
             let outcome = load_style(name, None, 80).unwrap();

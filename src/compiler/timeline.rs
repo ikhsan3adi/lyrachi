@@ -892,7 +892,7 @@ mod tests {
     proptest::proptest! {
         #[test]
         fn synthetic_word_timing_invariants_hold_for_arbitrary_text(
-            text in "([a-zA-Z0-9 ,.!?\\u{3042}-\\u{3093}\\u{4e00}-\\u{4e20}\\u{ac00}-\\u{ac10}\\u{0301}\\u{2728}]){0,64}",
+            text in "([a-zA-Z0-9 ,.!?\"'()\\[\\]\\u{3000}-\\u{303F}\\u{3042}-\\u{3093}\\u{4e00}-\\u{4e20}\\u{ac00}-\\u{ac10}\\u{0301}\\u{2728}]){0,64}",
             start_ms in 0u64..100_000,
             duration_ms in 0u64..60_000,
         ) {
@@ -915,6 +915,10 @@ mod tests {
                 proptest::prop_assert!(token.end_ms <= end_ms);
                 prev_byte_end = be;
                 prev_ms_end = token.end_ms;
+            }
+            if !tokens.is_empty() {
+                proptest::prop_assert_eq!(tokens.first().unwrap().start_ms, start_ms);
+                proptest::prop_assert_eq!(tokens.last().unwrap().end_ms, end_ms);
             }
         }
     }
