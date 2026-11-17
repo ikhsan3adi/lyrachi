@@ -38,6 +38,7 @@ pub fn available_style_names(styles_dir: Option<&Path>) -> Vec<String> {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|ext| ext.to_str()) == Some("toml")
+                && path.is_file()
                 && let Some(stem) = path.file_stem().and_then(|s| s.to_str())
                 && !stem.starts_with('.')
                 && !custom.contains(&stem.to_string())

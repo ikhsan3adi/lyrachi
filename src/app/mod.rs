@@ -235,48 +235,14 @@ pub async fn run(
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
     let (app_tx, mut app_rx) = mpsc::channel(64);
-    let (style_notify_tx, mut style_notify_rx) = mpsc::channel::<()>(16);
-    let watcher_res = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
-        if res.is_ok() {
-            let _ = style_notify_tx.try_send(());
-        }
-    });
-    let (watcher, watcher_task) = match (watcher_res, &runtime.styles_dir) {
-        (Ok(mut watcher), Some(dir)) => {
-            let _ = std::fs::create_dir_all(dir);
-            use notify::Watcher;
-            match watcher.watch(dir, notify::RecursiveMode::NonRecursive) {
-                Ok(()) => {
-                    let debounce_app_tx = app_tx.clone();
-                    let task = tokio::spawn(async move {
-                        while style_notify_rx.recv().await.is_some() {
-                            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-                            while style_notify_rx.try_recv().is_ok() {}
-                            let _ = debounce_app_tx.send(AppEvent::StyleReloadRequested).await;
-                        }
-                    });
-                    (Some(watcher), Some(task))
-                }
-                Err(error) => {
-                    warn!(%error, "styles file watcher failed to watch directory");
-                    state.show_banner(
-                        format!("styles watcher unavailable: {error}"),
-                        Instant::now(),
-                    );
-                    (None, None)
-                }
+    let (watcher, watcher_task) =
+        match spawn_style_watcher(runtime.styles_dir.as_deref(), app_tx.clone()) {
+            Ok(pair) => pair,
+            Err(message) => {
+                state.show_banner(message, Instant::now());
+                (None, None)
             }
-        }
-        (Err(error), _) => {
-            warn!(%error, "failed to initialize styles file watcher");
-            state.show_banner(
-                format!("styles watcher unavailable: {error}"),
-                Instant::now(),
-            );
-            (None, None)
-        }
-        _ => (None, None),
-    };
+        };
     runtime._watcher = watcher;
     let cancel = CancellationToken::new();
     let player_filter = config.player_filter.clone();
@@ -987,6 +953,58 @@ pub fn reload_active_style(state: &mut UiState, runtime: &mut AppRuntime, now: I
             state.show_banner(format!("style reload failed: {error}"), now);
         }
     }
+}
+
+type StyleWatcherPair = (
+    Option<notify::RecommendedWatcher>,
+    Option<tokio::task::JoinHandle<()>>,
+);
+
+fn spawn_style_watcher(
+    styles_dir: Option<&Path>,
+    app_tx: mpsc::Sender<AppEvent>,
+) -> Result<StyleWatcherPair, String> {
+    let Some(dir) = styles_dir else {
+        return Ok((None, None));
+    };
+
+    let (style_notify_tx, mut style_notify_rx) = mpsc::channel::<()>(16);
+    let mut watcher =
+        notify::recommended_watcher(move |res: notify::Result<notify::Event>| match res {
+            Ok(_) => {
+                let _ = style_notify_tx.try_send(());
+            }
+            Err(error) => {
+                warn!(%error, "styles file watcher error");
+            }
+        })
+        .map_err(|error| {
+            warn!(%error, "failed to initialize styles file watcher");
+            format!("styles watcher unavailable: {error}")
+        })?;
+
+    if let Err(error) = std::fs::create_dir_all(dir) {
+        warn!(%error, "failed to create styles directory");
+        return Err(format!("styles watcher unavailable: {error}"));
+    }
+
+    use notify::Watcher;
+    watcher
+        .watch(dir, notify::RecursiveMode::NonRecursive)
+        .map_err(|error| {
+            warn!(%error, "styles file watcher failed to watch directory");
+            format!("styles watcher unavailable: {error}")
+        })?;
+
+    let task = tokio::spawn(async move {
+        while style_notify_rx.recv().await.is_some() {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            while style_notify_rx.try_recv().is_ok() {}
+            let _ = app_tx.send(AppEvent::StyleReloadRequested).await;
+        }
+    });
+
+    Ok((Some(watcher), Some(task)))
 }
 
 pub fn handle_search_candidates(
@@ -3457,6 +3475,71 @@ prefix = ">> "
         assert!(saved.contains("style = \"builtin:dark\""), "{saved}");
         assert!(state.transient_banner.is_some());
 
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[tokio::test]
+    async fn notify_watcher_debounces_atomic_rename_and_triggers_style_reload() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("lyrachi-notify-{}-{unique}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let style_file = dir.join("live.toml");
+        std::fs::write(
+            &style_file,
+            r#"
+schema_version = 1
+[lines.active]
+prefix = "> "
+"#,
+        )
+        .unwrap();
+
+        let (app_tx, mut app_rx) = mpsc::channel(16);
+        let (watcher, watcher_task) = spawn_style_watcher(Some(&dir), app_tx).unwrap();
+        assert!(watcher.is_some());
+
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime {
+            base_style_name: "live".to_string(),
+            styles_dir: Some(dir.clone()),
+            _watcher: watcher,
+            ..AppRuntime::default()
+        };
+        apply_active_style(&mut state, &runtime);
+        assert_eq!(state.style.active_prefix, "> ");
+
+        // Perform an atomic rename in the watched directory.
+        let temp_file = dir.join(".live.toml.tmp");
+        std::fs::write(
+            &temp_file,
+            r#"
+schema_version = 1
+[lines.active]
+prefix = "=> "
+"#,
+        )
+        .unwrap();
+        std::fs::rename(&temp_file, &style_file).unwrap();
+
+        let event = tokio::time::timeout(Duration::from_secs(3), app_rx.recv())
+            .await
+            .expect("timed out waiting for notify event")
+            .expect("watcher channel closed");
+        assert!(matches!(event, AppEvent::StyleReloadRequested));
+
+        let mut coordinator = ResolveCoordinator::new();
+        handle_app_event(event, &mut state, &mut runtime, &mut coordinator, None);
+        assert_eq!(state.style.active_prefix, "=> ");
+
+        if let Some(task) = watcher_task {
+            task.abort();
+        }
         let _ = std::fs::remove_dir_all(dir);
     }
 }
