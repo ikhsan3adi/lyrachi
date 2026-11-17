@@ -226,12 +226,16 @@ impl Worker {
             match serde_json::from_slice::<SyncedTrack>(payload) {
                 Ok(mut track) if track.parser_version == PARSER_VERSION => {
                     track.user_offset_ms = 0;
-                    let provider = pref.preferred_provider.unwrap_or(Provider::Lrclib);
+                    let provider = pref
+                        .provider()
+                        .or_else(|| Provider::from_config_name(&track.source_provider))
+                        .unwrap_or(Provider::Lrclib);
                     let tier = Tier::from_track(&track);
+                    let confidence = finite_confidence(track.match_confidence);
                     let answer = ProviderAnswer {
                         provider,
                         tier,
-                        confidence: 1.0,
+                        confidence,
                         track,
                     };
                     return Ok(CacheLookup {
@@ -251,7 +255,7 @@ impl Worker {
             }
         }
 
-        let preferred_provider = preference.as_ref().and_then(|p| p.preferred_provider);
+        let preferred_provider = preference.as_ref().and_then(TrackPreference::provider);
         let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
         let best = {
             let mut statement = self.connection.prepare(
@@ -528,19 +532,7 @@ impl Worker {
             "DELETE FROM negative_cache WHERE expires_at <= ?1",
             params![now],
         )?;
-        transaction.execute(
-            "DELETE FROM track_preferences WHERE updated_at < ?1",
-            params![pref_cutoff],
-        )?;
-        transaction.execute(
-            "DELETE FROM track_preferences
-             WHERE track_key NOT IN (
-                 SELECT track_key FROM track_preferences
-                 ORDER BY updated_at DESC
-                 LIMIT ?1
-             )",
-            params![CACHE_PREFERENCES_MAX_ENTRIES as i64],
-        )?;
+        prune_preferences_in_tx(&transaction, pref_cutoff, CACHE_PREFERENCES_MAX_ENTRIES)?;
         transaction.execute(
             "INSERT INTO meta (key, value) VALUES ('last_prune', ?1)
              ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -561,20 +553,12 @@ impl Worker {
         )?;
         let row = statement
             .query_row(params![track_key.as_slice()], |row| {
-                let provider_name: Option<String> = row.get(0)?;
-                let preferred_provider = provider_name
-                    .as_deref()
-                    .and_then(Provider::from_config_name);
-                let preferred_track_id: Option<String> = row.get(1)?;
-                let pinned_payload_json: Option<Vec<u8>> = row.get(2)?;
-                let preferred_style: Option<String> = row.get(3)?;
-                let updated_at: i64 = row.get(4)?;
                 Ok(TrackPreference {
-                    preferred_provider,
-                    preferred_track_id,
-                    pinned_payload_json,
-                    preferred_style,
-                    updated_at,
+                    preferred_provider: row.get(0)?,
+                    preferred_track_id: row.get(1)?,
+                    pinned_payload_json: row.get(2)?,
+                    preferred_style: row.get(3)?,
+                    updated_at: row.get(4)?,
                 })
             })
             .optional()?;
@@ -586,7 +570,6 @@ impl Worker {
         track_key: &TrackKey,
         preference: &TrackPreference,
     ) -> Result<(), CacheError> {
-        let provider_str = preference.preferred_provider.map(|p| p.as_str());
         self.connection.execute(
             "INSERT INTO track_preferences (
                 track_key, preferred_provider, preferred_track_id,
@@ -600,7 +583,7 @@ impl Worker {
                 updated_at = excluded.updated_at",
             params![
                 track_key.as_slice(),
-                provider_str,
+                preference.preferred_provider.as_deref(),
                 preference.preferred_track_id.as_deref(),
                 preference.pinned_payload_json.as_deref(),
                 preference.preferred_style.as_deref(),
@@ -611,19 +594,22 @@ impl Worker {
     }
 
     fn clear_pinned_lyrics(&mut self, track_key: &TrackKey, now: i64) -> Result<(), CacheError> {
-        if let Some(mut pref) = self.get_track_preference(track_key)? {
-            pref.pinned_payload_json = None;
-            pref.preferred_track_id = None;
-            pref.updated_at = now;
-            if pref.preferred_provider.is_none() && pref.preferred_style.is_none() {
-                self.connection.execute(
-                    "DELETE FROM track_preferences WHERE track_key = ?1",
-                    params![track_key.as_slice()],
-                )?;
-            } else {
-                self.set_track_preference(track_key, &pref)?;
-            }
-        }
+        let tx = self.connection.transaction()?;
+        tx.execute(
+            "UPDATE track_preferences
+             SET preferred_provider = NULL,
+                 preferred_track_id = NULL,
+                 pinned_payload_json = NULL,
+                 updated_at = ?1
+             WHERE track_key = ?2",
+            params![now, track_key.as_slice()],
+        )?;
+        tx.execute(
+            "DELETE FROM track_preferences
+             WHERE track_key = ?1 AND preferred_style IS NULL",
+            params![track_key.as_slice()],
+        )?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -670,6 +656,27 @@ fn is_better(candidate: &ProviderAnswer, current: Option<&ProviderAnswer>) -> bo
             Ordering::Equal => candidate.provider.as_str() < current.provider.as_str(),
         },
     }
+}
+
+fn prune_preferences_in_tx(
+    transaction: &rusqlite::Transaction<'_>,
+    pref_cutoff: i64,
+    max_entries: usize,
+) -> Result<(), CacheError> {
+    transaction.execute(
+        "DELETE FROM track_preferences WHERE updated_at < ?1",
+        params![pref_cutoff],
+    )?;
+    transaction.execute(
+        "DELETE FROM track_preferences
+         WHERE rowid NOT IN (
+             SELECT rowid FROM track_preferences
+             ORDER BY updated_at DESC, rowid DESC
+             LIMIT ?1
+         )",
+        params![i64::try_from(max_entries).unwrap_or(i64::MAX)],
+    )?;
+    Ok(())
 }
 
 fn finite_confidence(confidence: f32) -> f32 {
@@ -1226,7 +1233,7 @@ mod tests {
         let old_key = sample_key("old", "artist");
         let old_track_key = crate::providers::sanitize::blake3_track_key(&old_key);
         let old_pref = TrackPreference {
-            preferred_provider: Some(Provider::Lrclib),
+            preferred_provider: Some("lrclib".to_string()),
             preferred_track_id: None,
             pinned_payload_json: None,
             preferred_style: None,
@@ -1239,7 +1246,7 @@ mod tests {
         let fresh_key = sample_key("fresh", "artist");
         let fresh_track_key = crate::providers::sanitize::blake3_track_key(&fresh_key);
         let fresh_pref = TrackPreference {
-            preferred_provider: Some(Provider::LyricsPlus),
+            preferred_provider: Some("lyricsplus".to_string()),
             preferred_track_id: None,
             pinned_payload_json: None,
             preferred_style: None,
@@ -1264,6 +1271,143 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn pinned_lyrics_survive_90_day_prune_while_lyric_entries_are_pruned() {
+        let path = temp_path("prune-90-day-pin");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let key = sample_key("pinned", "artist");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let answer = sample_answer(Provider::Lrclib, "Pinned Track", SyncGranularity::Line);
+
+        // Insert lyric_entries at `now - 100 days` (should be pruned)
+        insert_row(
+            &path,
+            &track_key,
+            Provider::Lrclib,
+            i64::from(PARSER_VERSION),
+            now - CACHE_MAX_ENTRY_AGE_SECS - 10,
+            &answer.track,
+        );
+
+        // Insert pinned track_preferences at `now - 100 days` (< 180 days, MUST survive!)
+        let mut pref = TrackPreference::with_pinned_track(
+            Provider::Lrclib,
+            Some("id-1".to_string()),
+            &answer.track,
+            None,
+        )
+        .unwrap();
+        pref.updated_at = now - CACHE_MAX_ENTRY_AGE_SECS - 10;
+        worker.set_track_preference(&track_key, &pref).unwrap();
+
+        write_last_prune(&path, now - CACHE_PRUNE_INTERVAL_SECS - 1);
+        worker.prune_if_due(now).unwrap();
+
+        assert_eq!(
+            count_rows(&path, "lyric_entries", &track_key, Provider::Lrclib),
+            0,
+            "90-day old lyric_entries should be pruned"
+        );
+
+        let lookup = worker.lookup(&track_key, now).unwrap();
+        assert!(
+            lookup.is_pinned,
+            "100-day old pin must survive 90-day prune"
+        );
+        assert!(lookup.answer.is_some());
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn prune_caps_preferences_at_max_entries_limit() {
+        let path = temp_path("prune-cap-preferences");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        for idx in 0..5 {
+            let key = sample_key(&format!("artist-{idx}"), "song");
+            let track_key = crate::providers::sanitize::blake3_track_key(&key);
+            let pref = TrackPreference {
+                preferred_provider: Some("lrclib".to_string()),
+                preferred_track_id: None,
+                pinned_payload_json: None,
+                preferred_style: None,
+                updated_at: now + idx,
+            };
+            worker.set_track_preference(&track_key, &pref).unwrap();
+        }
+
+        let tx = worker.connection.transaction().unwrap();
+        prune_preferences_in_tx(&tx, now - 10, 3).unwrap();
+        tx.commit().unwrap();
+
+        let remaining: i64 = worker
+            .connection
+            .query_row("SELECT COUNT(*) FROM track_preferences", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(remaining, 3);
+
+        // Oldest two (idx 0 and 1) must be gone; newest three (2, 3, 4) kept
+        for idx in 0..5 {
+            let key = sample_key(&format!("artist-{idx}"), "song");
+            let track_key = crate::providers::sanitize::blake3_track_key(&key);
+            let exists = worker.get_track_preference(&track_key).unwrap().is_some();
+            assert_eq!(exists, idx >= 2, "unexpected presence for idx {idx}");
+        }
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
+    fn preference_preserves_unavailable_provider_string_without_losing_pinned_payload() {
+        let path = temp_path("preserve-unavailable-provider");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let key = sample_key("artist", "ytmusic-track");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let mut track = sample_answer(
+            Provider::LyricsPlus,
+            "YTMusic Lyrics",
+            SyncGranularity::Line,
+        )
+        .track;
+        track.source_provider = "ytmusic".to_string();
+        let payload = serde_json::to_vec(&track).unwrap();
+
+        let pref = TrackPreference {
+            preferred_provider: Some("ytmusic_future_or_disabled".to_string()),
+            preferred_track_id: Some("yt-1".to_string()),
+            pinned_payload_json: Some(payload),
+            preferred_style: None,
+            updated_at: now,
+        };
+        worker.set_track_preference(&track_key, &pref).unwrap();
+
+        let stored = worker.get_track_preference(&track_key).unwrap().unwrap();
+        assert_eq!(
+            stored.preferred_provider.as_deref(),
+            Some("ytmusic_future_or_disabled")
+        );
+
+        let lookup = worker.lookup(&track_key, now).unwrap();
+        assert!(lookup.is_pinned);
+        assert!(lookup.answer.is_some());
 
         drop(worker);
         let _ = std::fs::remove_file(path);

@@ -246,21 +246,25 @@ impl ResolveCoordinator {
         })
     }
 
-    pub fn apply_manual_candidate(&mut self, answer: ProviderAnswer) -> u64 {
+    pub fn apply_manual_candidate(
+        &mut self,
+        expected_key: &CanonicalTrackKey,
+        mut answer: ProviderAnswer,
+    ) -> Option<(u64, ProviderAnswer)> {
+        if self.active_key.as_ref() != Some(expected_key) {
+            return None;
+        }
         if let Some(token) = self.active_token.take() {
             token.cancel();
         }
         self.epoch = self.epoch.wrapping_add(1);
         let epoch = self.epoch;
 
-        if let Some(key) = self.active_key.clone() {
-            let user_offset_ms = self.user_offsets.get(&key).copied().unwrap_or(0);
-            let mut final_answer = answer;
-            final_answer.track.user_offset_ms = user_offset_ms;
-            self.cache.insert(key, final_answer);
-        }
+        let user_offset_ms = self.user_offsets.get(expected_key).copied().unwrap_or(0);
+        answer.track.user_offset_ms = user_offset_ms;
+        self.cache.insert(expected_key.clone(), answer.clone());
 
-        epoch
+        Some((epoch, answer))
     }
 
     pub fn complete_epoch(
@@ -765,18 +769,34 @@ mod cache_tests {
             other => panic!("expected fetch plan, got {other:?}"),
         };
         assert!(!token.is_cancelled());
-        coordinator.seed_user_offset(coordinator.active_key().unwrap().clone(), 200);
+        let active_key = coordinator.active_key().cloned().unwrap();
+        coordinator.seed_user_offset(active_key.clone(), 200);
+
+        // Stale track key must be rejected cleanly
+        let wrong_key = CanonicalTrackKey {
+            norm_artist: "other".to_string(),
+            norm_title: "song".to_string(),
+            norm_album: None,
+            duration_bucket_sec: Some(120),
+        };
+        assert!(
+            coordinator
+                .apply_manual_candidate(&wrong_key, answer("wrong"))
+                .is_none()
+        );
 
         let mut manual_answer = answer("manual-pick");
         manual_answer.provider = Provider::LyricsPlus;
-        let new_epoch = coordinator.apply_manual_candidate(manual_answer);
+        let (new_epoch, applied) = coordinator
+            .apply_manual_candidate(&active_key, manual_answer)
+            .expect("matching key must apply");
         assert_eq!(new_epoch, epoch_1 + 1);
+        assert_eq!(applied.track.user_offset_ms, 200);
         assert!(token.is_cancelled(), "previous token must be cancelled");
 
         let stale_result = coordinator.complete_epoch(epoch_1, Some(answer("old")), true);
         assert!(stale_result.is_none(), "stale epoch must return None");
 
-        let active_key = coordinator.active_key().cloned().unwrap();
         let cached = coordinator
             .cache_mut()
             .get(&active_key)

@@ -16,7 +16,7 @@ use super::lyricsplus::LyricsPlusProvider;
 #[cfg(feature = "ytmusic")]
 use super::ytmusic::YtMusicProvider;
 use super::{Provider, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery};
-use crate::cache::CacheHandle;
+use crate::cache::{CacheHandle, CacheLookup, TrackPreference};
 
 pub const SYNC_GRACE: Duration = Duration::from_secs(2);
 pub const LOOKUP_TIMEOUT: Duration = Duration::from_secs(12);
@@ -442,8 +442,33 @@ async fn resolve_with_specs(
                 }
             }
         }
-        _ => Default::default(),
+        Some(cache) => {
+            let pref_lookup = cache.get_track_preference(&query.canonical);
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
+                result = pref_lookup => match result {
+                    Ok(preference) => CacheLookup {
+                        preference,
+                        ..Default::default()
+                    },
+                    Err(error) => {
+                        warn!(%error, "failed to read track preference");
+                        Default::default()
+                    }
+                }
+            }
+        }
+        None => Default::default(),
     };
+
+    if let Some(cached) = &lookup.answer
+        && lookup.is_pinned
+    {
+        emit(updates, Ok(Some(cached.clone())), true);
+        return Ok(());
+    }
+
     let now = Instant::now();
     let mut available: Vec<NetworkSpec> = specs
         .into_iter()
@@ -451,17 +476,47 @@ async fn resolve_with_specs(
         .filter(|spec| breakers.is_none_or(|b| b.can_attempt(spec.provider, now)))
         .collect();
 
+    let mut pref_error = None;
     if let Some(preferred) = lookup
         .preference
         .as_ref()
-        .and_then(|p| p.preferred_provider)
-        && available.iter().any(|spec| spec.provider == preferred)
+        .and_then(TrackPreference::provider)
     {
-        available.sort_by_key(|spec| if spec.provider == preferred { 0 } else { 1 });
+        if let Some(pref_idx) = available.iter().position(|spec| spec.provider == preferred) {
+            if let Some(cached) = &lookup.answer
+                && cached.provider == preferred
+            {
+                emit(updates, Ok(Some(cached.clone())), true);
+                return Ok(());
+            }
+
+            let pref_spec = available.remove(pref_idx);
+            if let Some(cached) = &lookup.answer {
+                emit(updates, Ok(Some(cached.clone())), false);
+            }
+            let pref_outcome =
+                race_network(vec![pref_spec], query, cancel, updates, None, breakers).await?;
+            record_negatives(cache, &query.canonical, &pref_outcome.negative_providers).await;
+            if let Some(answer) = pref_outcome.answer {
+                store_answer(cache, query, &answer).await;
+                emit(updates, Ok(Some(answer)), true);
+                return Ok(());
+            }
+            pref_error = pref_outcome.error;
+            debug!(
+                provider = preferred.as_str(),
+                "preferred provider yielded no lyrics; falling back to remaining providers"
+            );
+        } else {
+            debug!(
+                provider = preferred.as_str(),
+                "preferred provider unavailable; falling back to available providers"
+            );
+        }
     }
 
     if let Some(cached) = lookup.answer {
-        if lookup.is_pinned || !lookup.needs_upgrade || available.is_empty() {
+        if !lookup.needs_upgrade || available.is_empty() {
             emit(updates, Ok(Some(cached)), true);
             return Ok(());
         }
@@ -500,7 +555,11 @@ async fn resolve_with_specs(
     }
 
     if available.is_empty() {
-        emit(updates, Ok(None), true);
+        let result = match pref_error {
+            Some(error) => Err(error),
+            None => Ok(None),
+        };
+        emit(updates, result, true);
         return Ok(());
     }
 
@@ -1657,6 +1716,133 @@ mod tests {
             Some("pinned-candidate")
         );
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
+    }
+
+    #[tokio::test]
+    async fn preferred_provider_without_payload_wins_over_higher_tier_provider() {
+        let root = temp_path("preferred-provider-wins");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let cache = CacheHandle::open(&db).unwrap();
+        let query = query();
+
+        let pref = TrackPreference::with_preferred_provider(Provider::Lrclib);
+        cache
+            .set_track_preference(&query.canonical, pref)
+            .await
+            .unwrap();
+
+        let lp_calls = Arc::new(AtomicUsize::new(0));
+        let specs = vec![
+            spec_for(
+                Provider::LyricsPlus,
+                0,
+                5,
+                Some(Tier::Syllable),
+                "lp-syllable",
+                Some(lp_calls.clone()),
+                false,
+            ),
+            spec_for(
+                Provider::Lrclib,
+                1,
+                10,
+                Some(Tier::Line),
+                "lrclib-line",
+                None,
+                false,
+            ),
+        ];
+
+        let cancel = CancellationToken::new();
+        let (updates, mut receiver) = mpsc::unbounded_channel();
+        let result =
+            resolve_with_specs(specs, Some(&cache), None, &query, &cancel, &updates, false).await;
+
+        assert!(result.is_ok());
+        drop(updates);
+        let mut messages = Vec::new();
+        while let Some(update) = receiver.recv().await {
+            messages.push(update);
+        }
+
+        assert_eq!(messages.len(), 1);
+        assert!(messages[0].is_final);
+        let final_ans = messages[0].result.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(final_ans.provider, Provider::Lrclib);
+        assert_eq!(
+            final_ans.track.source_track_id.as_deref(),
+            Some("lrclib-line")
+        );
+        assert_eq!(
+            lp_calls.load(Ordering::SeqCst),
+            0,
+            "higher-tier non-preferred provider should not be queried when preferred succeeds"
+        );
+
+        cache.shutdown().await.unwrap();
+        cleanup(&root);
+    }
+
+    #[tokio::test]
+    async fn preferred_provider_without_payload_falls_back_when_unavailable() {
+        let root = temp_path("preferred-fallback");
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("cache.db");
+        let cache = CacheHandle::open(&db).unwrap();
+        let query = query();
+
+        // Preferred provider Lrclib fails or is disabled in specs
+        let pref = TrackPreference::with_preferred_provider(Provider::Lrclib);
+        cache
+            .set_track_preference(&query.canonical, pref)
+            .await
+            .unwrap();
+
+        let specs = vec![
+            spec_for(
+                Provider::Lrclib,
+                0,
+                5,
+                None,
+                "lrclib-fail",
+                None,
+                true, // fails!
+            ),
+            spec_for(
+                Provider::LyricsPlus,
+                1,
+                10,
+                Some(Tier::Word),
+                "lp-fallback",
+                None,
+                false,
+            ),
+        ];
+
+        let cancel = CancellationToken::new();
+        let (updates, mut receiver) = mpsc::unbounded_channel();
+        let result =
+            resolve_with_specs(specs, Some(&cache), None, &query, &cancel, &updates, false).await;
+
+        assert!(result.is_ok());
+        drop(updates);
+        let mut messages = Vec::new();
+        while let Some(update) = receiver.recv().await {
+            messages.push(update);
+        }
+
+        let final_msg = messages.last().unwrap();
+        assert!(final_msg.is_final);
+        let final_ans = final_msg.result.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(final_ans.provider, Provider::LyricsPlus);
+        assert_eq!(
+            final_ans.track.source_track_id.as_deref(),
+            Some("lp-fallback")
+        );
 
         cache.shutdown().await.unwrap();
         cleanup(&root);

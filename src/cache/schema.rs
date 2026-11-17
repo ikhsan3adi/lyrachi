@@ -11,10 +11,26 @@ pub const SCHEMA_VERSION: &str = "2";
 
 const BUSY_TIMEOUT: Duration = Duration::from_millis(2_500);
 
-const SETUP_SQL_V2: &str = r#"
+const PRAGMA_SQL: &str = r#"
 PRAGMA journal_mode = WAL;
 PRAGMA synchronous = NORMAL;
+"#;
 
+const PREFERENCES_SQL: &str = r#"
+CREATE TABLE IF NOT EXISTS track_preferences (
+    track_key BLOB PRIMARY KEY,
+    preferred_provider TEXT,
+    preferred_track_id TEXT,
+    pinned_payload_json BLOB,
+    preferred_style TEXT,
+    updated_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_track_preferences_updated_at
+    ON track_preferences (updated_at);
+"#;
+
+const TABLES_SQL_V2: &str = r#"
 CREATE TABLE IF NOT EXISTS meta (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -94,11 +110,7 @@ fn initialize(path: &Path) -> Result<Connection, CacheError> {
         .unwrap_or(false);
 
     if !has_meta {
-        connection.execute_batch(SETUP_SQL_V2)?;
-        connection.execute(
-            "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
-            [SCHEMA_VERSION],
-        )?;
+        init_fresh_v2(&mut connection)?;
         return Ok(connection);
     }
 
@@ -112,43 +124,41 @@ fn initialize(path: &Path) -> Result<Connection, CacheError> {
 
     match version.as_deref() {
         None => {
-            connection.execute_batch(SETUP_SQL_V2)?;
-            connection.execute(
-                "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
-                [SCHEMA_VERSION],
-            )?;
+            init_fresh_v2(&mut connection)?;
             Ok(connection)
         }
         Some("1") => {
             migrate_v1_to_v2(&mut connection)?;
+            connection.execute_batch(PRAGMA_SQL)?;
             Ok(connection)
         }
         Some(SCHEMA_VERSION) => {
-            connection.execute_batch(SETUP_SQL_V2)?;
+            connection.execute_batch(PRAGMA_SQL)?;
+            connection.execute_batch(TABLES_SQL_V2)?;
             Ok(connection)
         }
         Some(other) => Err(CacheError::UnsupportedSchemaVersion(other.to_string())),
     }
 }
 
+fn init_fresh_v2(connection: &mut Connection) -> Result<(), CacheError> {
+    connection.execute_batch(PRAGMA_SQL)?;
+    let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+    tx.execute_batch(TABLES_SQL_V2)?;
+    tx.execute(
+        "INSERT OR IGNORE INTO meta (key, value) VALUES ('schema_version', ?1)",
+        [SCHEMA_VERSION],
+    )?;
+    tx.commit()?;
+    Ok(())
+}
+
 fn migrate_v1_to_v2(connection: &mut Connection) -> Result<(), CacheError> {
     let tx = connection.transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
-    tx.execute_batch(
-        r#"
-        CREATE TABLE IF NOT EXISTS track_preferences (
-            track_key BLOB PRIMARY KEY,
-            preferred_provider TEXT,
-            preferred_track_id TEXT,
-            pinned_payload_json BLOB,
-            preferred_style TEXT,
-            updated_at INTEGER NOT NULL
-        );
-
-        CREATE INDEX IF NOT EXISTS idx_track_preferences_updated_at
-            ON track_preferences (updated_at);
-
-        UPDATE meta SET value = '2' WHERE key = 'schema_version';
-        "#,
+    tx.execute_batch(PREFERENCES_SQL)?;
+    tx.execute(
+        "UPDATE meta SET value = '2' WHERE key = 'schema_version'",
+        [],
     )?;
     tx.commit()?;
     Ok(())
@@ -366,6 +376,78 @@ mod tests {
             path.exists(),
             "database file must NOT be deleted or moved when version is unsupported"
         );
+        let _ = fs::remove_file(&path);
+    }
+
+    #[test]
+    fn failed_migration_rolls_back_cleanly_without_losing_v1_data() {
+        let path = temp_db("rollback-v1");
+        {
+            let conn = Connection::open(&path).expect("open raw sqlite");
+            conn.execute_batch(
+                r#"
+                CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+
+                CREATE TABLE lyric_entries (
+                    track_key BLOB NOT NULL,
+                    provider TEXT NOT NULL,
+                    label TEXT NOT NULL,
+                    granularity TEXT NOT NULL,
+                    parser_version INTEGER NOT NULL,
+                    confidence REAL NOT NULL,
+                    payload_json BLOB NOT NULL,
+                    fetched_at INTEGER NOT NULL,
+                    last_accessed_at INTEGER NOT NULL,
+                    upgrade_after INTEGER,
+                    PRIMARY KEY (track_key, provider)
+                );
+
+                INSERT INTO lyric_entries VALUES (
+                    X'0102030405060708090A0B0C0D0E0F101112131415161718191A1B1C1D1E1F20',
+                    'lrclib', 'Preserved Track', 'line', 1, 0.9, X'7B7D', 1000, 1000, NULL
+                );
+
+                CREATE TRIGGER abort_meta_update
+                BEFORE UPDATE ON meta
+                BEGIN
+                    SELECT RAISE(ABORT, 'simulated migration failure');
+                END;
+                "#,
+            )
+            .expect("setup v1 database with abort trigger");
+        }
+
+        let err = open(&path).expect_err("migration must fail due to trigger");
+        assert!(matches!(err, CacheError::Database(_)));
+        assert!(path.exists(), "failed migration must not delete DB file");
+
+        let conn = Connection::open(&path).expect("reopen failed db");
+        let version: String = conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("version should remain 1");
+        assert_eq!(version, "1");
+
+        let has_pref: Option<bool> = conn
+            .query_row(
+                "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'track_preferences'",
+                [],
+                |_| Ok(true),
+            )
+            .optional()
+            .expect("query sqlite_master");
+        assert_eq!(has_pref, None, "track_preferences creation must roll back");
+
+        let entry_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM lyric_entries", [], |row| row.get(0))
+            .expect("count preserved entries");
+        assert_eq!(entry_count, 1);
+
+        drop(conn);
         let _ = fs::remove_file(&path);
     }
 }

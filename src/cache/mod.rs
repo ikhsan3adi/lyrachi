@@ -37,7 +37,7 @@ pub enum CacheError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackPreference {
-    pub preferred_provider: Option<Provider>,
+    pub preferred_provider: Option<String>,
     pub preferred_track_id: Option<String>,
     pub pinned_payload_json: Option<Vec<u8>>,
     pub preferred_style: Option<String>,
@@ -61,6 +61,13 @@ impl TrackPreference {
         Self::default()
     }
 
+    pub fn with_preferred_provider(provider: Provider) -> Self {
+        Self {
+            preferred_provider: Some(provider.as_str().to_string()),
+            ..Self::default()
+        }
+    }
+
     pub fn with_pinned_track(
         provider: Provider,
         track_id: Option<String>,
@@ -71,12 +78,18 @@ impl TrackPreference {
         clean_track.user_offset_ms = 0;
         let payload = serde_json::to_vec(&clean_track)?;
         Ok(Self {
-            preferred_provider: Some(provider),
+            preferred_provider: Some(provider.as_str().to_string()),
             preferred_track_id: track_id,
             pinned_payload_json: Some(payload),
             preferred_style: style,
             updated_at: now_secs(),
         })
+    }
+
+    pub fn provider(&self) -> Option<Provider> {
+        self.preferred_provider
+            .as_deref()
+            .and_then(Provider::from_config_name)
     }
 
     pub fn pinned_track(&self) -> Option<SyncedTrack> {
@@ -590,6 +603,13 @@ mod tests {
         let lookup_cleared = handle.lookup(&key).await.unwrap();
         assert!(!lookup_cleared.is_pinned);
         assert!(lookup_cleared.answer.is_none());
+        let cleared_pref = lookup_cleared
+            .preference
+            .expect("style preference should be preserved after clearing pin");
+        assert!(cleared_pref.preferred_provider.is_none());
+        assert!(cleared_pref.preferred_track_id.is_none());
+        assert!(cleared_pref.pinned_payload_json.is_none());
+        assert_eq!(cleared_pref.preferred_style.as_deref(), Some("tokyo-night"));
 
         handle.shutdown().await.unwrap();
         cleanup(&path);
