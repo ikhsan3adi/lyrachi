@@ -425,7 +425,7 @@ fn apply_plan_with_pin(
             bypass_cache,
         } => {
             state.user_offset_ms = user_offset_ms;
-            if let Some(cache) = resolution.cache {
+            if !clear_pinned && let Some(cache) = resolution.cache {
                 spawn_load_track_preference(cache, app_tx, request_epoch, query.canonical.clone());
             }
             start_fetch(
@@ -481,6 +481,15 @@ fn start_fetch(
     bypass_cache: bool,
     clear_pinned: bool,
 ) {
+    if clear_pinned && let Some(cache) = resolution.cache.cloned() {
+        let key = query.canonical.clone();
+        tokio::spawn(async move {
+            if let Err(error) = cache.clear_pinned_lyrics(&key).await {
+                warn!(%error, "failed to clear pinned lyrics before refetch");
+            }
+        });
+    }
+
     let Some(resolver) = resolution.resolver else {
         state.refetching = false;
         state.set_error("Lyrics providers unavailable.".to_string());
@@ -490,12 +499,6 @@ fn start_fetch(
     let cache = resolution.cache.cloned();
     let app_tx = app_tx.clone();
     tokio::spawn(async move {
-        if clear_pinned
-            && let Some(cache) = cache.as_ref()
-            && let Err(error) = cache.clear_pinned_lyrics(&query.canonical).await
-        {
-            warn!(%error, "failed to clear pinned lyrics before refetch");
-        }
         if bypass_cache
             && let Some(cache) = cache.as_ref()
             && let Err(error) = cache.invalidate_track(&query.canonical).await
@@ -756,8 +759,11 @@ pub fn handle_search_candidates(
                     tier_label: cand.tier.as_str(),
                     score_pct: confidence_percent(cand.confidence),
                     is_active: active_provider.as_deref() == Some(cand.provider.as_str())
-                        && active_track_id.is_some()
-                        && active_track_id == cand.source_track_id.as_deref(),
+                        && match (active_track_id, cand.source_track_id.as_deref()) {
+                            (Some(a), Some(b)) => a == b,
+                            (None, None) => true,
+                            _ => false,
+                        },
                 })
                 .collect();
             runtime.candidates = candidates;
@@ -2373,6 +2379,37 @@ mod tests {
         };
         assert_eq!(search.artist, text);
 
+        // Up switches back to Artist, Down switches to Title, Tab switches
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Down, KeyModifiers::NONE),
+        );
+        let search = match &state.context_menu().unwrap().view {
+            ContextMenuView::SearchInput(search) => search,
+            other => panic!("expected SearchInput, got {other:?}"),
+        };
+        assert_eq!(search.active_field, crate::ui::SearchField::Title);
+
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            key_event(KeyCode::Up, KeyModifiers::NONE),
+        );
+        let search = match &state.context_menu().unwrap().view {
+            ContextMenuView::SearchInput(search) => search,
+            other => panic!("expected SearchInput, got {other:?}"),
+        };
+        assert_eq!(search.active_field, crate::ui::SearchField::Artist);
+
         // Tab switches to Title field, Backspace edits Title, Enter submits StartSearch
         handle_input_with_runtime(
             &mut state,
@@ -2680,5 +2717,191 @@ mod tests {
             reset_out.menu,
             Some(MenuCommand::ClearPinAndRefetch(_))
         ));
+    }
+
+    #[test]
+    fn lyricsplus_candidate_marked_active_when_source_track_id_is_none() {
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime::default();
+        let mut coordinator = ResolveCoordinator::new();
+        let meta = TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: None,
+            duration_ms: Some(267_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let key = match coordinator.prepare_track(&meta) {
+            TrackPlan::Fetch { query, .. } => query.canonical,
+            other => panic!("expected Fetch plan, got {other:?}"),
+        };
+
+        let mut lp_track = track();
+        lp_track.source_provider = "lyricsplus".to_string();
+        lp_track.source_track_id = None;
+        state.set_lyrics(lp_track);
+
+        let summary = CandidateSummary {
+            provider: crate::providers::Provider::LyricsPlus,
+            source_track_id: None,
+            title: "Yellow".to_string(),
+            artist: Some("Coldplay".to_string()),
+            album: None,
+            duration_ms: Some(267_000),
+            tier: Tier::Word,
+            confidence: 0.99,
+            local_path: None,
+            browse_hint: None,
+            query_duration_ms: Some(267_000),
+            query_user_offset_ms: 0,
+            hydrated: None,
+        };
+
+        state.open_candidate_loading("Coldplay - Yellow".to_string());
+        let (req_id, _token) = runtime.next_menu_token();
+        handle_search_candidates(
+            &mut state,
+            &mut runtime,
+            &coordinator,
+            req_id,
+            key,
+            Ok(vec![summary]),
+        );
+
+        let menu = state.context_menu().expect("context menu open");
+        match &menu.view {
+            ContextMenuView::Candidates { items, .. } => {
+                assert_eq!(items.len(), 1);
+                assert!(
+                    items[0].is_active,
+                    "LyricsPlus candidate with None track ID should be marked is_active: true"
+                );
+            }
+            other => panic!("expected Candidates view, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn reset_preferred_source_clears_pinned_preference_in_l2_cache() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let db_path = std::env::temp_dir().join(format!(
+            "lyrachi-m32-reset-{}-{stamp}.db",
+            std::process::id()
+        ));
+        let cache = CacheHandle::open(&db_path).unwrap();
+
+        let mut state = UiState::new();
+        let mut runtime = AppRuntime::default();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let (app_tx, mut app_rx) = mpsc::channel(16);
+        let now = Instant::now();
+        let meta = TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: None,
+            duration_ms: Some(267_000),
+            track_id: None,
+            url: None,
+        };
+        state.set_track(meta.clone());
+        let key = match coordinator.prepare_track(&meta) {
+            TrackPlan::Fetch { query, .. } => query.canonical,
+            other => panic!("expected Fetch plan, got {other:?}"),
+        };
+
+        let answer = ProviderAnswer::new(crate::providers::Provider::Lrclib, track());
+        let pref = TrackPreference::with_pinned_track(
+            crate::providers::Provider::Lrclib,
+            Some("123".to_string()),
+            &answer.track,
+            Some("builtin:dark".to_string()),
+        )
+        .unwrap();
+        cache.set_track_preference(&key, pref).await.unwrap();
+        state.pinned_source_label = Some("lrclib".to_string());
+        state.pinned_style = Some("builtin:dark".to_string());
+
+        let press = |code: crossterm::event::KeyCode| {
+            Event::Key(crossterm::event::KeyEvent {
+                code,
+                modifiers: crossterm::event::KeyModifiers::NONE,
+                kind: crossterm::event::KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            press(crossterm::event::KeyCode::Char('c')),
+        );
+        for _ in 0..2 {
+            handle_input_with_runtime(
+                &mut state,
+                Some(&mut runtime),
+                &mut coordinator,
+                &mut offsets,
+                None,
+                now,
+                press(crossterm::event::KeyCode::Down),
+            );
+        }
+        let outcome = handle_input_with_runtime(
+            &mut state,
+            Some(&mut runtime),
+            &mut coordinator,
+            &mut offsets,
+            None,
+            now,
+            press(crossterm::event::KeyCode::Enter),
+        );
+        assert_eq!(state.pinned_source_label, None);
+        assert_eq!(state.pinned_style.as_deref(), Some("builtin:dark"));
+
+        let command = outcome.menu.expect("expected menu command");
+        apply_menu_command(
+            command,
+            &mut state,
+            &mut runtime,
+            &app_tx,
+            Resolution {
+                resolver: None,
+                cache: Some(&cache),
+            },
+        );
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        let stored = cache.get_track_preference(&key).await.unwrap();
+        let stored_pref = stored.expect("preference row with preserved style must exist");
+        assert_eq!(stored_pref.pinned_payload_json, None);
+        assert_eq!(stored_pref.preferred_provider, None);
+        assert_eq!(stored_pref.preferred_style.as_deref(), Some("builtin:dark"));
+
+        while let Ok(event) = app_rx.try_recv() {
+            handle_app_event(
+                event,
+                &mut state,
+                &mut runtime,
+                &mut coordinator,
+                Some(&cache),
+            );
+        }
+        assert_eq!(state.pinned_source_label, None);
+
+        cache.shutdown().await.unwrap();
+        let _ = std::fs::remove_file(&db_path);
+        let _ = std::fs::remove_file(format!("{}-wal", db_path.display()));
+        let _ = std::fs::remove_file(format!("{}-shm", db_path.display()));
     }
 }

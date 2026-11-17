@@ -133,6 +133,20 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Up,
+        action: KeyAction::SearchSwitchField,
+        key_label: "Up",
+        description: "Switch search field",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Down,
+        action: KeyAction::SearchSwitchField,
+        key_label: "Down",
+        description: "Switch search field",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
         trigger: KeyTrigger::Backspace,
         action: KeyAction::SearchBackspace,
         key_label: "Backspace",
@@ -505,6 +519,27 @@ mod tests {
         assert_eq!(
             search_input_char(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
             None
+        );
+        assert_eq!(
+            resolve_key(
+                KeyScope::SearchInput,
+                KeyEvent::new(KeyCode::Up, KeyModifiers::NONE)
+            ),
+            Some(KeyAction::SearchSwitchField)
+        );
+        assert_eq!(
+            resolve_key(
+                KeyScope::SearchInput,
+                KeyEvent::new(KeyCode::Down, KeyModifiers::NONE)
+            ),
+            Some(KeyAction::SearchSwitchField)
+        );
+        assert_eq!(
+            resolve_key(
+                KeyScope::SearchInput,
+                KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE)
+            ),
+            Some(KeyAction::SearchSwitchField)
         );
     }
 }

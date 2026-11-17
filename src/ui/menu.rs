@@ -129,11 +129,15 @@ impl ContextMenuState {
                 }
             }
             ContextMenuView::Candidates {
-                items, selected, ..
+                items,
+                selected,
+                hydrating,
+                ..
             } => {
-                if items.is_empty() {
-                    *selected = 0;
-                } else if *selected == 0 {
+                if *hydrating || items.is_empty() {
+                    return;
+                }
+                if *selected == 0 {
                     *selected = items.len() - 1;
                 } else {
                     *selected -= 1;
@@ -149,13 +153,15 @@ impl ContextMenuState {
                 *selected = (*selected + 1) % ContextMenuAction::ALL.len();
             }
             ContextMenuView::Candidates {
-                items, selected, ..
+                items,
+                selected,
+                hydrating,
+                ..
             } => {
-                if items.is_empty() {
-                    *selected = 0;
-                } else {
-                    *selected = (*selected + 1) % items.len();
+                if *hydrating || items.is_empty() {
+                    return;
                 }
+                *selected = (*selected + 1) % items.len();
             }
             ContextMenuView::SearchInput(_) => {}
         }
@@ -334,10 +340,15 @@ fn render_candidates(
     available_height: u16,
 ) {
     let width = MAX_MODAL_WIDTH.min(available_width);
+    let extra_rows: u16 = if hydrating || status_message.is_some() {
+        1
+    } else {
+        0
+    };
     let desired_rows = if loading || items.is_empty() {
         7
     } else {
-        items.len().min(10) + 5
+        items.len().min(10) + 5 + usize::from(extra_rows)
     };
     let height = u16::try_from(desired_rows)
         .unwrap_or(u16::MAX)
@@ -367,19 +378,13 @@ fn render_candidates(
             Style::default().fg(Color::Yellow),
         )));
     } else {
-        let body_slots = usize::from(popup.height.saturating_sub(5)).max(1);
-        let start = if selected >= body_slots {
-            selected + 1 - body_slots
+        let available_slots = usize::from(popup.height.saturating_sub(5 + extra_rows)).max(1);
+        let start = if selected >= available_slots {
+            selected + 1 - available_slots
         } else {
             0
         };
-        let end = (start + body_slots).min(items.len());
-        if start > 0 {
-            lines.push(Line::from(Span::styled(
-                "... earlier candidates ...",
-                Style::default().add_modifier(Modifier::DIM),
-            )));
-        }
+        let end = (start + available_slots).min(items.len());
         for (idx, item) in items.iter().enumerate().take(end).skip(start) {
             let is_selected = idx == selected;
             let prefix = if is_selected { "> " } else { "  " };
@@ -410,18 +415,30 @@ fn render_candidates(
         }
     }
 
+    let is_scrolling = items.len() > usize::from(popup.height.saturating_sub(5 + extra_rows));
+    let title = if is_scrolling {
+        format!(" Select Candidate ({}/{}) ", selected + 1, items.len())
+    } else {
+        " Select Candidate ".to_string()
+    };
+    let bottom_hint = if is_scrolling {
+        " [Arrows] move  Enter pin  Esc close "
+    } else {
+        " Up/Down move  Enter pin  Esc close "
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(Color::Cyan))
         .padding(Padding::symmetric(1, 1))
         .title(Line::from(Span::styled(
-            " Select Candidate ",
+            title,
             Style::default().add_modifier(Modifier::BOLD),
         )))
         .title_bottom(
             Line::from(Span::styled(
-                " Up/Down move  Enter pin  Esc close ",
+                bottom_hint,
                 Style::default().add_modifier(Modifier::DIM),
             ))
             .alignment(Alignment::Right),
@@ -568,4 +585,183 @@ fn tail_chars(text: &str, max_chars: usize) -> String {
         return text.to_string();
     }
     text.chars().skip(count - max_chars).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn format_candidate_line_and_duration() {
+        let item = CandidateMenuItem {
+            provider_label: "lyricsplus".to_string(),
+            title: "Yellow".to_string(),
+            artist: Some("Coldplay".to_string()),
+            album: None,
+            duration_ms: Some(267_000),
+            tier_label: "word",
+            score_pct: 98,
+            is_active: true,
+        };
+        assert_eq!(
+            format_candidate_line(&item),
+            "[lyricsplus] Yellow - Coldplay (04:27, word, 98%) *"
+        );
+
+        let item_no_artist = CandidateMenuItem {
+            provider_label: "local".to_string(),
+            title: "Instrumental Track".to_string(),
+            artist: None,
+            album: None,
+            duration_ms: None,
+            tier_label: "line",
+            score_pct: 75,
+            is_active: false,
+        };
+        assert_eq!(
+            format_candidate_line(&item_no_artist),
+            "[local] Instrumental Track (line, 75%)"
+        );
+    }
+
+    #[test]
+    fn search_input_state_mutations() {
+        let mut search = SearchInputState {
+            artist: "Cold".to_string(),
+            title: "Yel".to_string(),
+            active_field: SearchField::Artist,
+        };
+        search.push_char('p');
+        assert_eq!(search.artist, "Coldp");
+        search.pop_char();
+        assert_eq!(search.artist, "Cold");
+
+        search.switch_field();
+        assert_eq!(search.active_field, SearchField::Title);
+        search.push_char('l');
+        assert_eq!(search.title, "Yell");
+    }
+
+    #[test]
+    fn menu_navigation_wraps_and_respects_hydrating() {
+        let mut menu = ContextMenuState::actions("Artist - Title".to_string(), None, None);
+        assert_eq!(
+            menu.selected_action(),
+            Some(ContextMenuAction::SelectCandidate)
+        );
+        menu.move_up();
+        assert_eq!(
+            menu.selected_action(),
+            Some(ContextMenuAction::TogglePinStyle)
+        );
+        menu.move_down();
+        assert_eq!(
+            menu.selected_action(),
+            Some(ContextMenuAction::SelectCandidate)
+        );
+
+        menu.view = ContextMenuView::Candidates {
+            query_label: "Query".to_string(),
+            items: vec![
+                CandidateMenuItem {
+                    provider_label: "lrclib".to_string(),
+                    title: "Song 1".to_string(),
+                    artist: None,
+                    album: None,
+                    duration_ms: None,
+                    tier_label: "word",
+                    score_pct: 90,
+                    is_active: false,
+                },
+                CandidateMenuItem {
+                    provider_label: "lrclib".to_string(),
+                    title: "Song 2".to_string(),
+                    artist: None,
+                    album: None,
+                    duration_ms: None,
+                    tier_label: "word",
+                    score_pct: 85,
+                    is_active: false,
+                },
+            ],
+            selected: 0,
+            loading: false,
+            hydrating: false,
+            status_message: None,
+        };
+        assert_eq!(menu.selected_candidate_index(), Some(0));
+        menu.move_down();
+        assert_eq!(menu.selected_candidate_index(), Some(1));
+        menu.move_down();
+        assert_eq!(menu.selected_candidate_index(), Some(0));
+
+        if let ContextMenuView::Candidates { hydrating, .. } = &mut menu.view {
+            *hydrating = true;
+        }
+        assert_eq!(menu.selected_candidate_index(), None);
+        menu.move_down();
+        if let ContextMenuView::Candidates { selected, .. } = &menu.view {
+            assert_eq!(*selected, 0);
+        }
+    }
+
+    #[test]
+    fn render_skips_tiny_areas_without_panic() {
+        let backend = TestBackend::new(10, 5);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let menu = ContextMenuState::actions("Artist - Title".to_string(), None, None);
+
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &menu);
+            })
+            .unwrap();
+    }
+
+    #[test]
+    fn candidate_scrolling_window_renders_deep_selection() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+
+        let items: Vec<CandidateMenuItem> = (0..20)
+            .map(|i| CandidateMenuItem {
+                provider_label: "lrclib".to_string(),
+                title: format!("Candidate #{i}"),
+                artist: Some("Artist".to_string()),
+                album: None,
+                duration_ms: Some(180_000),
+                tier_label: "word",
+                score_pct: (100 - i) as u8,
+                is_active: i == 15,
+            })
+            .collect();
+
+        let mut menu = ContextMenuState::actions("Artist - Title".to_string(), None, None);
+        menu.view = ContextMenuView::Candidates {
+            query_label: "Artist - Title".to_string(),
+            items,
+            selected: 15,
+            loading: false,
+            hydrating: false,
+            status_message: None,
+        };
+
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &menu);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let text: String = buffer.content().iter().map(|cell| cell.symbol()).collect();
+        assert!(
+            text.contains("Candidate #15"),
+            "expected candidate #15 to be visible in scrolling window, got:\n{text}"
+        );
+        assert!(
+            text.contains("(16/20)"),
+            "expected title to display (16/20) scroll indicator, got:\n{text}"
+        );
+    }
 }
