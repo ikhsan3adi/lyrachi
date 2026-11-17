@@ -1,6 +1,14 @@
 use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
+use crate::core::model::WordToken;
+
+const CJK_CHAR_WEIGHT: f64 = 1.0;
+const ALPHABETIC_WEIGHT_PER_GRAPHEME: f64 = 0.35;
+const MIN_WORD_WEIGHT: f64 = 1.0;
+const COMMA_PAUSE_WEIGHT: f64 = 0.5;
+const PERIOD_PAUSE_WEIGHT: f64 = 0.9;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedText {
     pub text: String,
@@ -260,6 +268,250 @@ pub fn wrap_text_with_ambiguous(
     wrapped
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SyntheticTokenKind {
+    Cjk,
+    General,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SyntheticRawToken {
+    start: usize,
+    end: usize,
+    kind: SyntheticTokenKind,
+    graphemes: usize,
+    pause_weight: f64,
+    ended_with_pause: bool,
+}
+
+impl SyntheticRawToken {
+    fn speak_weight(self) -> f64 {
+        match self.kind {
+            SyntheticTokenKind::Cjk => CJK_CHAR_WEIGHT,
+            SyntheticTokenKind::General => {
+                (self.graphemes as f64 * ALPHABETIC_WEIGHT_PER_GRAPHEME).max(MIN_WORD_WEIGHT)
+            }
+        }
+    }
+}
+
+fn is_cjk_script_char(ch: char) -> bool {
+    is_cjk(ch)
+        && !matches!(
+            ch as u32,
+            0x3000..=0x303F
+                | 0xFF01..=0xFF0F
+                | 0xFF1A..=0xFF20
+                | 0xFF3B..=0xFF40
+                | 0xFF5B..=0xFF65
+        )
+}
+
+fn is_cjk_grapheme(grapheme: &str) -> bool {
+    grapheme.chars().any(is_cjk_script_char)
+}
+
+fn pause_weight_for(grapheme: &str) -> f64 {
+    if matches!(grapheme, "." | "。" | "．" | "!" | "！" | "?" | "？" | "…") {
+        PERIOD_PAUSE_WEIGHT
+    } else if matches!(grapheme, "," | "、" | "，" | ";" | "；" | ":" | "：") {
+        COMMA_PAUSE_WEIGHT
+    } else {
+        0.0
+    }
+}
+
+fn is_trailing_punct(grapheme: &str) -> bool {
+    pause_weight_for(grapheme) > 0.0
+        || matches!(
+            grapheme,
+            ")" | "]"
+                | "}"
+                | ">"
+                | "\""
+                | "”"
+                | "’"
+                | "）"
+                | "］"
+                | "｝"
+                | "＞"
+                | "」"
+                | "』"
+                | "】"
+                | "〉"
+                | "》"
+                | "〕"
+                | "〗"
+                | "〙"
+                | "〛"
+        )
+}
+
+fn is_opening_punct(grapheme: &str) -> bool {
+    grapheme.chars().all(cannot_end_line) || matches!(grapheme, "“" | "‘")
+}
+
+/// Deterministically estimate word timings over `[start_ms, end_ms]` for a line without word tags.
+pub fn estimate_word_timings(line_text: &str, start_ms: u64, end_ms: u64) -> Vec<WordToken> {
+    if line_text.is_empty() || end_ms < start_ms {
+        return Vec::new();
+    }
+
+    let mut raw_tokens: Vec<SyntheticRawToken> = Vec::new();
+    let mut open: Option<SyntheticRawToken> = None;
+    let mut pending_prefix: Option<(usize, usize)> = None;
+
+    for (byte_start, grapheme) in line_text.grapheme_indices(true) {
+        let byte_end = byte_start + grapheme.len();
+
+        if grapheme.chars().all(char::is_whitespace) {
+            if let Some(token) = open.take() {
+                raw_tokens.push(token);
+            }
+            if let Some((ps, pe)) = pending_prefix.take() {
+                raw_tokens.push(SyntheticRawToken {
+                    start: ps,
+                    end: pe,
+                    kind: SyntheticTokenKind::General,
+                    graphemes: 1,
+                    pause_weight: 0.0,
+                    ended_with_pause: false,
+                });
+            }
+            continue;
+        }
+
+        if let Some(current) = open.as_mut()
+            && is_trailing_punct(grapheme)
+        {
+            current.end = byte_end;
+            let pause = pause_weight_for(grapheme);
+            if pause > 0.0 {
+                current.pause_weight = current.pause_weight.max(pause);
+                current.ended_with_pause = true;
+            }
+            continue;
+        }
+
+        if is_opening_punct(grapheme) || (open.is_none() && matches!(grapheme, "\"" | "'")) {
+            if let Some(token) = open.take() {
+                raw_tokens.push(token);
+            }
+            match &mut pending_prefix {
+                Some((_, pe)) => *pe = byte_end,
+                None => pending_prefix = Some((byte_start, byte_end)),
+            }
+            continue;
+        }
+
+        let grapheme_kind = if is_cjk_grapheme(grapheme) {
+            SyntheticTokenKind::Cjk
+        } else {
+            SyntheticTokenKind::General
+        };
+
+        let should_flush = open.is_some_and(|current| {
+            current.ended_with_pause
+                || current.kind == SyntheticTokenKind::Cjk
+                || grapheme_kind == SyntheticTokenKind::Cjk
+        });
+        if should_flush && let Some(token) = open.take() {
+            raw_tokens.push(token);
+        }
+
+        if let Some(current) = open.as_mut() {
+            current.end = byte_end;
+            current.graphemes = current.graphemes.saturating_add(1);
+        } else {
+            let start = pending_prefix.take().map_or(byte_start, |(ps, _)| ps);
+            open = Some(SyntheticRawToken {
+                start,
+                end: byte_end,
+                kind: grapheme_kind,
+                graphemes: 1,
+                pause_weight: 0.0,
+                ended_with_pause: false,
+            });
+        }
+    }
+
+    if let Some(token) = open.take() {
+        raw_tokens.push(token);
+    }
+    if let Some((ps, pe)) = pending_prefix.take() {
+        raw_tokens.push(SyntheticRawToken {
+            start: ps,
+            end: pe,
+            kind: SyntheticTokenKind::General,
+            graphemes: 1,
+            pause_weight: 0.0,
+            ended_with_pause: false,
+        });
+    }
+
+    if raw_tokens.is_empty() {
+        return Vec::new();
+    }
+
+    // Trailing pause at the end of a line keeps the final token active up to `end_ms`.
+    if let Some(last) = raw_tokens.last_mut() {
+        last.pause_weight = 0.0;
+    }
+
+    let total_weight: f64 = raw_tokens
+        .iter()
+        .map(|tok| tok.speak_weight() + tok.pause_weight)
+        .sum();
+    let total_ms = end_ms.saturating_sub(start_ms) as f64;
+
+    let mut result = Vec::with_capacity(raw_tokens.len());
+    let mut cum_weight = 0.0f64;
+    let mut prev_end = start_ms;
+
+    for (idx, token) in raw_tokens.iter().enumerate() {
+        let start_fraction = if total_weight > 0.0 {
+            (cum_weight / total_weight).clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let mut tok_start = start_ms
+            .saturating_add((start_fraction * total_ms).round() as u64)
+            .clamp(prev_end, end_ms);
+        if idx == 0 {
+            tok_start = start_ms;
+        }
+
+        let speak_end_weight = cum_weight + token.speak_weight();
+        let end_fraction = if total_weight > 0.0 {
+            (speak_end_weight / total_weight).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let mut tok_end = if idx + 1 == raw_tokens.len() && token.pause_weight == 0.0 {
+            end_ms
+        } else {
+            start_ms
+                .saturating_add((end_fraction * total_ms).round() as u64)
+                .clamp(tok_start, end_ms)
+        };
+        if tok_end < tok_start {
+            tok_end = tok_start;
+        }
+
+        result.push(WordToken {
+            byte_range: (token.start, token.end),
+            start_ms: tok_start,
+            end_ms: tok_end,
+            display_width: display_width(&line_text[token.start..token.end]),
+        });
+
+        cum_weight = speak_end_weight + token.pause_weight;
+        prev_end = tok_end;
+    }
+
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -349,5 +601,35 @@ mod tests {
             assert!(text.is_char_boundary(end));
             assert_eq!(&text[start..end], segment.text);
         }
+    }
+
+    #[test]
+    fn estimate_word_timings_handles_empty_whitespace_cjk_and_pauses() {
+        assert!(estimate_word_timings("", 0, 1_000).is_empty());
+        assert!(estimate_word_timings("   \t\u{3000} ", 0, 1_000).is_empty());
+        assert!(estimate_word_timings("hello", 2_000, 1_000).is_empty());
+
+        let cjk = estimate_word_timings("夜に駆ける", 1_000, 6_000);
+        assert_eq!(cjk.len(), 5);
+        assert_eq!(cjk[0].start_ms, 1_000);
+        assert_eq!(cjk[4].end_ms, 6_000);
+        for pair in cjk.windows(2) {
+            assert!(pair[0].end_ms <= pair[1].start_ms);
+        }
+
+        let paused = estimate_word_timings("Hello, world", 0, 3_000);
+        assert_eq!(paused.len(), 2);
+        assert_eq!(
+            &"Hello, world"[paused[0].byte_range.0..paused[0].byte_range.1],
+            "Hello,"
+        );
+        assert_eq!(
+            &"Hello, world"[paused[1].byte_range.0..paused[1].byte_range.1],
+            "world"
+        );
+        assert!(
+            paused[0].end_ms < paused[1].start_ms,
+            "comma should create pause before next word: {paused:?}"
+        );
     }
 }

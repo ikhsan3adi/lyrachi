@@ -66,7 +66,10 @@ fn source_label(state: &UiState) -> String {
         LyricsView::NotFound => "not found".to_string(),
         LyricsView::Error(_) => "error".to_string(),
         LyricsView::Loaded { track, .. } => {
-            format!("{} ({})", track.source_provider, track.status_label())
+            let label = state
+                .track_status_label()
+                .unwrap_or_else(|| track.status_label());
+            format!("{} ({label})", track.source_provider)
         }
     }
 }
@@ -75,10 +78,13 @@ fn word_highlight_active(state: &UiState) -> bool {
     state.word_highlight
         && state.lyrics_track().is_some_and(|track| {
             !track.is_instrumental
-                && matches!(
+                && (matches!(
                     track.granularity,
                     SyncGranularity::Word | SyncGranularity::Syllable
-                )
+                ) || (track.granularity == SyncGranularity::Line
+                    && state
+                        .timeline()
+                        .is_some_and(|timeline| timeline.has_synthetic_words)))
         })
 }
 
@@ -159,6 +165,20 @@ mod tests {
         assert_eq!(
             ribbon_line(&state).to_string(),
             "block | default | lrclib (word) | word-hl: off | +150 ms"
+        );
+
+        let mut profile = crate::style::StyleProfile::default();
+        profile.meta.synthetic_word_timing = true;
+        state.set_resolved_style(profile.resolve(
+            "est",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        ));
+        state.toggle_word_highlight();
+        state.set_lyrics(sample_track(SyncGranularity::Line));
+        assert_eq!(
+            ribbon_line(&state).to_string(),
+            "block | est | lrclib (line (est. word)) | word-hl: on | +150 ms"
         );
     }
 

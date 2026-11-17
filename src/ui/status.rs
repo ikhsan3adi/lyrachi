@@ -70,7 +70,7 @@ fn extra_status(state: &UiState) -> Option<String> {
             track.lines.len()
         ))
     } else {
-        Some(track.status_label().to_string())
+        state.track_status_label().map(str::to_string)
     }
 }
 
@@ -163,6 +163,27 @@ mod tests {
         assert_eq!(
             status_line(&state).to_string(),
             "mpv | stopped | not found | +0 ms | - | offline | invalid config: unknown key"
+        );
+    }
+
+    #[test]
+    fn status_line_shows_synthetic_word_timing_label() {
+        let mut state = UiState::new();
+        state.set_player(Some("mpv".to_string()));
+        state.playback = PlaybackStatus::Playing;
+        state.set_lyrics(sample_track(SyncGranularity::Line, false));
+
+        let mut profile = crate::style::StyleProfile::default();
+        profile.meta.synthetic_word_timing = true;
+        state.set_resolved_style(profile.resolve(
+            "est",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        ));
+
+        assert_eq!(
+            status_line(&state).to_string(),
+            "mpv | playing | lrclib | +0 ms | 90% | line (est. word)"
         );
     }
 }

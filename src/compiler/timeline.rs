@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{LineRole, SyncGranularity, SyncedTrack, WordToken};
-use crate::core::text::wrap_text_with_ambiguous;
+use crate::core::text::{estimate_word_timings, wrap_text_with_ambiguous};
 
 pub const HORIZONTAL_PADDING: u16 = 2;
 const MIN_WRAP_WIDTH: u16 = 1;
@@ -121,12 +121,14 @@ pub struct CompiledTimeline {
     pub viewport_width: u16,
     pub context: TimelineContext,
     pub granularity: SyncGranularity,
+    pub has_synthetic_words: bool,
     pub lines: Vec<CompiledLine>,
 }
 
 impl CompiledTimeline {
     pub fn compile(track: &SyncedTrack, context: TimelineContext) -> Self {
         let wrap_width = context.wrap_width();
+        let mut has_synthetic_words = false;
 
         let lines = track
             .lines
@@ -155,6 +157,21 @@ impl CompiledTimeline {
                     .map(|wrapped| wrapped.text)
                     .collect();
 
+                let synthetic_eligible = context.synthetic_word_timing
+                    && track.granularity == SyncGranularity::Line
+                    && !track.is_instrumental
+                    && line.role != LineRole::InstrumentalBreak
+                    && line.words.is_empty();
+                let words = if synthetic_eligible {
+                    let estimated = estimate_word_timings(&line.text, line.start_ms, line.end_ms);
+                    if !estimated.is_empty() {
+                        has_synthetic_words = true;
+                    }
+                    estimated
+                } else {
+                    line.words.clone()
+                };
+
                 CompiledLine {
                     source_line_idx,
                     start_ms: line.start_ms,
@@ -162,7 +179,7 @@ impl CompiledTimeline {
                     role: line.role,
                     wrapped_main,
                     wrapped_annotations,
-                    words: line.words.clone(),
+                    words,
                 }
             })
             .collect();
@@ -171,6 +188,7 @@ impl CompiledTimeline {
             viewport_width: context.viewport_width,
             context,
             granularity: track.granularity,
+            has_synthetic_words,
             lines,
         }
     }
@@ -832,5 +850,72 @@ mod tests {
         assert_eq!(timeline.evaluate(500).waiting, None);
         assert_eq!(timeline.evaluate(3_500).waiting, None);
         assert_eq!(timeline.evaluate(6_000).waiting, None);
+    }
+
+    #[test]
+    fn synthetic_word_timing_applies_only_to_line_sync_without_words() {
+        let mut line_track = track();
+        line_track.granularity = SyncGranularity::Line;
+        line_track.lines[0].words.clear();
+        line_track.lines[0].text = "Hello, world".to_string();
+        line_track.lines[1].words.clear();
+        line_track.lines[1].text = "   ".to_string();
+        let original = line_track.clone();
+
+        let off = CompiledTimeline::compile(&line_track, TimelineContext::new(80));
+        assert!(!off.has_synthetic_words);
+        assert!(off.lines[0].words.is_empty());
+
+        let mut on_ctx = TimelineContext::new(80);
+        on_ctx.synthetic_word_timing = true;
+        let on = CompiledTimeline::compile(&line_track, on_ctx);
+        assert!(on.has_synthetic_words);
+        assert_eq!(on.lines[0].words.len(), 2);
+        assert!(on.lines[1].words.is_empty());
+        assert_eq!(
+            line_track, original,
+            "original SyncedTrack must stay intact"
+        );
+
+        // Word/Syllable/Instrumental tracks never synthesize or overwrite existing words.
+        let word_timeline = CompiledTimeline::compile(&track(), on_ctx);
+        assert!(!word_timeline.has_synthetic_words);
+        assert_eq!(word_timeline.lines[0].words, track().lines[0].words);
+
+        let mut instrumental = line_track.clone();
+        instrumental.is_instrumental = true;
+        let inst_timeline = CompiledTimeline::compile(&instrumental, on_ctx);
+        assert!(!inst_timeline.has_synthetic_words);
+        assert!(inst_timeline.lines[0].words.is_empty());
+    }
+
+    proptest::proptest! {
+        #[test]
+        fn synthetic_word_timing_invariants_hold_for_arbitrary_text(
+            text in "([a-zA-Z0-9 ,.!?\\u{3042}-\\u{3093}\\u{4e00}-\\u{4e20}\\u{ac00}-\\u{ac10}\\u{0301}\\u{2728}]){0,64}",
+            start_ms in 0u64..100_000,
+            duration_ms in 0u64..60_000,
+        ) {
+            let end_ms = start_ms + duration_ms;
+            let tokens = estimate_word_timings(&text, start_ms, end_ms);
+            if text.trim().is_empty() {
+                proptest::prop_assert!(tokens.is_empty());
+            }
+            let mut prev_byte_end = 0usize;
+            let mut prev_ms_end = start_ms;
+            for token in &tokens {
+                let (bs, be) = token.byte_range;
+                proptest::prop_assert!(bs < be && be <= text.len());
+                proptest::prop_assert!(text.is_char_boundary(bs));
+                proptest::prop_assert!(text.is_char_boundary(be));
+                proptest::prop_assert!(bs >= prev_byte_end);
+                proptest::prop_assert!(token.start_ms >= start_ms);
+                proptest::prop_assert!(token.start_ms >= prev_ms_end);
+                proptest::prop_assert!(token.start_ms <= token.end_ms);
+                proptest::prop_assert!(token.end_ms <= end_ms);
+                prev_byte_end = be;
+                prev_ms_end = token.end_ms;
+            }
+        }
     }
 }

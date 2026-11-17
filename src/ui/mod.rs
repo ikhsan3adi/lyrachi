@@ -438,6 +438,7 @@ impl UiState {
         self.timeline_context.viewport_width = self.viewport_width;
         self.timeline_context.padding_horizontal = style.padding[1];
         self.timeline_context.max_width = style.resolved_max_width(self.viewport_width);
+        self.timeline_context.synthetic_word_timing = style.synthetic_word_timing;
         self.timeline_context.min_gap_ms = style.instrumental_min_gap_ms;
         self.style = style;
         self.recompile_if_context_changed();
@@ -695,6 +696,22 @@ impl UiState {
         }
     }
 
+    /// Status label for the loaded track, showing `line (est. word)` when synthetic word timings are active.
+    pub fn track_status_label(&self) -> Option<&'static str> {
+        let track = self.lyrics_track()?;
+        if track.is_instrumental {
+            Some("instrumental")
+        } else if track.granularity == SyncGranularity::Line
+            && self
+                .timeline()
+                .is_some_and(|timeline| timeline.has_synthetic_words)
+        {
+            Some("line (est. word)")
+        } else {
+            Some(track.status_label())
+        }
+    }
+
     pub fn timeline(&self) -> Option<&CompiledTimeline> {
         match &self.lyrics {
             LyricsView::Loaded { timeline, .. } => Some(timeline),
@@ -782,6 +799,7 @@ impl UiState {
 
     fn sync_timeline_context(&mut self) {
         self.timeline_context.viewport_width = self.viewport_width;
+        self.timeline_context.synthetic_word_timing = self.style.synthetic_word_timing;
         self.timeline_context.track_duration_ms =
             self.track.as_ref().and_then(|track| track.duration_ms);
     }
@@ -1155,5 +1173,41 @@ mod tests {
         );
         state.expire_ribbon(t0 + Duration::from_secs(7));
         assert_eq!(state.ribbon_placement(), None);
+    }
+
+    #[test]
+    fn style_switch_updates_synthetic_word_timing_and_recompiles_without_mutating_track() {
+        let mut state = UiState::new();
+        let line_track = track(SyncGranularity::Line);
+        state.set_lyrics(line_track.clone());
+        assert!(!state.timeline().unwrap().has_synthetic_words);
+        assert!(state.timeline().unwrap().lines[0].words.is_empty());
+
+        let mut profile = crate::style::StyleProfile::default();
+        profile.meta.synthetic_word_timing = true;
+        let resolved = profile.resolve(
+            "est-word",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        );
+        state.set_resolved_style(resolved);
+
+        assert!(state.timeline_context().synthetic_word_timing);
+        assert!(state.timeline().unwrap().has_synthetic_words);
+        assert_eq!(state.timeline().unwrap().lines[0].words.len(), 2);
+        assert_eq!(state.lyrics_track(), Some(&line_track));
+        assert_eq!(state.track_status_label(), Some("line (est. word)"));
+
+        // Switching back to a style with synthetic_word_timing = false clears synthetic words.
+        let off_resolved = crate::style::StyleProfile::default().resolve(
+            "default",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        );
+        state.set_resolved_style(off_resolved);
+        assert!(!state.timeline_context().synthetic_word_timing);
+        assert!(!state.timeline().unwrap().has_synthetic_words);
+        assert!(state.timeline().unwrap().lines[0].words.is_empty());
+        assert_eq!(state.track_status_label(), Some("line"));
     }
 }

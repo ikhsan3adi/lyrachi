@@ -519,6 +519,7 @@ impl StyleProfile {
             on_line_change: self.animation.on_line_change.clone(),
             onset_pulse: self.animation.onset_pulse,
             reduced_motion: self.meta.reduced_motion,
+            synthetic_word_timing: self.meta.synthetic_word_timing,
             accent: self
                 .highlight
                 .active_fg
@@ -544,7 +545,7 @@ impl StyleProfile {
     }
 }
 
-/// Descriptive style metadata (active M33 subset).
+/// Descriptive style metadata (`[meta]`).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleMeta {
@@ -552,6 +553,7 @@ pub struct StyleMeta {
     pub author: Option<String>,
     pub description: Option<String>,
     pub reduced_motion: bool,
+    pub synthetic_word_timing: bool,
 }
 
 /// Named color tokens plus custom user variables for `$var` expansion.
@@ -1056,6 +1058,7 @@ pub struct ResolvedStyle {
     pub on_line_change: Vec<LineChangeEffect>,
     pub onset_pulse: bool,
     pub reduced_motion: bool,
+    pub synthetic_word_timing: bool,
     pub accent: Option<Color>,
     pub sung_fg: Option<Color>,
     pub unsung_fg: Option<Color>,
