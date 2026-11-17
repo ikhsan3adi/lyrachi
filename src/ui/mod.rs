@@ -738,12 +738,23 @@ impl UiState {
         let Some(timeline) = self.timeline() else {
             return 0;
         };
-        let body_rows = self.body_rows();
+        let v_padding = usize::from(self.style.padding[0].saturating_mul(2));
+        let body_rows = self.body_rows().saturating_sub(v_padding).max(1);
         let mut rows = 0usize;
         let mut start = timeline.lines.len();
 
         for (index, line) in timeline.lines.iter().enumerate().rev() {
-            let line_rows = line.wrapped_main.len().max(1) + line.wrapped_annotations.len();
+            let annotation_rows = if self.style.annotations_show {
+                line.wrapped_annotations.len()
+            } else {
+                0
+            };
+            let spacing = if index + 1 < timeline.lines.len() {
+                usize::from(self.style.line_spacing)
+            } else {
+                0
+            };
+            let line_rows = line.wrapped_main.len().max(1) + annotation_rows + spacing;
             if rows > 0 && rows + line_rows > body_rows {
                 break;
             }

@@ -432,8 +432,12 @@ fn resolve_vars_in_table(
 fn resolve_var_value(value: &mut toml::Value, root: &toml::Table) -> Result<(), StyleLoadError> {
     match value {
         toml::Value::String(raw) => {
-            if let Some(target) = raw.strip_prefix('$') {
-                *value = resolve_var_reference(target, root)?;
+            let trimmed = raw.trim();
+            if let Some(target) = trimmed.strip_prefix('$') {
+                let target = target.trim();
+                if is_valid_var_ident(target) {
+                    *value = resolve_var_reference(target, root)?;
+                }
             }
             Ok(())
         }
@@ -483,12 +487,37 @@ fn resolve_var_reference(target: &str, root: &toml::Table) -> Result<toml::Value
             .ok_or_else(|| StyleLoadError::UnresolvedVar(format!("${current_name}")))?;
 
         match found {
-            toml::Value::String(next) if next.starts_with('$') => {
-                current_name = next[1..].trim().to_string();
+            toml::Value::String(next) if next.trim().starts_with('$') => {
+                let stripped = next.trim().strip_prefix('$').unwrap_or("").trim();
+                if is_valid_var_ident(stripped) {
+                    current_name = stripped.to_string();
+                } else {
+                    return Ok(found.clone());
+                }
             }
             other => return Ok(other.clone()),
         }
     }
+}
+
+fn is_valid_var_ident(name: &str) -> bool {
+    let mut parts = name.split('.');
+    let Some(first) = parts.next() else {
+        return false;
+    };
+    if !is_ident_segment(first) {
+        return false;
+    }
+    parts.all(is_ident_segment)
+}
+
+fn is_ident_segment(segment: &str) -> bool {
+    let mut chars = segment.chars();
+    let Some(first) = chars.next() else {
+        return false;
+    };
+    (first.is_ascii_alphabetic() || first == '_')
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 fn lookup_token<'a>(name: &str, root: &'a toml::Table) -> Option<&'a toml::Value> {
@@ -711,6 +740,34 @@ line_spacing = 99
         // Clamps enforced safely
         assert_eq!(outcome.profile.layout.padding.vertical, 32);
         assert_eq!(outcome.profile.layout.line_spacing, 4);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn literal_dollar_strings_are_not_mistaken_for_variables() {
+        let dir = temp_styles_dir("literal-dollar");
+        fs::write(
+            dir.join("dollar.toml"),
+            r#"
+[palette]
+accent = "cyan"
+
+[lines.active]
+fg = "$accent"
+prefix = "$ "
+
+[instrumental]
+text = "$"
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("dollar", Some(&dir), 80).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(outcome.profile.lines.active.fg.0, Color::Cyan);
+        assert_eq!(outcome.profile.lines.active.prefix, "$ ");
+        assert_eq!(outcome.profile.instrumental.text, "$");
 
         let _ = fs::remove_dir_all(&dir);
     }

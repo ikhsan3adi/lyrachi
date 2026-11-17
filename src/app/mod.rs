@@ -265,11 +265,12 @@ pub async fn run(
                         break;
                     };
                     let event = event?;
-                    if let Event::Resize(width, height) = event
-                        && width != state.viewport_width
-                    {
+                    if let Event::Resize(width, height) = event {
+                        let width_changed = width != state.viewport_width;
                         state.resize(width, height);
-                        apply_active_style(&mut state, &runtime);
+                        if width_changed {
+                            apply_active_style(&mut state, &runtime);
+                        }
                     }
                     let outcome = handle_input_with_runtime(
                         &mut state,
@@ -846,12 +847,37 @@ pub fn handle_track_preference_loaded(
 }
 
 fn apply_active_style(state: &mut UiState, runtime: &AppRuntime) {
-    let desired = state
-        .pinned_style
-        .as_deref()
-        .unwrap_or(runtime.base_style_name.as_str());
-    let outcome =
-        load_style_name_or_default(desired, runtime.styles_dir.as_deref(), state.viewport_width);
+    let (desired, outcome) = if let Some(pinned) = state.pinned_style.as_deref() {
+        match crate::style::loader::load_style(
+            pinned,
+            runtime.styles_dir.as_deref(),
+            state.viewport_width,
+        ) {
+            Ok(outcome) => (pinned, outcome),
+            Err(error) => {
+                let base = runtime.base_style_name.as_str();
+                let mut fallback = load_style_name_or_default(
+                    base,
+                    runtime.styles_dir.as_deref(),
+                    state.viewport_width,
+                );
+                fallback.warnings.insert(
+                    0,
+                    format!(
+                        "pinned style `{pinned}` unavailable; falling back to `{base}`: {error}"
+                    ),
+                );
+                (base, fallback)
+            }
+        }
+    } else {
+        let base = runtime.base_style_name.as_str();
+        (
+            base,
+            load_style_name_or_default(base, runtime.styles_dir.as_deref(), state.viewport_width),
+        )
+    };
+
     for warning in &outcome.warnings {
         warn!("{warning}");
     }

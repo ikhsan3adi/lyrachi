@@ -1139,4 +1139,43 @@ mod tests {
             None
         );
     }
+
+    #[test]
+    fn active_prefix_prepends_prefix_only_to_active_line() {
+        let mut profile = StyleProfile::builtin("builtin:default", 80).unwrap();
+        profile.lines.active.prefix = "> ".to_string();
+        profile.lines.inactive.prefix = String::new();
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        state.set_resolved_style(profile.resolve("default", ColorCapability::TrueColor, None));
+        state.set_lyrics(sample_track());
+
+        let output = render_buffer_text(&state, 2_200, 80, 14);
+        assert!(output.contains("> Active line"), "{output}");
+        assert!(!output.contains("> Just before"), "{output}");
+        assert!(!output.contains("> Just after"), "{output}");
+    }
+
+    #[test]
+    fn line_spacing_inserts_blank_lines_between_rendered_lines() {
+        let mut profile = StyleProfile::builtin("builtin:default", 80).unwrap();
+        profile.layout.line_spacing = 1;
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        state.set_resolved_style(profile.resolve("default", ColorCapability::TrueColor, None));
+        state.set_lyrics(sample_track());
+
+        let output = render_buffer_text(&state, 2_200, 80, 14);
+        let lines: Vec<&str> = output.lines().map(str::trim).collect();
+        let active_pos = lines
+            .iter()
+            .position(|l| l.contains("Active line"))
+            .expect("active line rendered");
+        let before_pos = lines
+            .iter()
+            .position(|l| l.contains("Just before"))
+            .expect("before line rendered");
+        assert_eq!(active_pos.saturating_sub(before_pos), 2, "{output}");
+        assert!(lines[before_pos + 1].is_empty(), "{output}");
+    }
 }
