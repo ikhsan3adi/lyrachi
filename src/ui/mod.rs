@@ -12,6 +12,37 @@ use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 
 const BANNER_DURATION: Duration = Duration::from_secs(3);
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
+pub enum DisplayMode {
+    #[default]
+    Normal,
+    Block,
+}
+
+impl DisplayMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Block => "block",
+        }
+    }
+
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "normal" => Some(Self::Normal),
+            "block" => Some(Self::Block),
+            _ => None,
+        }
+    }
+
+    pub const fn toggled(self) -> Self {
+        match self {
+            Self::Normal => Self::Block,
+            Self::Block => Self::Normal,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LyricsView {
     Idle,
@@ -39,6 +70,8 @@ pub struct UiState {
     pub show_header: bool,
     pub show_status: bool,
     pub terminal_unicode: bool,
+    pub display_mode: DisplayMode,
+    pub word_highlight: bool,
     pub transient_banner: Option<(String, Instant)>,
     fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
@@ -70,6 +103,8 @@ impl UiState {
             show_header: true,
             show_status: true,
             terminal_unicode: true,
+            display_mode: DisplayMode::Normal,
+            word_highlight: true,
             transient_banner: None,
             fullscreen_restore: None,
             scroll: 0,
@@ -117,6 +152,22 @@ impl UiState {
 
     pub fn set_terminal_unicode(&mut self, terminal_unicode: bool) {
         self.terminal_unicode = terminal_unicode;
+    }
+
+    pub fn effective_display_mode(&self) -> DisplayMode {
+        if self.terminal_unicode {
+            self.display_mode
+        } else {
+            DisplayMode::Normal
+        }
+    }
+
+    pub fn toggle_display_mode(&mut self) {
+        self.display_mode = self.display_mode.toggled();
+    }
+
+    pub fn toggle_word_highlight(&mut self) {
+        self.word_highlight = !self.word_highlight;
     }
 
     pub fn timeline_context(&self) -> &TimelineContext {
@@ -470,6 +521,42 @@ mod tests {
         state.set_max_width(Some(2));
         assert_ne!(state.timeline_options_hash, padded_hash);
         assert_eq!(state.timeline_context().max_width, Some(2));
+    }
+
+    #[test]
+    fn display_mode_toggles_and_ascii_forces_normal_rendering() {
+        let mut state = UiState::new();
+        assert_eq!(state.display_mode, DisplayMode::Normal);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        assert!(state.word_highlight);
+
+        state.toggle_display_mode();
+        assert_eq!(state.display_mode, DisplayMode::Block);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Block);
+
+        state.set_terminal_unicode(false);
+        assert_eq!(state.display_mode, DisplayMode::Block);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+
+        state.set_terminal_unicode(true);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Block);
+        state.toggle_display_mode();
+        assert_eq!(state.display_mode, DisplayMode::Normal);
+
+        state.toggle_word_highlight();
+        assert!(!state.word_highlight);
+    }
+
+    #[test]
+    fn display_mode_names_are_stable() {
+        assert_eq!(DisplayMode::default(), DisplayMode::Normal);
+        assert_eq!(DisplayMode::Normal.as_str(), "normal");
+        assert_eq!(DisplayMode::Block.as_str(), "block");
+        assert_eq!(
+            DisplayMode::from_config_name("block"),
+            Some(DisplayMode::Block)
+        );
+        assert_eq!(DisplayMode::from_config_name("kinetic"), None);
     }
 
     #[test]

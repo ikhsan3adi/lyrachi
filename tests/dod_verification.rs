@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use lyrachi::{
     app::{
-        draw_frame,
+        draw_frame, draw_frame_with_cache,
         event::AppEvent,
         handle_resolved,
         resolve::{ResolveCoordinator, TrackPlan},
@@ -16,7 +16,7 @@ use lyrachi::{
     },
     media::TrackMeta,
     providers::{Provider, ProviderAnswer, ProviderError, TrackQuery, lrclib::LrclibRecord, score},
-    ui::UiState,
+    ui::{DisplayMode, UiState, block::BlockStageCache},
 };
 use ratatui::{Terminal, backend::TestBackend};
 use tokio::sync::mpsc;
@@ -353,29 +353,26 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
     warmup: usize,
     samples: usize,
 ) -> DrawStats {
-    match mode {
-        BenchmarkMode::Normal => {}
-        BenchmarkMode::Block => {
-            // Baseline before M26/M27 block mode renderer is hooked
+    let previous_mode = state.display_mode;
+    state.display_mode = match mode {
+        BenchmarkMode::Block => DisplayMode::Block,
+        BenchmarkMode::Normal | BenchmarkMode::Kinetic | BenchmarkMode::WipeEffects => {
+            DisplayMode::Normal
         }
-        BenchmarkMode::Kinetic => {
-            // Baseline before M37 kinetic phrase renderer is hooked
-        }
-        BenchmarkMode::WipeEffects => {
-            // Baseline before M35 wipe and tachyonfx are hooked
-        }
-    }
+    };
 
+    let mut cache = BlockStageCache::default();
     for _ in 0..warmup {
-        draw_frame(terminal, state, clock).unwrap();
+        draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
     }
 
     let mut durations_us = Vec::with_capacity(samples);
     for _ in 0..samples {
         let started = Instant::now();
-        draw_frame(terminal, state, clock).unwrap();
+        draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
         durations_us.push(started.elapsed().as_micros());
     }
+    state.display_mode = previous_mode;
     durations_us.sort_unstable();
 
     DrawStats {

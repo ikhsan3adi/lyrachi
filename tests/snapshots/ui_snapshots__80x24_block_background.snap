@@ -1,0 +1,28 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                Yellow  Coldplay
+
+
+
+
+
+
+
+                                                      ███ ███ ███ ███ ███ ███
+                                                      ███ ███ ███ ███ ███ ███
+                                                                        Kuning
+      ▄█▀█▄         ▀██                           ▀██  ▀██
+     ██   ██ ▄█▀▀█▄  ██▄▀█▄         ██  ██ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄ ██ ▄ ██
+     ▀█▄ ▄█▀ ██  ██  ██  ██  ▄▄     ▀█▄▄██ ██▀▀▀▀  ██   ██  ██  ██ ███████
+       ▀▀▀    ▀▀▀▀  ▀▀▀  ▀▀ ▄█▀     ▄▄▄▄█▀  ▀▀▀▀  ▀▀▀▀ ▀▀▀▀  ▀▀▀▀   ▀▀ ▀▀
+                                      echo
+
+
+
+
+
+
+
+limusic | playing | lyricsplus | +0 ms | 93% | word

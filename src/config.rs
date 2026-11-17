@@ -7,6 +7,7 @@ use serde::Deserialize;
 use crate::app::resolve::L1_CACHE_CAPACITY;
 use crate::cli::Args;
 use crate::providers::Provider;
+use crate::ui::DisplayMode;
 
 const MIN_OFFSET_MS: i64 = -30_000;
 const MAX_OFFSET_MS: i64 = 30_000;
@@ -26,6 +27,8 @@ pub struct RuntimeConfig {
     pub fullscreen: bool,
     pub show_header: bool,
     pub show_status: bool,
+    pub display_mode: DisplayMode,
+    pub word_highlight: bool,
     pub ambiguous_width: u8,
     pub unicode: TerminalUnicode,
 }
@@ -43,6 +46,8 @@ impl Default for RuntimeConfig {
             fullscreen: false,
             show_header: true,
             show_status: true,
+            display_mode: DisplayMode::Normal,
+            word_highlight: true,
             ambiguous_width: 1,
             unicode: TerminalUnicode::Full,
         }
@@ -147,6 +152,17 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     }
     if let Some(show_status) = file.ui.show_status {
         config.show_status = show_status;
+    }
+    if let Some(name) = file.ui.display_mode {
+        match DisplayMode::from_config_name(&name) {
+            Some(mode) => config.display_mode = mode,
+            None => warnings.push(format!(
+                "config: unknown ui.display_mode `{name}`; valid values: normal, block"
+            )),
+        }
+    }
+    if let Some(word_highlight) = file.ui.word_highlight {
+        config.word_highlight = word_highlight;
     }
     if let Some(ambiguous_width) = file.terminal.ambiguous_width {
         config.ambiguous_width =
@@ -288,6 +304,8 @@ pub struct UiSection {
     pub fullscreen: Option<bool>,
     pub show_header: Option<bool>,
     pub show_status: Option<bool>,
+    pub display_mode: Option<String>,
+    pub word_highlight: Option<bool>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -413,6 +431,37 @@ l1_entries = 8
         assert!(outcome.config.fullscreen);
         assert!(!outcome.config.show_header);
         assert!(!outcome.config.show_status);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_display_mode_and_word_highlight() {
+        let path = temp_file(
+            "ui-display",
+            "[ui]\ndisplay_mode = \"block\"\nword_highlight = false\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.display_mode, DisplayMode::Block);
+        assert!(!outcome.config.word_highlight);
+        assert!(outcome.warnings.is_empty());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn warns_on_unknown_display_mode() {
+        let path = temp_file("ui-display-invalid", "[ui]\ndisplay_mode = \"kinetic\"\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.display_mode, DisplayMode::Normal);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("display_mode") && warning.contains("kinetic"))
+        );
 
         fs::remove_file(path).unwrap();
     }

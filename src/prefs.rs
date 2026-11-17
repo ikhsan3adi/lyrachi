@@ -4,11 +4,15 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Table, value};
 
+use crate::ui::DisplayMode;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiPrefs {
     pub fullscreen: bool,
     pub show_header: bool,
     pub show_status: bool,
+    pub display_mode: DisplayMode,
+    pub word_highlight: bool,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -62,11 +66,27 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
     set_bool(ui, "fullscreen", prefs.fullscreen);
     set_bool(ui, "show_header", prefs.show_header);
     set_bool(ui, "show_status", prefs.show_status);
+    set_str(ui, "display_mode", prefs.display_mode.as_str());
+    set_bool(ui, "word_highlight", prefs.word_highlight);
 
     write_atomic(&target, document.to_string().as_bytes())
 }
 
 fn set_bool(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: bool) {
+    let mut item = value(new_value);
+    if let Some(existing) = ui.get_mut(key) {
+        if let Some(decor) = existing.as_value().map(|value| value.decor().clone())
+            && let Some(value) = item.as_value_mut()
+        {
+            *value.decor_mut() = decor;
+        }
+        *existing = item;
+    } else {
+        ui.insert(key, item);
+    }
+}
+
+fn set_str(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: &str) {
     let mut item = value(new_value);
     if let Some(existing) = ui.get_mut(key) {
         if let Some(decor) = existing.as_value().map(|value| value.decor().clone())
@@ -150,6 +170,8 @@ mod tests {
             fullscreen: true,
             show_header: false,
             show_status: false,
+            display_mode: DisplayMode::Block,
+            word_highlight: false,
         }
     }
 
@@ -184,6 +206,33 @@ mod tests {
         assert!(saved.contains("fullscreen = true"));
         assert!(saved.contains("show_header = false"));
         assert!(saved.contains("show_status = false"));
+        assert!(saved.contains("display_mode = \"block\""));
+        assert!(saved.contains("word_highlight = false"));
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn updates_display_mode_without_dropping_inline_comments() {
+        let dir = temp_dir("prefs-display-comment");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\nword_highlight = true # keep toggle\n",
+        )
+        .unwrap();
+
+        save_ui_prefs(&path, prefs()).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
+            "{saved}"
+        );
+        assert!(
+            saved.contains("word_highlight = false # keep toggle"),
+            "{saved}"
+        );
 
         fs::remove_dir_all(dir).unwrap();
     }

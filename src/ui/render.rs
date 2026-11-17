@@ -9,13 +9,29 @@ use ratatui::{
 use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, WrappedSubLine,
 };
-use crate::core::model::{LineRole, WordToken};
+use crate::core::model::{LineRole, SyncedTrack, WordToken};
 
-use super::{LyricsView, UiState, status::footer_line};
+use super::{
+    LyricsView, UiState,
+    block::{BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockLayout, BlockStageCache},
+    status::footer_line,
+};
 
 const DUET_RIGHT_ALIGN_MIN_WIDTH: u16 = 60;
+const BLOCK_CONTEXT_MAX_ROWS: u16 = 2;
+const BLOCK_VOICE_PLAIN_MIN_WIDTH: u16 = 40;
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
+    let mut cache = BlockStageCache::default();
+    render_with_cache(frame, state, &mut cache, effective_ms);
+}
+
+pub fn render_with_cache(
+    frame: &mut Frame,
+    state: &UiState,
+    block_cache: &mut BlockStageCache,
+    effective_ms: u64,
+) {
     let area = frame.area();
     let header_rows = u16::from(state.show_header);
     let footer_rows = u16::from(state.footer_visible());
@@ -30,7 +46,13 @@ pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     if header_rows > 0 {
         render_header(frame, content_area(header, padding), state);
     }
-    render_body(frame, content_area(body, padding), state, effective_ms);
+    render_body(
+        frame,
+        content_area(body, padding),
+        state,
+        block_cache,
+        effective_ms,
+    );
     if let Some(line) = footer_line(state) {
         frame.render_widget(Paragraph::new(line), footer);
     }
@@ -76,6 +98,7 @@ struct StageRender {
     cursor: ActiveStageCursor,
     effective_ms: u64,
     plain: bool,
+    word_highlight: bool,
     viewport_width: u16,
     styles: StageStyle,
 }
@@ -190,7 +213,13 @@ fn render_header(frame: &mut Frame, area: Rect, state: &UiState) {
     frame.render_widget(Paragraph::new(line).alignment(Alignment::Center), area);
 }
 
-fn render_body(frame: &mut Frame, area: Rect, state: &UiState, effective_ms: u64) {
+fn render_body(
+    frame: &mut Frame,
+    area: Rect,
+    state: &UiState,
+    block_cache: &mut BlockStageCache,
+    effective_ms: u64,
+) {
     if area.height == 0 || area.width == 0 {
         return;
     }
@@ -240,8 +269,13 @@ fn render_body(frame: &mut Frame, area: Rect, state: &UiState, effective_ms: u64
         {
             render_unsynced(frame, area, state, timeline);
         }
+        LyricsView::Loaded { track, timeline }
+            if state.effective_display_mode() == super::DisplayMode::Block =>
+        {
+            render_block_synced(frame, area, timeline, track, block_cache, effective_ms);
+        }
         LyricsView::Loaded { timeline, .. } => {
-            render_synced(frame, area, timeline, effective_ms);
+            render_synced(frame, area, timeline, effective_ms, state.word_highlight);
         }
     }
 }
@@ -275,7 +309,13 @@ fn centered_message(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
     );
 }
 
-fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, effective_ms: u64) {
+fn render_synced(
+    frame: &mut Frame,
+    area: Rect,
+    timeline: &CompiledTimeline,
+    effective_ms: u64,
+    word_highlight: bool,
+) {
     if timeline.lines.is_empty() {
         centered_message(frame, area, "No lyrics found", "");
         return;
@@ -290,6 +330,7 @@ fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, eff
         cursor,
         effective_ms,
         plain: false,
+        word_highlight,
         viewport_width: timeline.context.viewport_width,
         styles: StageStyle::default(),
     };
@@ -313,6 +354,180 @@ fn render_synced(frame: &mut Frame, area: Rect, timeline: &CompiledTimeline, eff
     render_lines(frame, area, lines, active_start, active_end);
 }
 
+#[derive(Debug)]
+struct BlockLineMeta {
+    index: usize,
+    active: bool,
+    focus: bool,
+    max_height: u16,
+    rows: usize,
+}
+
+fn render_block_synced(
+    frame: &mut Frame,
+    area: Rect,
+    timeline: &CompiledTimeline,
+    track: &SyncedTrack,
+    cache: &mut BlockStageCache,
+    effective_ms: u64,
+) {
+    if timeline.lines.is_empty() {
+        centered_message(frame, area, "No lyrics found", "");
+        return;
+    }
+
+    let cursor = timeline.evaluate(effective_ms);
+    let anchor = timeline.anchor_line_index(effective_ms).unwrap_or(0);
+    let wrap_width = timeline.context.wrap_width().min(area.width).max(1);
+    cache.prepare(timeline.context.options_hash(), Some(anchor));
+
+    let start = anchor.saturating_sub(BLOCK_WINDOW_BEFORE);
+    let end = anchor
+        .saturating_add(BLOCK_WINDOW_AFTER)
+        .saturating_add(1)
+        .min(timeline.lines.len());
+    let mut metas = Vec::new();
+    let mut total_rows = 0usize;
+
+    for index in start..end {
+        let compiled = &timeline.lines[index];
+        let active = cursor.active_line_idx == Some(index);
+        let focus = index == anchor;
+        let max_height = block_line_height(
+            area,
+            compiled.role,
+            focus,
+            compiled.wrapped_annotations.len(),
+        );
+        let text = block_source_text(track, compiled);
+        let layout = cache.layout_for(
+            index,
+            text,
+            wrap_width,
+            max_height,
+            timeline.context.ambiguous_width,
+        );
+        let rows = usize::from(layout.height).saturating_add(compiled.wrapped_annotations.len());
+        total_rows = total_rows.saturating_add(rows);
+        metas.push(BlockLineMeta {
+            index,
+            active,
+            focus,
+            max_height,
+            rows,
+        });
+    }
+
+    while total_rows > usize::from(area.height) && metas.len() > 1 {
+        let Some(farthest) = metas
+            .iter()
+            .enumerate()
+            .filter(|(_, meta)| !meta.active && !meta.focus)
+            .max_by_key(|(_, meta)| meta.index.abs_diff(anchor))
+            .map(|(position, _)| position)
+        else {
+            break;
+        };
+        total_rows = total_rows.saturating_sub(metas.remove(farthest).rows);
+    }
+
+    let styles = StageStyle::default();
+    let viewport_width = timeline.context.viewport_width;
+    let mut lines = Vec::new();
+    let mut active_start = None;
+    let mut active_end = None;
+
+    for meta in metas {
+        let compiled = &timeline.lines[meta.index];
+        let text = block_source_text(track, compiled);
+        let layout = cache.layout_for(
+            meta.index,
+            text,
+            wrap_width,
+            meta.max_height,
+            timeline.context.ambiguous_width,
+        );
+        if meta.focus {
+            active_start = Some(lines.len());
+        }
+        push_block_layout_lines(
+            &mut lines,
+            layout,
+            compiled,
+            meta.active,
+            viewport_width,
+            styles,
+        );
+        let alignment = styles.alignment(compiled.role, viewport_width);
+        for annotation in &compiled.wrapped_annotations {
+            lines.push(
+                Line::from(Span::styled(annotation.clone(), styles.annotation_style()))
+                    .alignment(alignment),
+            );
+        }
+        if meta.focus {
+            active_end = Some(lines.len());
+        }
+    }
+
+    render_lines(frame, area, lines, active_start, active_end);
+}
+
+fn block_line_height(area: Rect, role: LineRole, focus: bool, annotation_rows: usize) -> u16 {
+    let max_rows = if focus {
+        let annotation_rows = u16::try_from(annotation_rows).unwrap_or(u16::MAX);
+        area.height.saturating_sub(annotation_rows).max(1)
+    } else {
+        BLOCK_CONTEXT_MAX_ROWS.min(area.height.max(1))
+    };
+
+    if matches!(role, LineRole::DuetSecondary | LineRole::BackgroundVocal)
+        && area.width < BLOCK_VOICE_PLAIN_MIN_WIDTH
+    {
+        1
+    } else {
+        max_rows
+    }
+}
+
+fn block_source_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a str {
+    track
+        .lines
+        .get(compiled.source_line_idx)
+        .map_or("", |line| line.text.as_str())
+}
+
+fn push_block_layout_lines(
+    lines: &mut Vec<Line<'static>>,
+    layout: &BlockLayout,
+    compiled: &CompiledLine,
+    active: bool,
+    viewport_width: u16,
+    styles: StageStyle,
+) {
+    if layout.is_empty() {
+        return;
+    }
+
+    let alignment = styles.alignment(compiled.role, viewport_width);
+    let style = if active {
+        styles.word_style(compiled.role, WordState::Active)
+    } else {
+        styles.line_style(compiled.role, false)
+    };
+    let rows_per_line = usize::from(layout.rows_per_line().max(1));
+
+    for visual in &layout.lines {
+        for row_index in 0..rows_per_line {
+            let mut text = String::new();
+            for cell in &visual.cells {
+                text.push_str(cell.rows.get(row_index).map_or(" ", String::as_str));
+            }
+            lines.push(Line::from(Span::styled(text, style)).alignment(alignment));
+        }
+    }
+}
+
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {
     let mut lines = Vec::new();
     let start = state.scroll.min(timeline.lines.len());
@@ -324,6 +539,7 @@ fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &Co
         },
         effective_ms: 0,
         plain: true,
+        word_highlight: true,
         viewport_width: timeline.context.viewport_width,
         styles: StageStyle::default(),
     };
@@ -382,6 +598,12 @@ fn spans_for_subline(
         return vec![Span::styled(
             subline.text.clone(),
             stage.styles.line_style(compiled.role, true),
+        )];
+    }
+    if !stage.word_highlight {
+        return vec![Span::styled(
+            subline.text.clone(),
+            stage.styles.word_style(compiled.role, WordState::Active),
         )];
     }
     if compiled.words.is_empty() {

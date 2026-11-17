@@ -3,8 +3,9 @@ use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
 };
 use lyrachi::core::parse::ttml::parse_ttml;
+use lyrachi::core::text::display_width;
 use lyrachi::media::TrackMeta;
-use lyrachi::ui::{LyricsView, UiState, render};
+use lyrachi::ui::{DisplayMode, LyricsView, UiState, render};
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -322,6 +323,24 @@ fn fullscreen() -> UiState {
     state
 }
 
+fn block_word_sync() -> UiState {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Block;
+    state
+}
+
+fn block_duet_ttml() -> UiState {
+    let mut state = duet_ttml();
+    state.display_mode = DisplayMode::Block;
+    state
+}
+
+fn block_background_lyricsplus() -> UiState {
+    let mut state = background_lyricsplus();
+    state.display_mode = DisplayMode::Block;
+    state
+}
+
 fn render_buffer(state: &mut UiState, width: u16, height: u16, effective_ms: u64) -> Buffer {
     state.resize(width, height);
     let backend = TestBackend::new(width, height);
@@ -475,6 +494,128 @@ fn background_lyricsplus_120x40() {
         40_500,
         "120x40_background_lyricsplus",
     );
+}
+
+#[test]
+fn block_word_sync_80x24() {
+    snapshot(
+        &mut block_word_sync(),
+        80,
+        24,
+        9_500,
+        "80x24_block_word_sync",
+    );
+}
+
+#[test]
+fn block_word_sync_120x40() {
+    snapshot(
+        &mut block_word_sync(),
+        120,
+        40,
+        9_500,
+        "120x40_block_word_sync",
+    );
+}
+
+#[test]
+fn block_duet_80x24() {
+    snapshot(&mut block_duet_ttml(), 80, 24, 3_500, "80x24_block_duet");
+}
+
+#[test]
+fn block_duet_120x40() {
+    snapshot(&mut block_duet_ttml(), 120, 40, 3_500, "120x40_block_duet");
+}
+
+#[test]
+fn block_background_80x24() {
+    snapshot(
+        &mut block_background_lyricsplus(),
+        80,
+        24,
+        40_500,
+        "80x24_block_background",
+    );
+}
+
+#[test]
+fn block_background_120x40() {
+    snapshot(
+        &mut block_background_lyricsplus(),
+        120,
+        40,
+        40_500,
+        "120x40_block_background",
+    );
+}
+
+#[test]
+fn block_ascii_fallback_80x24() {
+    let mut state = block_word_sync();
+    state.set_terminal_unicode(false);
+    snapshot(&mut state, 80, 24, 9_500, "80x24_block_ascii_fallback");
+}
+
+#[test]
+fn block_ascii_fallback_120x40() {
+    let mut state = block_word_sync();
+    state.set_terminal_unicode(false);
+    snapshot(&mut state, 120, 40, 9_500, "120x40_block_ascii_fallback");
+}
+
+#[test]
+fn ascii_terminal_forces_normal_rendering() {
+    let mut block = block_word_sync();
+    block.set_terminal_unicode(false);
+    let block_rendered = render_state(&mut block, 80, 24, 9_500);
+
+    let mut normal = word_sync();
+    normal.set_terminal_unicode(false);
+    let normal_rendered = render_state(&mut normal, 80, 24, 9_500);
+
+    assert_eq!(block_rendered, normal_rendered);
+}
+
+#[test]
+fn block_mode_respects_timeline_max_width() {
+    let mut state = block_word_sync();
+    state.configure_layout(false, false, false);
+    state.set_max_width(Some(10));
+    let buffer = render_buffer(&mut state, 80, 24, 9_500);
+
+    for y in 0..buffer.area.height {
+        let row: String = (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)).map(|cell| cell.symbol()))
+            .collect();
+        let row = row.trim();
+        assert!(
+            display_width(row) <= 10,
+            "row {y} exceeded max width: {row:?}"
+        );
+    }
+}
+
+#[test]
+fn block_mode_does_not_style_anchor_as_active_in_a_gap() {
+    let buffer = render_buffer(&mut block_word_sync(), 80, 24, 0);
+    let has_accent = (0..buffer.area.height).any(|y| {
+        (0..buffer.area.width)
+            .filter_map(|x| buffer.cell((x, y)))
+            .any(|cell| cell.fg == Color::Cyan)
+    });
+    assert!(!has_accent, "a line was styled active before playback");
+}
+
+#[test]
+fn disabling_word_highlight_styles_the_whole_active_line() {
+    let mut state = word_sync();
+    state.word_highlight = false;
+    let buffer = render_buffer(&mut state, 80, 24, 9_500);
+    let (x, y, _) = find_text(&buffer, "And everything").expect("active line was not rendered");
+    let cell = buffer.cell((x, y)).unwrap();
+    assert_eq!(cell.fg, Color::Cyan);
+    assert!(cell.modifier.contains(Modifier::BOLD));
 }
 
 #[test]

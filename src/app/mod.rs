@@ -19,7 +19,7 @@ use crate::{
     prefs::{self, UiPrefs},
     providers::engine::EngineUpdate,
     providers::{ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery},
-    ui::{UiState, render},
+    ui::{UiState, block::BlockStageCache, render},
 };
 
 pub mod event;
@@ -52,6 +52,7 @@ impl AnimationStatus {
 #[derive(Debug, Default)]
 pub struct AppRuntime {
     pub animation: AnimationStatus,
+    pub block_cache: BlockStageCache,
 }
 
 #[derive(Debug, Default)]
@@ -103,9 +104,11 @@ pub async fn run(
     state.configure_layout(config.fullscreen, config.show_header, config.show_status);
     state.set_ambiguous_width(config.ambiguous_width);
     state.set_terminal_unicode(config.unicode.is_full());
+    state.display_mode = config.display_mode;
+    state.word_highlight = config.word_highlight;
     refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
-    let runtime = AppRuntime::default();
+    let mut runtime = AppRuntime::default();
     let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
@@ -136,7 +139,7 @@ pub async fn run(
                 warn!(%error, "failed to persist lyric offset");
             }
 
-            draw_frame(terminal, &mut state, &clock)?;
+            draw_frame_with_cache(terminal, &mut state, &mut runtime.block_cache, &clock)?;
 
             let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
@@ -283,6 +286,16 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
     state: &mut UiState,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
+    let mut cache = BlockStageCache::default();
+    draw_frame_with_cache(terminal, state, &mut cache, clock)
+}
+
+pub fn draw_frame_with_cache<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut UiState,
+    block_cache: &mut BlockStageCache,
+    clock: &PlaybackClock,
+) -> Result<(), B::Error> {
     let draw_started = Instant::now();
     let span = debug_span!(
         "terminal_draw",
@@ -298,7 +311,7 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
         state.expire_banner(now);
         state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
-        render::render(frame, state, effective_ms);
+        render::render_with_cache(frame, state, block_cache, effective_ms);
     })?;
 
     let elapsed_us = u64::try_from(draw_started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -541,17 +554,27 @@ fn handle_input(
         },
         KeyCode::Char('f') => {
             state.toggle_fullscreen();
-            persist_layout(state, config_file, now);
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyCode::Char('t') => {
             state.toggle_header();
-            persist_layout(state, config_file, now);
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyCode::Char('s') => {
             state.toggle_status();
-            persist_layout(state, config_file, now);
+            persist_preferences(state, config_file, now);
+            InputOutcome::default()
+        }
+        KeyCode::Char('m') => {
+            state.toggle_display_mode();
+            persist_preferences(state, config_file, now);
+            InputOutcome::default()
+        }
+        KeyCode::Char('w') => {
+            state.toggle_word_highlight();
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyCode::Char('[') => {
@@ -581,7 +604,7 @@ fn handle_input(
     }
 }
 
-fn persist_layout(state: &mut UiState, config_file: Option<&Path>, now: Instant) {
+fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Instant) {
     refresh_hidden_status_banner(state, now);
 
     let Some(config_file) = config_file else {
@@ -592,6 +615,8 @@ fn persist_layout(state: &mut UiState, config_file: Option<&Path>, now: Instant)
         fullscreen,
         show_header,
         show_status,
+        display_mode: state.display_mode,
+        word_highlight: state.word_highlight,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -1396,6 +1421,14 @@ mod tests {
         assert_eq!((state.show_header, state.show_status), (true, false));
         press(&mut state, &mut coordinator, &mut offsets, 's');
         assert_eq!((state.show_header, state.show_status), (true, true));
+
+        press(&mut state, &mut coordinator, &mut offsets, 'm');
+        assert_eq!(state.display_mode, crate::ui::DisplayMode::Block);
+        press(&mut state, &mut coordinator, &mut offsets, 'w');
+        assert!(!state.word_highlight);
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("display_mode = \"block\""));
+        assert!(saved.contains("word_highlight = false"));
 
         state.config_warning = Some("invalid config: unknown key".to_string());
         press(&mut state, &mut coordinator, &mut offsets, 's');
