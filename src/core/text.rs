@@ -25,6 +25,112 @@ pub fn grapheme_count(text: &str) -> usize {
     text.graphemes(true).count()
 }
 
+pub fn is_cjk(ch: char) -> bool {
+    matches!(
+        ch as u32,
+        0x2E80..=0x2EFF
+            | 0x3000..=0x303F
+            | 0x3040..=0x30FF
+            | 0x31C0..=0x31FF
+            | 0x3400..=0x4DBF
+            | 0x4E00..=0x9FFF
+            | 0xAC00..=0xD7AF
+            | 0xF900..=0xFAFF
+            | 0xFE30..=0xFE4F
+            | 0xFF00..=0xFFEF
+    )
+}
+
+pub fn cannot_start_line(ch: char) -> bool {
+    matches!(
+        ch,
+        '\u{3041}'
+            | '\u{3043}'
+            | '\u{3045}'
+            | '\u{3047}'
+            | '\u{3049}'
+            | '\u{3083}'
+            | '\u{3085}'
+            | '\u{3087}'
+            | '\u{308E}'
+            | '\u{3095}'
+            | '\u{3096}'
+            | '\u{30A1}'
+            | '\u{30A3}'
+            | '\u{30A5}'
+            | '\u{30A7}'
+            | '\u{30A9}'
+            | '\u{30C3}'
+            | '\u{30E3}'
+            | '\u{30E5}'
+            | '\u{30E7}'
+            | '\u{30EE}'
+            | '\u{30F5}'
+            | '\u{30F6}'
+            | '\u{31F0}'..='\u{31FF}'
+            | '\u{FF67}'..='\u{FF70}'
+            | ')'
+            | ']'
+            | '}'
+            | '>'
+            | ','
+            | '.'
+            | ';'
+            | ':'
+            | '!'
+            | '?'
+            | '、'
+            | '。'
+            | '，'
+            | '．'
+            | '！'
+            | '？'
+            | '：'
+            | '；'
+            | '」'
+            | '』'
+            | '】'
+            | '〉'
+            | '》'
+            | '〕'
+            | '〗'
+            | '〙'
+            | '〛'
+            | '）'
+            | '］'
+            | '｝'
+            | '＞'
+            | 'ー'
+            | '々'
+            | '〻'
+            | 'ゝ'
+            | 'ゞ'
+            | 'ヽ'
+            | 'ヾ'
+    )
+}
+
+pub fn cannot_end_line(ch: char) -> bool {
+    matches!(
+        ch,
+        '(' | '['
+            | '{'
+            | '<'
+            | '（'
+            | '［'
+            | '｛'
+            | '〈'
+            | '《'
+            | '「'
+            | '『'
+            | '【'
+            | '〘'
+            | '〚'
+            | '〖'
+            | '〝'
+    )
+}
+
 pub fn clamp_estimate(graphemes: usize, per_grapheme: u64, min: u64, max: u64) -> u64 {
     let estimate = (graphemes as u64).saturating_mul(per_grapheme);
     estimate.clamp(min, max)
@@ -208,6 +314,22 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec!["a full", "world"]
         );
+    }
+
+    #[test]
+    fn classifies_cjk_and_kinsoku_boundaries() {
+        assert!(is_cjk('あ'));
+        assert!(is_cjk('世'));
+        assert!(is_cjk('한'));
+        assert!(!is_cjk('A'));
+
+        assert!(cannot_start_line('ゃ'));
+        assert!(cannot_start_line('。'));
+        assert!(!cannot_start_line('あ'));
+
+        assert!(cannot_end_line('「'));
+        assert!(cannot_end_line('('));
+        assert!(!cannot_end_line('」'));
     }
 
     #[test]

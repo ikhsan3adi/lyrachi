@@ -1,3 +1,4 @@
+pub mod block;
 pub mod render;
 pub mod status;
 
