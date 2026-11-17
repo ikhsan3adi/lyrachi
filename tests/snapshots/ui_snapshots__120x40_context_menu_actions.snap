@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                    Yellow  Coldplay
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+                                    ╭ Context Menu ────────────────────────────────╮
+                                    │                                              │
+                                    │ Coldplay - Yellow                            │
+                                    │                                              │
+                                    │ > Select lyrics candidate...                 │
+                                    │   Manual search query...                     │
+                                    │   Reset preferred source (pinned: lrclib)    │
+                                    │   Unpin style from track (builtin:default)   │
+                                    │                                              │
+                                    ╰─────── Up/Down move  Enter select  Esc close ╯
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+limusic | playing | lrclib | +0 ms | 97% | word

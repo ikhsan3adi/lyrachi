@@ -146,6 +146,16 @@ impl Tier {
             SyncGranularity::Unsynced => Self::Plain,
         }
     }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Instrumental => "instrumental",
+            Self::Plain => "plain",
+            Self::Line => "line",
+            Self::Word => "word",
+            Self::Syllable => "syllable",
+        }
+    }
 }
 
 #[derive(Debug, Clone)]

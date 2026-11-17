@@ -155,6 +155,10 @@ impl ResolveCoordinator {
         self.active_key.as_ref()
     }
 
+    pub fn active_query(&self) -> Option<&TrackQuery> {
+        self.active_query.as_ref()
+    }
+
     pub fn cache(&self) -> &L1Cache {
         &self.cache
     }

@@ -4,7 +4,7 @@ use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
 };
 use lyrachi::media::TrackMeta;
-use lyrachi::ui::{LyricsView, UiState, render};
+use lyrachi::ui::{CandidateMenuItem, LyricsView, UiState, render};
 use ratatui::{
     Terminal,
     backend::TestBackend,
@@ -566,4 +566,109 @@ fn ribbon_hides_below_8_rows() {
         bottom_tall.contains("word-hl:"),
         "expected bottom ribbon on 8 rows:\n{bottom_tall}"
     );
+}
+
+#[test]
+fn context_menu_actions_80x24() {
+    let mut state = word_sync();
+    state.pinned_source_label = Some("lrclib".to_string());
+    assert!(state.open_context_menu());
+    snapshot(&mut state, 80, 24, 9_500, "80x24_context_menu_actions");
+}
+
+#[test]
+fn context_menu_actions_120x40() {
+    let mut state = word_sync();
+    state.pinned_source_label = Some("lrclib".to_string());
+    state.pinned_style = Some("builtin:default".to_string());
+    assert!(state.open_context_menu());
+    snapshot(&mut state, 120, 40, 9_500, "120x40_context_menu_actions");
+}
+
+#[test]
+fn context_menu_candidates_80x24() {
+    let mut state = word_sync();
+    state.open_candidate_loading("Coldplay - Yellow".to_string());
+    state.set_candidate_results(
+        vec![
+            CandidateMenuItem {
+                provider_label: "lyricsplus".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "syllable",
+                score_pct: 99,
+                is_active: false,
+            },
+            CandidateMenuItem {
+                provider_label: "lrclib".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "word",
+                score_pct: 97,
+                is_active: true,
+            },
+            CandidateMenuItem {
+                provider_label: "local".to_string(),
+                title: "Yellow (Live)".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: None,
+                duration_ms: Some(271_000),
+                tier_label: "line",
+                score_pct: 84,
+                is_active: false,
+            },
+        ],
+        None,
+    );
+    snapshot(&mut state, 80, 24, 9_500, "80x24_context_menu_candidates");
+}
+
+#[test]
+fn context_menu_candidates_120x40() {
+    let mut state = word_sync();
+    state.open_candidate_loading("Coldplay - Yellow".to_string());
+    state.set_candidate_results(
+        vec![
+            CandidateMenuItem {
+                provider_label: "lyricsplus".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "syllable",
+                score_pct: 99,
+                is_active: false,
+            },
+            CandidateMenuItem {
+                provider_label: "lrclib".to_string(),
+                title: "Yellow".to_string(),
+                artist: Some("Coldplay".to_string()),
+                album: Some("Parachutes".to_string()),
+                duration_ms: Some(267_000),
+                tier_label: "word",
+                score_pct: 97,
+                is_active: true,
+            },
+        ],
+        None,
+    );
+    snapshot(&mut state, 120, 40, 9_500, "120x40_context_menu_candidates");
+}
+
+#[test]
+fn context_menu_search_input_80x24() {
+    let mut state = word_sync();
+    state.open_search_input("Coldplay".to_string(), "Yellow".to_string());
+    snapshot(&mut state, 80, 24, 9_500, "80x24_search_input");
+}
+
+#[test]
+fn context_menu_search_input_120x40() {
+    let mut state = word_sync();
+    state.open_search_input("Coldplay".to_string(), "Yellow (Acoustic)".to_string());
+    snapshot(&mut state, 120, 40, 9_500, "120x40_search_input");
 }

@@ -11,7 +11,9 @@ use crate::compiler::timeline::{
 };
 use crate::core::model::LineRole;
 
-use super::{LyricsView, RibbonPlacement, UiModal, UiState, help, ribbon, status::footer_line};
+use super::{
+    LyricsView, RibbonPlacement, UiModal, UiState, help, menu, ribbon, status::footer_line,
+};
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let area = frame.area();
@@ -47,8 +49,10 @@ pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     if let Some(line) = footer_line(state) {
         frame.render_widget(Paragraph::new(line), footer);
     }
-    if state.modal == Some(UiModal::Help) {
-        help::render(frame, area);
+    match &state.modal {
+        Some(UiModal::Help) => help::render(frame, area),
+        Some(UiModal::ContextMenu(menu_state)) => menu::render(frame, area, menu_state),
+        None => {}
     }
 }
 

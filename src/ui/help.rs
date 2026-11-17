@@ -85,7 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect) {
     );
 }
 
-fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
+pub(crate) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     let width = width.min(area.width);
     let height = height.min(area.height);
     let x = area.x.saturating_add(area.width.saturating_sub(width) / 2);

@@ -32,6 +32,13 @@ pub enum KeyAction {
     ScrollDown,
     ToggleHelp,
     CloseModal,
+    OpenContextMenu,
+    MenuUp,
+    MenuDown,
+    MenuSelect,
+    SearchSwitchField,
+    SearchBackspace,
+    SearchSubmit,
 }
 
 impl KeyAction {
@@ -49,6 +56,13 @@ impl KeyAction {
         Self::ScrollDown,
         Self::ToggleHelp,
         Self::CloseModal,
+        Self::OpenContextMenu,
+        Self::MenuUp,
+        Self::MenuDown,
+        Self::MenuSelect,
+        Self::SearchSwitchField,
+        Self::SearchBackspace,
+        Self::SearchSubmit,
     ];
 }
 
@@ -59,6 +73,8 @@ pub enum KeyTrigger {
     CtrlChar(char),
     Up,
     Down,
+    Enter,
+    Backspace,
     Esc,
     Tab,
 }
@@ -73,6 +89,76 @@ pub struct KeyBinding {
 }
 
 pub const KEYBINDINGS: &[KeyBinding] = &[
+    KeyBinding {
+        scope: KeyScope::ContextMenu,
+        trigger: KeyTrigger::Up,
+        action: KeyAction::MenuUp,
+        key_label: "Up",
+        description: "Move selection up",
+    },
+    KeyBinding {
+        scope: KeyScope::ContextMenu,
+        trigger: KeyTrigger::Down,
+        action: KeyAction::MenuDown,
+        key_label: "Down",
+        description: "Move selection down",
+    },
+    KeyBinding {
+        scope: KeyScope::ContextMenu,
+        trigger: KeyTrigger::Enter,
+        action: KeyAction::MenuSelect,
+        key_label: "Enter",
+        description: "Select menu item",
+    },
+    KeyBinding {
+        scope: KeyScope::ContextMenu,
+        trigger: KeyTrigger::Esc,
+        action: KeyAction::CloseModal,
+        key_label: "Esc",
+        description: "Close context menu",
+    },
+    KeyBinding {
+        scope: KeyScope::ContextMenu,
+        trigger: KeyTrigger::CtrlChar('c'),
+        action: KeyAction::Quit,
+        key_label: "Ctrl+C",
+        description: "Quit",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Tab,
+        action: KeyAction::SearchSwitchField,
+        key_label: "Tab",
+        description: "Switch search field",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Backspace,
+        action: KeyAction::SearchBackspace,
+        key_label: "Backspace",
+        description: "Delete character",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Enter,
+        action: KeyAction::SearchSubmit,
+        key_label: "Enter",
+        description: "Submit search",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::Esc,
+        action: KeyAction::CloseModal,
+        key_label: "Esc",
+        description: "Cancel search",
+    },
+    KeyBinding {
+        scope: KeyScope::SearchInput,
+        trigger: KeyTrigger::CtrlChar('c'),
+        action: KeyAction::Quit,
+        key_label: "Ctrl+C",
+        description: "Quit",
+    },
     KeyBinding {
         scope: KeyScope::Help,
         trigger: KeyTrigger::Esc,
@@ -173,6 +259,20 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         scope: KeyScope::Global,
+        trigger: KeyTrigger::Char('c'),
+        action: KeyAction::OpenContextMenu,
+        key_label: "c",
+        description: "Open context menu",
+    },
+    KeyBinding {
+        scope: KeyScope::Global,
+        trigger: KeyTrigger::Enter,
+        action: KeyAction::OpenContextMenu,
+        key_label: "Enter",
+        description: "Open context menu",
+    },
+    KeyBinding {
+        scope: KeyScope::Global,
         trigger: KeyTrigger::Char('q'),
         action: KeyAction::Quit,
         key_label: "q",
@@ -204,6 +304,8 @@ pub fn normalize_key_event(key: KeyEvent) -> Option<KeyTrigger> {
     match key.code {
         KeyCode::Up if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Up),
         KeyCode::Down if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Down),
+        KeyCode::Enter if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Enter),
+        KeyCode::Backspace if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Backspace),
         KeyCode::Esc if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Esc),
         KeyCode::Tab if !has_ctrl && !has_alt && !has_shift => Some(KeyTrigger::Tab),
         KeyCode::Char(ch) if has_ctrl => Some(KeyTrigger::CtrlChar(ch.to_ascii_lowercase())),
@@ -215,6 +317,20 @@ pub fn normalize_key_event(key: KeyEvent) -> Option<KeyTrigger> {
             Some(KeyTrigger::ShiftChar(ch.to_ascii_lowercase()))
         }
         KeyCode::Char(ch) if !has_shift => Some(KeyTrigger::Char(ch)),
+        _ => None,
+    }
+}
+
+pub fn search_input_char(key: KeyEvent) -> Option<char> {
+    if key.kind != KeyEventKind::Press {
+        return None;
+    }
+    let modifiers = key.modifiers;
+    if modifiers.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT) {
+        return None;
+    }
+    match key.code {
+        KeyCode::Char(ch) if !ch.is_control() => Some(ch),
         _ => None,
     }
 }
@@ -340,6 +456,55 @@ mod tests {
                 KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
             ),
             Some(KeyAction::Quit)
+        );
+    }
+
+    #[test]
+    fn context_menu_and_search_input_block_global_hotkeys() {
+        assert_eq!(
+            resolve_key(
+                KeyScope::Global,
+                KeyEvent::new(KeyCode::Char('c'), KeyModifiers::NONE)
+            ),
+            Some(KeyAction::OpenContextMenu)
+        );
+        assert_eq!(
+            resolve_key(
+                KeyScope::Global,
+                KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+            ),
+            Some(KeyAction::OpenContextMenu)
+        );
+
+        for forbidden in ['q', 'r', 's', 'm', 'w', '?', 'c', 'S', '[', ']', '\\'] {
+            let mods = if forbidden.is_ascii_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            let ev = KeyEvent::new(KeyCode::Char(forbidden), mods);
+            assert_eq!(resolve_key(KeyScope::ContextMenu, ev), None);
+            assert_eq!(resolve_key(KeyScope::SearchInput, ev), None);
+        }
+
+        let input = "qrs mw?cS[]\\";
+        let mut collected = String::new();
+        for ch in input.chars() {
+            let mods = if ch.is_ascii_uppercase() {
+                KeyModifiers::SHIFT
+            } else {
+                KeyModifiers::NONE
+            };
+            let ev = KeyEvent::new(KeyCode::Char(ch), mods);
+            assert_eq!(resolve_key(KeyScope::SearchInput, ev), None);
+            if let Some(captured) = search_input_char(ev) {
+                collected.push(captured);
+            }
+        }
+        assert_eq!(collected, input);
+        assert_eq!(
+            search_input_char(KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)),
+            None
         );
     }
 }

@@ -1,7 +1,13 @@
 pub mod help;
+pub mod menu;
 pub mod render;
 pub mod ribbon;
 pub mod status;
+
+pub use menu::{
+    CandidateMenuItem, ContextMenuAction, ContextMenuState, ContextMenuView, SearchField,
+    SearchInputState,
+};
 
 use std::time::{Duration, Instant};
 
@@ -34,9 +40,10 @@ pub enum LyricsView {
     },
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum UiModal {
     Help,
+    ContextMenu(Box<menu::ContextMenuState>),
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -58,6 +65,8 @@ pub struct UiState {
     pub ribbon_temp_hidden: bool,
     pub terminal_unicode: bool,
     pub modal: Option<UiModal>,
+    pub pinned_source_label: Option<String>,
+    pub pinned_style: Option<String>,
     pub transient_banner: Option<(String, Instant)>,
     fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
@@ -93,6 +102,8 @@ impl UiState {
             ribbon_temp_hidden: false,
             terminal_unicode: true,
             modal: None,
+            pinned_source_label: None,
+            pinned_style: None,
             transient_banner: None,
             fullscreen_restore: None,
             scroll: 0,
@@ -106,12 +117,131 @@ impl UiState {
     pub fn toggle_help(&mut self) {
         self.modal = match self.modal {
             Some(UiModal::Help) => None,
-            None => Some(UiModal::Help),
+            Some(UiModal::ContextMenu(_)) | None => Some(UiModal::Help),
         };
     }
 
     pub fn open_help(&mut self) {
         self.modal = Some(UiModal::Help);
+    }
+
+    pub fn open_context_menu(&mut self) -> bool {
+        let Some(track) = &self.track else {
+            return false;
+        };
+        let label = if track.artist.is_empty() {
+            track.title.clone()
+        } else {
+            format!("{} - {}", track.artist, track.title)
+        };
+        self.modal = Some(UiModal::ContextMenu(Box::new(ContextMenuState::actions(
+            label,
+            self.pinned_source_label.clone(),
+            self.pinned_style.clone(),
+        ))));
+        true
+    }
+
+    pub fn context_menu(&self) -> Option<&ContextMenuState> {
+        match &self.modal {
+            Some(UiModal::ContextMenu(menu)) => Some(menu),
+            _ => None,
+        }
+    }
+
+    pub fn context_menu_mut(&mut self) -> Option<&mut ContextMenuState> {
+        match &mut self.modal {
+            Some(UiModal::ContextMenu(menu)) => Some(menu),
+            _ => None,
+        }
+    }
+
+    pub fn open_search_input(&mut self, artist: String, title: String) {
+        let search = ContextMenuView::SearchInput(SearchInputState {
+            artist,
+            title,
+            active_field: SearchField::Artist,
+        });
+        if let Some(menu) = self.context_menu_mut() {
+            menu.view = search;
+        } else if self.open_context_menu()
+            && let Some(menu) = self.context_menu_mut()
+        {
+            menu.view = search;
+        }
+    }
+
+    pub fn open_candidate_loading(&mut self, query_label: String) {
+        let candidates = ContextMenuView::Candidates {
+            query_label,
+            items: Vec::new(),
+            selected: 0,
+            loading: true,
+            hydrating: false,
+            status_message: None,
+        };
+        if let Some(menu) = self.context_menu_mut() {
+            menu.view = candidates;
+        } else if self.open_context_menu()
+            && let Some(menu) = self.context_menu_mut()
+        {
+            menu.view = candidates;
+        }
+    }
+
+    pub fn set_candidate_results(
+        &mut self,
+        items: Vec<CandidateMenuItem>,
+        status_message: Option<String>,
+    ) {
+        if let Some(menu) = self.context_menu_mut()
+            && let ContextMenuView::Candidates {
+                items: slot,
+                selected,
+                loading,
+                hydrating,
+                status_message: status_slot,
+                ..
+            } = &mut menu.view
+        {
+            *slot = items;
+            *selected = 0;
+            *loading = false;
+            *hydrating = false;
+            *status_slot = status_message;
+        }
+    }
+
+    pub fn set_candidate_hydrating(
+        &mut self,
+        hydrating_flag: bool,
+        status_message: Option<String>,
+    ) {
+        if let Some(menu) = self.context_menu_mut()
+            && let ContextMenuView::Candidates {
+                hydrating,
+                status_message: status_slot,
+                ..
+            } = &mut menu.view
+        {
+            *hydrating = hydrating_flag;
+            *status_slot = status_message;
+        }
+    }
+
+    pub fn sync_menu_preferences(&mut self) {
+        let source = self.pinned_source_label.clone();
+        let style = self.pinned_style.clone();
+        if let Some(menu) = self.context_menu_mut() {
+            menu.pinned_source_label = source;
+            menu.pinned_style = style;
+        }
+    }
+
+    pub fn close_context_menu(&mut self) {
+        if matches!(self.modal, Some(UiModal::ContextMenu(_))) {
+            self.modal = None;
+        }
     }
 
     pub fn close_modal(&mut self) {
@@ -311,6 +441,9 @@ impl UiState {
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
@@ -323,6 +456,9 @@ impl UiState {
         self.lyrics = LyricsView::Loading;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
@@ -331,6 +467,9 @@ impl UiState {
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
+        self.pinned_source_label = None;
+        self.pinned_style = None;
+        self.close_context_menu();
         self.scroll = 0;
     }
 
