@@ -2,13 +2,16 @@ use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use toml_edit::{DocumentMut, Item, Table, value};
+use toml_edit::{DocumentMut, Item, Table, Value, value};
+
+use crate::config::RibbonMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct UiPrefs {
     pub fullscreen: bool,
     pub show_header: bool,
     pub show_status: bool,
+    pub ribbon: RibbonMode,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -59,14 +62,15 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
         });
     };
 
-    set_bool(ui, "fullscreen", prefs.fullscreen);
-    set_bool(ui, "show_header", prefs.show_header);
-    set_bool(ui, "show_status", prefs.show_status);
+    set_value(ui, "fullscreen", prefs.fullscreen);
+    set_value(ui, "show_header", prefs.show_header);
+    set_value(ui, "show_status", prefs.show_status);
+    set_value(ui, "ribbon", prefs.ribbon.as_str());
 
     write_atomic(&target, document.to_string().as_bytes())
 }
 
-fn set_bool(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: bool) {
+fn set_value(ui: &mut dyn toml_edit::TableLike, key: &str, new_value: impl Into<Value>) {
     let mut item = value(new_value);
     if let Some(existing) = ui.get_mut(key) {
         if let Some(decor) = existing.as_value().map(|value| value.decor().clone())
@@ -150,6 +154,7 @@ mod tests {
             fullscreen: true,
             show_header: false,
             show_status: false,
+            ribbon: RibbonMode::Top,
         }
     }
 
@@ -184,6 +189,7 @@ mod tests {
         assert!(saved.contains("fullscreen = true"));
         assert!(saved.contains("show_header = false"));
         assert!(saved.contains("show_status = false"));
+        assert!(saved.contains("ribbon = \"top\""));
 
         fs::remove_dir_all(dir).unwrap();
     }

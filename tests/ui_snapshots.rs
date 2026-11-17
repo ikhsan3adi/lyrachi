@@ -1,3 +1,4 @@
+use lyrachi::config::RibbonMode;
 use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
@@ -521,4 +522,36 @@ fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
     let stopped_out = render_state(&mut stopped, 80, 24, 14_500);
     assert!(!stopped_out.contains("●"));
     assert!(stopped_out.contains("[Instrumental]"));
+}
+
+#[test]
+fn ribbon_top_80x24() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Top);
+    snapshot(&mut state, 80, 24, 9_500, "80x24_ribbon_top");
+}
+
+#[test]
+fn ribbon_bottom_120x40() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Bottom);
+    snapshot(&mut state, 120, 40, 9_500, "120x40_ribbon_bottom");
+}
+
+#[test]
+fn ribbon_hides_below_8_rows() {
+    let mut state = word_sync();
+    state.configure_ribbon(RibbonMode::Top);
+
+    let short = render_state(&mut state, 80, 7, 9_500);
+    assert!(
+        !short.contains("word-hl:"),
+        "unexpected ribbon on 7 rows:\n{short}"
+    );
+
+    let tall = render_state(&mut state, 80, 8, 9_500);
+    assert!(
+        tall.contains("word-hl:"),
+        "expected ribbon on 8 rows:\n{tall}"
+    );
 }

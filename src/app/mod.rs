@@ -103,6 +103,7 @@ pub async fn run(
     state.offline = !config.network;
     state.config_warning = warnings.first().cloned();
     state.configure_layout(config.fullscreen, config.show_header, config.show_status);
+    state.configure_ribbon(config.ribbon);
     state.set_ambiguous_width(config.ambiguous_width);
     state.set_terminal_unicode(config.unicode.is_full());
     refresh_hidden_status_banner(&mut state, Instant::now());
@@ -299,6 +300,7 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
         let area = frame.area();
         let now = Instant::now();
         state.expire_banner(now);
+        state.expire_ribbon(now);
         state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
         render::render(frame, state, effective_ms);
@@ -560,6 +562,10 @@ fn handle_input(
             persist_layout(state, config_file, now);
             InputOutcome::default()
         }
+        KeyAction::ToggleRibbon => {
+            state.toggle_ribbon(now);
+            InputOutcome::default()
+        }
         KeyAction::OffsetBack => {
             state.adjust_offset(-100);
             record_offset(state, coordinator, offsets);
@@ -605,6 +611,7 @@ fn persist_layout(state: &mut UiState, config_file: Option<&Path>, now: Instant)
         fullscreen,
         show_header,
         show_status,
+        ribbon: state.ribbon_mode,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -668,6 +675,18 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
 }
 
 fn next_wait(
+    state: &UiState,
+    clock: &PlaybackClock,
+    now: Instant,
+    animation: AnimationStatus,
+) -> Duration {
+    let wait = base_next_wait(state, clock, now, animation);
+    state
+        .time_until_ribbon_expiry(now)
+        .map_or(wait, |ribbon_wait| wait.min(ribbon_wait))
+}
+
+fn base_next_wait(
     state: &UiState,
     clock: &PlaybackClock,
     now: Instant,
@@ -1541,5 +1560,62 @@ mod tests {
             key_event(KeyCode::Char('?'), KeyModifiers::NONE),
         );
         assert_eq!(state.modal, None);
+    }
+
+    #[test]
+    fn tab_toggles_ribbon_and_next_wait_tracks_expiry_when_paused_or_idle() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut clock = PlaybackClock::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let t0 = Instant::now();
+        let key_event = |code: KeyCode, modifiers: KeyModifiers| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers,
+                kind: KeyEventKind::Press,
+                state: KeyEventState::NONE,
+            })
+        };
+
+        state.configure_ribbon(crate::config::RibbonMode::Auto);
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Tab opens ribbon for 3 seconds while Idle (Stopped)
+        handle_input(
+            &mut state,
+            &mut coordinator,
+            &mut offsets,
+            None,
+            t0,
+            key_event(KeyCode::Tab, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            state.ribbon_placement(),
+            Some(crate::ui::RibbonPlacement::Top)
+        );
+
+        let wait_near_expiry = next_wait(
+            &state,
+            &clock,
+            t0 + Duration::from_millis(2_750),
+            AnimationStatus::default(),
+        );
+        assert_eq!(wait_near_expiry, Duration::from_millis(250));
+
+        // Same while Paused
+        clock.on_status_changed(PlaybackStatus::Paused, t0 + Duration::from_millis(2_800));
+        let wait_paused = next_wait(
+            &state,
+            &clock,
+            t0 + Duration::from_millis(2_800),
+            AnimationStatus::default(),
+        );
+        assert_eq!(wait_paused, Duration::from_millis(200));
+
+        state.expire_ribbon(t0 + Duration::from_secs(3));
+        assert_eq!(state.ribbon_placement(), None);
     }
 }

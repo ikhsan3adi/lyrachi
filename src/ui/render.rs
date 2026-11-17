@@ -11,15 +11,24 @@ use crate::compiler::timeline::{
 };
 use crate::core::model::LineRole;
 
-use super::{LyricsView, UiModal, UiState, help, status::footer_line};
+use super::{LyricsView, RibbonPlacement, UiModal, UiState, help, ribbon, status::footer_line};
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let area = frame.area();
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
+    let placement = state.ribbon_placement_for_height(area.height);
     let header_rows = u16::from(state.show_header);
+    let top_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Top));
+    let bottom_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Bottom));
     let footer_rows = u16::from(state.footer_visible());
-    let [header, body, footer] = Layout::vertical([
+    let [header, top_ribbon, body, bottom_ribbon, footer] = Layout::vertical([
         Constraint::Length(header_rows),
+        Constraint::Length(top_ribbon_rows),
         Constraint::Min(1),
+        Constraint::Length(bottom_ribbon_rows),
         Constraint::Length(footer_rows),
     ])
     .areas(area);
@@ -28,7 +37,13 @@ pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     if header_rows > 0 {
         render_header(frame, content_area(header, padding), state);
     }
+    if top_ribbon_rows > 0 {
+        ribbon::render(frame, content_area(top_ribbon, padding), state);
+    }
     render_body(frame, content_area(body, padding), state, effective_ms);
+    if bottom_ribbon_rows > 0 {
+        ribbon::render(frame, content_area(bottom_ribbon, padding), state);
+    }
     if let Some(line) = footer_line(state) {
         frame.render_widget(Paragraph::new(line), footer);
     }

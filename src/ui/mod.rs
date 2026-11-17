@@ -1,16 +1,26 @@
 pub mod help;
 pub mod render;
+pub mod ribbon;
 pub mod status;
 
 use std::time::{Duration, Instant};
 
 use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
+use crate::config::RibbonMode;
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 
 const BANNER_DURATION: Duration = Duration::from_secs(3);
+pub const RIBBON_AUTO_HIDE_DURATION: Duration = Duration::from_secs(3);
+pub const MIN_RIBBON_TERMINAL_HEIGHT: u16 = 8;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RibbonPlacement {
+    Top,
+    Bottom,
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum LyricsView {
@@ -43,6 +53,9 @@ pub struct UiState {
     pub config_warning: Option<String>,
     pub show_header: bool,
     pub show_status: bool,
+    pub ribbon_mode: RibbonMode,
+    pub ribbon_visible_until: Option<Instant>,
+    pub ribbon_temp_hidden: bool,
     pub terminal_unicode: bool,
     pub modal: Option<UiModal>,
     pub transient_banner: Option<(String, Instant)>,
@@ -75,6 +88,9 @@ impl UiState {
             config_warning: None,
             show_header: true,
             show_status: true,
+            ribbon_mode: RibbonMode::default(),
+            ribbon_visible_until: None,
+            ribbon_temp_hidden: false,
             terminal_unicode: true,
             modal: None,
             transient_banner: None,
@@ -185,6 +201,66 @@ impl UiState {
         self.show_status = !self.show_status;
         self.fullscreen_restore = None;
         self.clamp_scroll();
+    }
+
+    pub fn configure_ribbon(&mut self, mode: RibbonMode) {
+        self.ribbon_mode = mode;
+        self.ribbon_visible_until = None;
+        self.ribbon_temp_hidden = false;
+        self.clamp_scroll();
+    }
+
+    pub fn toggle_ribbon(&mut self, now: Instant) {
+        match self.ribbon_mode {
+            RibbonMode::Auto | RibbonMode::Off => {
+                if self
+                    .ribbon_visible_until
+                    .is_some_and(|visible_until| now < visible_until)
+                {
+                    self.ribbon_visible_until = None;
+                } else {
+                    self.ribbon_visible_until = Some(now + RIBBON_AUTO_HIDE_DURATION);
+                }
+            }
+            RibbonMode::Top | RibbonMode::Bottom => {
+                self.ribbon_temp_hidden = !self.ribbon_temp_hidden;
+            }
+        }
+        self.clamp_scroll();
+    }
+
+    pub fn expire_ribbon(&mut self, now: Instant) {
+        if let Some(visible_until) = self.ribbon_visible_until
+            && now >= visible_until
+        {
+            self.ribbon_visible_until = None;
+            self.clamp_scroll();
+        }
+    }
+
+    pub fn time_until_ribbon_expiry(&self, now: Instant) -> Option<Duration> {
+        if !matches!(self.ribbon_mode, RibbonMode::Auto | RibbonMode::Off) {
+            return None;
+        }
+        let visible_until = self.ribbon_visible_until?;
+        Some(visible_until.saturating_duration_since(now))
+    }
+
+    pub fn ribbon_placement(&self) -> Option<RibbonPlacement> {
+        self.ribbon_placement_for_height(self.viewport_height)
+    }
+
+    pub fn ribbon_placement_for_height(&self, height: u16) -> Option<RibbonPlacement> {
+        if height < MIN_RIBBON_TERMINAL_HEIGHT {
+            return None;
+        }
+        match self.ribbon_mode {
+            RibbonMode::Auto | RibbonMode::Off => {
+                self.ribbon_visible_until.map(|_| RibbonPlacement::Top)
+            }
+            RibbonMode::Top => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Top),
+            RibbonMode::Bottom => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Bottom),
+        }
     }
 
     pub fn is_fullscreen(&self) -> bool {
@@ -343,10 +419,11 @@ impl UiState {
 
     fn body_rows(&self) -> usize {
         let header_rows = u16::from(self.show_header);
+        let ribbon_rows = u16::from(self.ribbon_placement().is_some());
         let footer_rows = u16::from(self.footer_visible());
         usize::from(
             self.viewport_height
-                .saturating_sub(header_rows + footer_rows)
+                .saturating_sub(header_rows + ribbon_rows + footer_rows)
                 .max(1),
         )
     }
@@ -645,5 +722,62 @@ mod tests {
         assert_eq!(state.modal, Some(UiModal::Help));
         state.close_modal();
         assert_eq!(state.modal, None);
+    }
+
+    #[test]
+    fn ribbon_state_machine_covers_all_modes_and_breakpoint() {
+        let mut state = UiState::new();
+        let t0 = Instant::now();
+
+        // Auto: hidden by default, Tab toggles 3s visibility, expires at >= 3s
+        state.configure_ribbon(RibbonMode::Auto);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        assert_eq!(
+            state.time_until_ribbon_expiry(t0 + Duration::from_secs(1)),
+            Some(Duration::from_secs(2))
+        );
+        state.expire_ribbon(t0 + Duration::from_secs(2));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Auto: second Tab before expiry hides immediately
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Off: same 3s peek behavior on Tab
+        state.configure_ribbon(RibbonMode::Off);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
+        assert_eq!(state.ribbon_placement(), None);
+
+        // Top: permanently visible, Tab toggles temporary hide/show
+        state.configure_ribbon(RibbonMode::Top);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        assert_eq!(state.time_until_ribbon_expiry(t0), None);
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+
+        // Bottom: permanently visible at bottom, Tab toggles temporary hide/show
+        state.configure_ribbon(RibbonMode::Bottom);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
+        state.toggle_ribbon(t0);
+        assert_eq!(state.ribbon_placement(), None);
+        state.toggle_ribbon(t0 + Duration::from_secs(1));
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
+
+        // Terminal height < 8 rows automatically hides ribbon in all modes
+        state.resize(80, 7);
+        assert_eq!(state.ribbon_placement(), None);
+        state.resize(80, 8);
+        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
     }
 }

@@ -21,6 +21,7 @@ expression: "render_state(state, width, height, effective_ms)"
                                          │ f           Toggle fullscreen      │
                                          │ t           Toggle title bar       │
                                          │ s           Toggle status bar      │
+                                         │ Tab         Toggle ribbon bar      │
                                          │ [           Shift timing -100 ms   │
                                          │ ]           Shift timing +100 ms   │
                                          │ \           Reset timing offset    │
@@ -29,7 +30,6 @@ expression: "render_state(state, width, height, effective_ms)"
                                          │ q, Ctrl+C   Quit                   │
                                          │                                    │
                                          ╰───────────────────── ? / Esc close ╯
-
 
 
 
