@@ -9,7 +9,16 @@ pub struct WrappedText {
 }
 
 pub fn display_width(text: &str) -> u16 {
-    u16::try_from(UnicodeWidthStr::width(text)).unwrap_or(u16::MAX)
+    display_width_with_ambiguous(text, 1)
+}
+
+pub fn display_width_with_ambiguous(text: &str, ambiguous_width: u8) -> u16 {
+    let width = if ambiguous_width == 2 {
+        UnicodeWidthStr::width_cjk(text)
+    } else {
+        UnicodeWidthStr::width(text)
+    };
+    u16::try_from(width).unwrap_or(u16::MAX)
 }
 
 pub fn grapheme_count(text: &str) -> usize {
@@ -33,12 +42,16 @@ pub fn trim_range(text: &str, start: usize, end: usize) -> (usize, usize) {
 }
 
 pub fn truncate_to_width(text: &str, max_width: u16) -> &str {
+    truncate_to_width_with_ambiguous(text, max_width, 1)
+}
+
+pub fn truncate_to_width_with_ambiguous(text: &str, max_width: u16, ambiguous_width: u8) -> &str {
     if max_width == 0 {
         return "";
     }
     let mut width = 0usize;
     for (index, grapheme) in text.grapheme_indices(true) {
-        let grapheme_width = UnicodeWidthStr::width(grapheme);
+        let grapheme_width = usize::from(display_width_with_ambiguous(grapheme, ambiguous_width));
         if width + grapheme_width > usize::from(max_width) {
             return &text[..index];
         }
@@ -48,6 +61,14 @@ pub fn truncate_to_width(text: &str, max_width: u16) -> &str {
 }
 
 pub fn wrap_text(text: &str, max_width: u16) -> Vec<WrappedText> {
+    wrap_text_with_ambiguous(text, max_width, 1)
+}
+
+pub fn wrap_text_with_ambiguous(
+    text: &str,
+    max_width: u16,
+    ambiguous_width: u8,
+) -> Vec<WrappedText> {
     let max_width = usize::from(max_width.max(1));
     if text.is_empty() {
         return vec![WrappedText {
@@ -78,7 +99,8 @@ pub fn wrap_text(text: &str, max_width: u16) -> Vec<WrappedText> {
 
         for (offset, grapheme) in text[start..].grapheme_indices(true) {
             let grapheme_start = start + offset;
-            let grapheme_width = UnicodeWidthStr::width(grapheme);
+            let grapheme_width =
+                usize::from(display_width_with_ambiguous(grapheme, ambiguous_width));
             if width > 0 && width + grapheme_width > max_width {
                 break;
             }
@@ -110,7 +132,10 @@ pub fn wrap_text(text: &str, max_width: u16) -> Vec<WrappedText> {
         if trimmed_start < trimmed_end {
             wrapped.push(WrappedText {
                 text: text[trimmed_start..trimmed_end].to_string(),
-                display_width: display_width(&text[trimmed_start..trimmed_end]),
+                display_width: display_width_with_ambiguous(
+                    &text[trimmed_start..trimmed_end],
+                    ambiguous_width,
+                ),
                 source_range: (trimmed_start, trimmed_end),
             });
         }
@@ -138,6 +163,30 @@ mod tests {
         assert_eq!(display_width("abc"), 3);
         assert_eq!(display_width("世界"), 4);
         assert_eq!(grapheme_count("👩🏽‍💻"), 1);
+    }
+
+    #[test]
+    fn measures_ambiguous_graphemes_by_configuration() {
+        assert_eq!(display_width_with_ambiguous("·", 1), 1);
+        assert_eq!(display_width_with_ambiguous("·", 2), 2);
+        assert_eq!(display_width_with_ambiguous("世界", 2), 4);
+    }
+
+    #[test]
+    fn wraps_ambiguous_text_by_configuration() {
+        let narrow = wrap_text_with_ambiguous("··", 2, 1);
+        assert_eq!(narrow.len(), 1);
+        assert_eq!(narrow[0].display_width, 2);
+
+        let wide = wrap_text_with_ambiguous("··", 2, 2);
+        assert_eq!(wide.len(), 2);
+        assert_eq!(wide[0].display_width, 2);
+    }
+
+    #[test]
+    fn truncates_ambiguous_text_by_configuration() {
+        assert_eq!(truncate_to_width_with_ambiguous("····", 2, 1), "··");
+        assert_eq!(truncate_to_width_with_ambiguous("····", 2, 2), "·");
     }
 
     #[test]

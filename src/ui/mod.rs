@@ -3,7 +3,7 @@ pub mod status;
 
 use std::time::{Duration, Instant};
 
-use crate::compiler::timeline::CompiledTimeline;
+use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
@@ -37,11 +37,14 @@ pub struct UiState {
     pub config_warning: Option<String>,
     pub show_header: bool,
     pub show_status: bool,
+    pub terminal_unicode: bool,
     pub transient_banner: Option<(String, Instant)>,
     fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
     pub viewport_width: u16,
     pub viewport_height: u16,
+    pub timeline_options_hash: u64,
+    timeline_context: TimelineContext,
 }
 
 impl Default for UiState {
@@ -65,21 +68,58 @@ impl UiState {
             config_warning: None,
             show_header: true,
             show_status: true,
+            terminal_unicode: true,
             transient_banner: None,
             fullscreen_restore: None,
             scroll: 0,
             viewport_width: 80,
             viewport_height: 24,
+            timeline_options_hash: TimelineContext::default().options_hash(),
+            timeline_context: TimelineContext::default(),
         }
     }
 
     pub fn resize(&mut self, width: u16, height: u16) {
         if width != self.viewport_width {
             self.viewport_width = width;
+            self.timeline_context.viewport_width = width;
             self.recompile();
         }
         self.viewport_height = height;
         self.clamp_scroll();
+    }
+
+    pub fn set_ambiguous_width(&mut self, ambiguous_width: u8) {
+        let ambiguous_width = if ambiguous_width == 2 { 2 } else { 1 };
+        if self.timeline_context.ambiguous_width == ambiguous_width {
+            return;
+        }
+        self.timeline_context.ambiguous_width = ambiguous_width;
+        self.recompile_if_context_changed();
+    }
+
+    pub fn set_padding_horizontal(&mut self, padding: u16) {
+        if self.timeline_context.padding_horizontal == padding {
+            return;
+        }
+        self.timeline_context.padding_horizontal = padding;
+        self.recompile_if_context_changed();
+    }
+
+    pub fn set_max_width(&mut self, max_width: Option<u16>) {
+        if self.timeline_context.max_width == max_width {
+            return;
+        }
+        self.timeline_context.max_width = max_width;
+        self.recompile_if_context_changed();
+    }
+
+    pub fn set_terminal_unicode(&mut self, terminal_unicode: bool) {
+        self.terminal_unicode = terminal_unicode;
+    }
+
+    pub fn timeline_context(&self) -> &TimelineContext {
+        &self.timeline_context
     }
 
     pub fn configure_layout(&mut self, fullscreen: bool, show_header: bool, show_status: bool) {
@@ -195,7 +235,9 @@ impl UiState {
         if self.user_offset_ms == 0 && track.user_offset_ms != 0 {
             self.user_offset_ms = track.user_offset_ms;
         }
-        let timeline = CompiledTimeline::compile(&track, self.viewport_width);
+        self.sync_timeline_context();
+        self.timeline_options_hash = self.timeline_context.options_hash();
+        let timeline = CompiledTimeline::compile(&track, self.timeline_context);
         self.lyrics = LyricsView::Loaded { track, timeline };
         self.scroll = 0;
     }
@@ -313,11 +355,32 @@ impl UiState {
         start
     }
 
+    fn sync_timeline_context(&mut self) {
+        self.timeline_context.viewport_width = self.viewport_width;
+        self.timeline_context.track_duration_ms =
+            self.track.as_ref().and_then(|track| track.duration_ms);
+    }
+
     fn recompile(&mut self) {
+        self.sync_timeline_context();
+        self.timeline_options_hash = self.timeline_context.options_hash();
         let LyricsView::Loaded { track, timeline } = &mut self.lyrics else {
             return;
         };
-        *timeline = CompiledTimeline::compile(track, self.viewport_width);
+        *timeline = CompiledTimeline::compile(track, self.timeline_context);
+    }
+
+    fn recompile_if_context_changed(&mut self) {
+        self.sync_timeline_context();
+        let options_hash = self.timeline_context.options_hash();
+        if options_hash == self.timeline_options_hash {
+            return;
+        }
+        self.timeline_options_hash = options_hash;
+        let LyricsView::Loaded { track, timeline } = &mut self.lyrics else {
+            return;
+        };
+        *timeline = CompiledTimeline::compile(track, self.timeline_context);
     }
 }
 
@@ -358,6 +421,54 @@ mod tests {
 
         state.resize(120, 30);
         assert_eq!(state.timeline().unwrap().viewport_width, 120);
+    }
+
+    #[test]
+    fn ambiguous_width_recompiles_without_visual_state_changes() {
+        let mut state = UiState::new();
+        state.resize(6, 24);
+        let mut track = track(SyncGranularity::Line);
+        track.lines[0].text = "······".to_string();
+        state.set_lyrics(track);
+
+        let narrow_rows = state.timeline().unwrap().lines[0].wrapped_main.len();
+        let timeline = state.timeline().unwrap().clone();
+        let options_hash = state.timeline_options_hash;
+
+        state.toggle_header();
+        state.show_banner("visual only", Instant::now());
+        state.set_terminal_unicode(false);
+        assert_eq!(state.timeline(), Some(&timeline));
+        assert_eq!(state.timeline_options_hash, options_hash);
+        assert_eq!(narrow_rows, 3);
+
+        state.set_ambiguous_width(2);
+        assert_eq!(state.timeline().unwrap().lines[0].wrapped_main.len(), 6);
+        assert_ne!(state.timeline_options_hash, options_hash);
+        assert_eq!(state.timeline_context().ambiguous_width, 2);
+    }
+
+    #[test]
+    fn padding_and_max_width_recompile_timeline() {
+        let mut state = UiState::new();
+        state.resize(40, 24);
+        state.set_lyrics(track(SyncGranularity::Line));
+
+        let initial_rows = state.timeline().unwrap().lines[0].wrapped_main.len();
+        let initial_hash = state.timeline_options_hash;
+
+        state.set_padding_horizontal(18);
+        assert_ne!(state.timeline_options_hash, initial_hash);
+        assert_ne!(
+            state.timeline().unwrap().lines[0].wrapped_main.len(),
+            initial_rows
+        );
+        assert_eq!(state.timeline_context().padding_horizontal, 18);
+
+        let padded_hash = state.timeline_options_hash;
+        state.set_max_width(Some(2));
+        assert_ne!(state.timeline_options_hash, padded_hash);
+        assert_eq!(state.timeline_context().max_width, Some(2));
     }
 
     #[test]

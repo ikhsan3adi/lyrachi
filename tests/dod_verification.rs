@@ -7,7 +7,7 @@ use lyrachi::{
         handle_resolved,
         resolve::{ResolveCoordinator, TrackPlan},
     },
-    compiler::timeline::{CompiledTimeline, HORIZONTAL_PADDING},
+    compiler::timeline::{CompiledTimeline, HORIZONTAL_PADDING, TimelineContext},
     core::{
         clock::{EffectiveOffsets, PlaybackClock, PlaybackStatus},
         normalize::normalize_track,
@@ -26,7 +26,7 @@ fn dod_1_line_and_word_transitions_stay_within_100ms_of_player_position() {
     let fixture = include_str!("fixtures/enhanced_karaoke.elrc");
     let parsed = parse_lrc(fixture, Some(30_000)).unwrap();
     let track = normalize_track(parsed, "local", None, 1.0, Some(30_000), 0);
-    let timeline = CompiledTimeline::compile(&track, 80);
+    let timeline = CompiledTimeline::compile(&track, TimelineContext::new(80));
 
     let base = Instant::now();
     let mut clock = PlaybackClock::new();
@@ -277,25 +277,109 @@ fn dod_6_terminal_draw_p99_under_2ms_on_120x40() {
     let mut clock = PlaybackClock::new();
     clock.on_status_changed(PlaybackStatus::Playing, now);
     clock.on_seeked(10_500, now);
-    draw_frame(&mut terminal, &mut state, &clock).unwrap();
 
-    let mut durations_us = Vec::with_capacity(200);
-    for _ in 0..200 {
-        let start = Instant::now();
-        draw_frame(&mut terminal, &mut state, &clock).unwrap();
-        durations_us.push(start.elapsed().as_micros());
-    }
-    durations_us.sort_unstable();
-    let p50_us = durations_us[100];
-    let p99_us = durations_us[197];
     let budget_us = if cfg!(debug_assertions) {
         10_000
     } else {
         2_000
     };
-    println!("dod_6_terminal_draw_120x40: p50={p50_us}us p99={p99_us}us (budget={budget_us}us)");
-    assert!(
-        p99_us < budget_us,
-        "DoD #6 violated: Terminal::draw p99 was {p99_us} us (>= {budget_us} us) on 120x40"
-    );
+
+    for mode in BenchmarkMode::ALL {
+        let stats = draw_stats_for_mode(&mut terminal, &mut state, &clock, mode, 50, 200);
+        println!(
+            "dod_6_terminal_draw_120x40 [{}]: p50={}us p99={}us (budget={budget_us}us)",
+            mode.label(),
+            stats.p50_us,
+            stats.p99_us
+        );
+        assert!(
+            stats.p99_us < budget_us,
+            "DoD #6 violated for {}: Terminal::draw p99 was {} us (>= {budget_us} us) on 120x40",
+            mode.label(),
+            stats.p99_us
+        );
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BenchmarkMode {
+    Normal,
+    Block,
+    Kinetic,
+    WipeEffects,
+}
+
+impl BenchmarkMode {
+    pub const ALL: [Self; 4] = [Self::Normal, Self::Block, Self::Kinetic, Self::WipeEffects];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Normal => "normal",
+            Self::Block => "block",
+            Self::Kinetic => "kinetic",
+            Self::WipeEffects => "wipe+effects",
+        }
+    }
+}
+
+struct DrawStats {
+    p50_us: u128,
+    p99_us: u128,
+}
+
+#[allow(dead_code)]
+fn draw_stats<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut UiState,
+    clock: &PlaybackClock,
+    warmup: usize,
+    samples: usize,
+) -> DrawStats {
+    draw_stats_for_mode(
+        terminal,
+        state,
+        clock,
+        BenchmarkMode::Normal,
+        warmup,
+        samples,
+    )
+}
+
+fn draw_stats_for_mode<B: ratatui::backend::Backend>(
+    terminal: &mut Terminal<B>,
+    state: &mut UiState,
+    clock: &PlaybackClock,
+    mode: BenchmarkMode,
+    warmup: usize,
+    samples: usize,
+) -> DrawStats {
+    match mode {
+        BenchmarkMode::Normal => {}
+        BenchmarkMode::Block => {
+            // Baseline before M26/M27 block mode renderer is hooked
+        }
+        BenchmarkMode::Kinetic => {
+            // Baseline before M37 kinetic phrase renderer is hooked
+        }
+        BenchmarkMode::WipeEffects => {
+            // Baseline before M35 wipe and tachyonfx are hooked
+        }
+    }
+
+    for _ in 0..warmup {
+        draw_frame(terminal, state, clock).unwrap();
+    }
+
+    let mut durations_us = Vec::with_capacity(samples);
+    for _ in 0..samples {
+        let started = Instant::now();
+        draw_frame(terminal, state, clock).unwrap();
+        durations_us.push(started.elapsed().as_micros());
+    }
+    durations_us.sort_unstable();
+
+    DrawStats {
+        p50_us: durations_us[(samples / 2).min(samples - 1)],
+        p99_us: durations_us[(samples * 99).div_ceil(100).saturating_sub(1)],
+    }
 }

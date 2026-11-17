@@ -1,8 +1,65 @@
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
+
 use crate::core::model::{LineRole, SyncGranularity, SyncedTrack, WordToken};
-use crate::core::text::wrap_text;
+use crate::core::text::wrap_text_with_ambiguous;
 
 pub const HORIZONTAL_PADDING: u16 = 2;
 const MIN_WRAP_WIDTH: u16 = 1;
+const DEFAULT_VIEWPORT_WIDTH: u16 = 80;
+const DEFAULT_PHRASE_MAX_CHARS: u16 = 18;
+const DEFAULT_MIN_GAP_MS: u64 = 4_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TimelineContext {
+    pub viewport_width: u16,
+    pub ambiguous_width: u8,
+    pub padding_horizontal: u16,
+    pub max_width: Option<u16>,
+    pub synthetic_word_timing: bool,
+    pub phrase_max_chars: u16,
+    pub min_gap_ms: u64,
+    pub track_duration_ms: Option<u64>,
+}
+
+impl Default for TimelineContext {
+    fn default() -> Self {
+        Self {
+            viewport_width: DEFAULT_VIEWPORT_WIDTH,
+            ambiguous_width: 1,
+            padding_horizontal: HORIZONTAL_PADDING,
+            max_width: None,
+            synthetic_word_timing: false,
+            phrase_max_chars: DEFAULT_PHRASE_MAX_CHARS,
+            min_gap_ms: DEFAULT_MIN_GAP_MS,
+            track_duration_ms: None,
+        }
+    }
+}
+
+impl TimelineContext {
+    pub fn new(viewport_width: u16) -> Self {
+        Self {
+            viewport_width,
+            ..Self::default()
+        }
+    }
+
+    pub fn options_hash(self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        self.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    pub fn wrap_width(self) -> u16 {
+        let available = self
+            .viewport_width
+            .saturating_sub(self.padding_horizontal.saturating_mul(2));
+        self.max_width
+            .map_or(available, |max_width| available.min(max_width))
+            .max(MIN_WRAP_WIDTH)
+    }
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WrappedSubLine {
@@ -32,33 +89,39 @@ pub struct ActiveStageCursor {
 #[derive(Debug, Clone, PartialEq)]
 pub struct CompiledTimeline {
     pub viewport_width: u16,
+    pub context: TimelineContext,
     pub granularity: SyncGranularity,
     pub lines: Vec<CompiledLine>,
 }
 
 impl CompiledTimeline {
-    pub fn compile(track: &SyncedTrack, viewport_width: u16) -> Self {
-        let wrap_width = viewport_width
-            .saturating_sub(HORIZONTAL_PADDING.saturating_mul(2))
-            .max(MIN_WRAP_WIDTH);
+    pub fn compile(track: &SyncedTrack, context: TimelineContext) -> Self {
+        let wrap_width = context.wrap_width();
 
         let lines = track
             .lines
             .iter()
             .enumerate()
             .map(|(source_line_idx, line)| {
-                let wrapped_main = wrap_text(&line.text, wrap_width)
-                    .into_iter()
-                    .map(|wrapped| WrappedSubLine {
-                        text: wrapped.text,
-                        display_width: wrapped.display_width,
-                        source_byte_range: wrapped.source_range,
-                    })
-                    .collect();
+                let wrapped_main =
+                    wrap_text_with_ambiguous(&line.text, wrap_width, context.ambiguous_width)
+                        .into_iter()
+                        .map(|wrapped| WrappedSubLine {
+                            text: wrapped.text,
+                            display_width: wrapped.display_width,
+                            source_byte_range: wrapped.source_range,
+                        })
+                        .collect();
                 let wrapped_annotations = line
                     .annotations
                     .iter()
-                    .flat_map(|annotation| wrap_text(&annotation.text, wrap_width))
+                    .flat_map(|annotation| {
+                        wrap_text_with_ambiguous(
+                            &annotation.text,
+                            wrap_width,
+                            context.ambiguous_width,
+                        )
+                    })
                     .map(|wrapped| wrapped.text)
                     .collect();
 
@@ -75,7 +138,8 @@ impl CompiledTimeline {
             .collect();
 
         Self {
-            viewport_width,
+            viewport_width: context.viewport_width,
+            context,
             granularity: track.granularity,
             lines,
         }
@@ -239,7 +303,7 @@ mod tests {
 
     #[test]
     fn wraps_lines_and_annotations_within_viewport() {
-        let timeline = CompiledTimeline::compile(&track(), 16);
+        let timeline = CompiledTimeline::compile(&track(), TimelineContext::new(16));
 
         assert_eq!(timeline.viewport_width, 16);
         assert_eq!(timeline.lines[0].wrapped_main.len(), 2);
@@ -256,7 +320,7 @@ mod tests {
 
     #[test]
     fn evaluates_line_word_and_progress() {
-        let timeline = CompiledTimeline::compile(&track(), 40);
+        let timeline = CompiledTimeline::compile(&track(), TimelineContext::new(40));
 
         let before = timeline.evaluate(999);
         assert_eq!(before.active_line_idx, None);
@@ -277,7 +341,7 @@ mod tests {
 
     #[test]
     fn reports_next_line_or_word_boundary() {
-        let timeline = CompiledTimeline::compile(&track(), 40);
+        let timeline = CompiledTimeline::compile(&track(), TimelineContext::new(40));
 
         assert_eq!(timeline.next_boundary_ms(500), Some(1_000));
         assert_eq!(timeline.next_boundary_ms(1_500), Some(1_900));
@@ -295,7 +359,7 @@ mod tests {
             word("wide ", 1_800, 2_200),
             word("world", 2_200, 3_000),
         ];
-        let timeline = CompiledTimeline::compile(&paused_track, 40);
+        let timeline = CompiledTimeline::compile(&paused_track, TimelineContext::new(40));
 
         assert_eq!(timeline.next_boundary_ms(1_200), Some(1_301));
         assert_eq!(timeline.next_boundary_ms(1_500), Some(1_800));
@@ -303,7 +367,7 @@ mod tests {
 
     #[test]
     fn anchors_viewport_across_active_lines_and_gaps() {
-        let timeline = CompiledTimeline::compile(&track(), 40);
+        let timeline = CompiledTimeline::compile(&track(), TimelineContext::new(40));
 
         assert_eq!(timeline.anchor_line_index(500), Some(0));
         assert_eq!(timeline.anchor_line_index(1_500), Some(0));
@@ -314,7 +378,7 @@ mod tests {
         let mut empty = track();
         empty.lines.clear();
         assert_eq!(
-            CompiledTimeline::compile(&empty, 40).anchor_line_index(0),
+            CompiledTimeline::compile(&empty, TimelineContext::new(40)).anchor_line_index(0),
             None
         );
     }
@@ -365,7 +429,7 @@ mod tests {
             }],
         };
 
-        let timeline = CompiledTimeline::compile(&syllable_track, 14);
+        let timeline = CompiledTimeline::compile(&syllable_track, TimelineContext::new(14));
         assert_eq!(timeline.granularity, SyncGranularity::Syllable);
         assert_eq!(
             timeline.lines[0]
@@ -381,5 +445,94 @@ mod tests {
         assert_eq!(second_syllable.active_word_idx, Some(1));
         assert!((second_syllable.progress - 0.5).abs() < 0.0001);
         assert_eq!(timeline.next_boundary_ms(1_300), Some(1_400));
+    }
+
+    #[test]
+    fn context_controls_wrap_width_and_is_stored_on_timeline() {
+        let base = TimelineContext::new(40);
+        assert_eq!(base.wrap_width(), 36);
+
+        let timeline = CompiledTimeline::compile(&track(), base);
+        assert_eq!(timeline.context, base);
+        assert_eq!(timeline.viewport_width, 40);
+
+        let mut capped = base;
+        capped.max_width = Some(10);
+        assert_eq!(capped.wrap_width(), 10);
+        assert_ne!(
+            CompiledTimeline::compile(&track(), capped).lines[0]
+                .wrapped_main
+                .len(),
+            timeline.lines[0].wrapped_main.len()
+        );
+
+        let mut padded = base;
+        padded.padding_horizontal = 18;
+        assert_eq!(padded.wrap_width(), 4);
+        assert_ne!(
+            CompiledTimeline::compile(&track(), padded).lines[0]
+                .wrapped_main
+                .len(),
+            timeline.lines[0].wrapped_main.len()
+        );
+    }
+
+    #[test]
+    fn ambiguous_width_changes_wrapping() {
+        let mut ambiguous_track = track();
+        ambiguous_track.lines[0].text = "······".to_string();
+        ambiguous_track.lines[0].words.clear();
+
+        let narrow = CompiledTimeline::compile(&ambiguous_track, TimelineContext::new(6));
+        let mut wide_context = TimelineContext::new(6);
+        wide_context.ambiguous_width = 2;
+        let wide = CompiledTimeline::compile(&ambiguous_track, wide_context);
+
+        assert_eq!(narrow.lines[0].wrapped_main.len(), 3);
+        assert_eq!(wide.lines[0].wrapped_main.len(), 6);
+    }
+
+    #[test]
+    fn options_hash_covers_every_timeline_field() {
+        let base = TimelineContext::new(40);
+        let variants = [
+            TimelineContext {
+                viewport_width: 41,
+                ..base
+            },
+            TimelineContext {
+                ambiguous_width: 2,
+                ..base
+            },
+            TimelineContext {
+                padding_horizontal: 3,
+                ..base
+            },
+            TimelineContext {
+                max_width: Some(20),
+                ..base
+            },
+            TimelineContext {
+                synthetic_word_timing: true,
+                ..base
+            },
+            TimelineContext {
+                phrase_max_chars: 20,
+                ..base
+            },
+            TimelineContext {
+                min_gap_ms: 5_000,
+                ..base
+            },
+            TimelineContext {
+                track_duration_ms: Some(180_000),
+                ..base
+            },
+        ];
+
+        for variant in variants {
+            assert_ne!(variant.options_hash(), base.options_hash());
+        }
+        assert_eq!(TimelineContext::new(40).options_hash(), base.options_hash());
     }
 }

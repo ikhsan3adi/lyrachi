@@ -7,7 +7,7 @@ use ratatui::{
 };
 
 use crate::compiler::timeline::{
-    ActiveStageCursor, CompiledLine, CompiledTimeline, HORIZONTAL_PADDING, WrappedSubLine,
+    ActiveStageCursor, CompiledLine, CompiledTimeline, WrappedSubLine,
 };
 
 use super::{LyricsView, UiState, status::footer_line};
@@ -23,22 +23,21 @@ pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     ])
     .areas(area);
 
+    let padding = state.timeline_context().padding_horizontal;
     if header_rows > 0 {
-        render_header(frame, content_area(header), state);
+        render_header(frame, content_area(header, padding), state);
     }
-    render_body(frame, content_area(body), state, effective_ms);
+    render_body(frame, content_area(body, padding), state, effective_ms);
     if let Some(line) = footer_line(state) {
         frame.render_widget(Paragraph::new(line), footer);
     }
 }
 
-fn content_area(area: Rect) -> Rect {
+fn content_area(area: Rect, padding: u16) -> Rect {
     Rect {
-        x: area.x.saturating_add(HORIZONTAL_PADDING),
+        x: area.x.saturating_add(padding),
         y: area.y,
-        width: area
-            .width
-            .saturating_sub(HORIZONTAL_PADDING.saturating_mul(2)),
+        width: area.width.saturating_sub(padding.saturating_mul(2)),
         height: area.height,
     }
 }

@@ -26,6 +26,8 @@ pub struct RuntimeConfig {
     pub fullscreen: bool,
     pub show_header: bool,
     pub show_status: bool,
+    pub ambiguous_width: u8,
+    pub unicode: TerminalUnicode,
 }
 
 impl Default for RuntimeConfig {
@@ -41,6 +43,8 @@ impl Default for RuntimeConfig {
             fullscreen: false,
             show_header: true,
             show_status: true,
+            ambiguous_width: 1,
+            unicode: TerminalUnicode::Full,
         }
     }
 }
@@ -144,6 +148,13 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     if let Some(show_status) = file.ui.show_status {
         config.show_status = show_status;
     }
+    if let Some(ambiguous_width) = file.terminal.ambiguous_width {
+        config.ambiguous_width =
+            clamp_ambiguous_width(ambiguous_width, "terminal.ambiguous_width", warnings);
+    }
+    if let Some(unicode) = file.terminal.unicode {
+        config.unicode = unicode;
+    }
 }
 
 fn apply_args(config: &mut RuntimeConfig, args: &Args, warnings: &mut Vec<String>) {
@@ -222,6 +233,16 @@ fn clamp_l1_entries(value: usize, field: &str, warnings: &mut Vec<String>) -> us
     clamped
 }
 
+fn clamp_ambiguous_width(value: u8, field: &str, warnings: &mut Vec<String>) -> u8 {
+    let clamped = if value == 2 { 2 } else { 1 };
+    if clamped != value {
+        warnings.push(format!(
+            "config: {field} {value} is outside 1..=2; using {clamped}"
+        ));
+    }
+    clamped
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct FileConfig {
@@ -231,6 +252,7 @@ pub struct FileConfig {
     pub providers: ProvidersSection,
     pub cache: CacheSection,
     pub ui: UiSection,
+    pub terminal: TerminalSection,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -266,6 +288,27 @@ pub struct UiSection {
     pub fullscreen: Option<bool>,
     pub show_header: Option<bool>,
     pub show_status: Option<bool>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TerminalSection {
+    pub ambiguous_width: Option<u8>,
+    pub unicode: Option<TerminalUnicode>,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum TerminalUnicode {
+    #[default]
+    Full,
+    Ascii,
+}
+
+impl TerminalUnicode {
+    pub fn is_full(self) -> bool {
+        self == Self::Full
+    }
 }
 
 #[cfg(test)]
@@ -370,6 +413,37 @@ l1_entries = 8
         assert!(outcome.config.fullscreen);
         assert!(!outcome.config.show_header);
         assert!(!outcome.config.show_status);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_terminal_options() {
+        let path = temp_file(
+            "terminal-options",
+            "[terminal]\nambiguous_width = 2\nunicode = \"ascii\"\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.ambiguous_width, 2);
+        assert_eq!(outcome.config.unicode, TerminalUnicode::Ascii);
+        assert!(outcome.warnings.is_empty());
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn clamps_invalid_ambiguous_width() {
+        let path = temp_file("ambiguous-width", "[terminal]\nambiguous_width = 3\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.ambiguous_width, 1);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ambiguous_width"))
+        );
 
         fs::remove_file(path).unwrap();
     }

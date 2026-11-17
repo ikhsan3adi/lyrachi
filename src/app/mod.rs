@@ -36,6 +36,24 @@ pub struct Resolution<'a> {
     pub cache: Option<&'a CacheHandle>,
 }
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct AnimationStatus {
+    pub effects_active: bool,
+    pub countdown_active: bool,
+    pub ribbon_animating: bool,
+}
+
+impl AnimationStatus {
+    pub fn needs_frame_tick(self) -> bool {
+        self.effects_active || self.countdown_active || self.ribbon_animating
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct AppRuntime {
+    pub animation: AnimationStatus,
+}
+
 #[derive(Debug, Default)]
 struct InputOutcome {
     quit: bool,
@@ -83,8 +101,11 @@ pub async fn run(
     state.offline = !config.network;
     state.config_warning = warnings.first().cloned();
     state.configure_layout(config.fullscreen, config.show_header, config.show_status);
+    state.set_ambiguous_width(config.ambiguous_width);
+    state.set_terminal_unicode(config.unicode.is_full());
     refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
+    let runtime = AppRuntime::default();
     let mut coordinator = ResolveCoordinator::with_cache_capacity(config.l1_entries);
     let mut events = EventStream::new();
     let (media_tx, mut media_rx) = mpsc::channel(256);
@@ -117,7 +138,7 @@ pub async fn run(
 
             draw_frame(terminal, &mut state, &clock)?;
 
-            let wait = next_wait(&state, &clock, now);
+            let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
                 .time_until_flush(now)
                 .map_or(wait, |flush_wait| wait.min(flush_wait));
@@ -616,7 +637,15 @@ fn track_label(track: &TrackMeta) -> String {
     }
 }
 
-fn next_wait(state: &UiState, clock: &PlaybackClock, now: Instant) -> Duration {
+fn next_wait(
+    state: &UiState,
+    clock: &PlaybackClock,
+    now: Instant,
+    animation: AnimationStatus,
+) -> Duration {
+    if animation.needs_frame_tick() {
+        return Duration::from_millis(16);
+    }
     if !matches!(clock.state(), ClockState::Playing { .. }) {
         return Duration::from_secs(1);
     }
@@ -697,18 +726,65 @@ mod tests {
         let mut state = UiState::new();
         state.set_lyrics(track());
 
-        assert_eq!(next_wait(&state, &clock, now), Duration::from_secs(1));
         assert_eq!(
-            next_wait(&state, &clock, now + Duration::from_millis(1_100)),
+            next_wait(&state, &clock, now, AnimationStatus::default()),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_wait(
+                &state,
+                &clock,
+                now + Duration::from_millis(1_100),
+                AnimationStatus::default()
+            ),
             Duration::from_millis(16)
         );
         assert_eq!(
-            next_wait(&state, &clock, now + Duration::from_millis(1_995)),
+            next_wait(
+                &state,
+                &clock,
+                now + Duration::from_millis(1_995),
+                AnimationStatus::default()
+            ),
             Duration::from_millis(6)
         );
 
         clock.on_rate_changed(2.0, now);
-        assert_eq!(next_wait(&state, &clock, now), Duration::from_millis(500));
+        assert_eq!(
+            next_wait(&state, &clock, now, AnimationStatus::default()),
+            Duration::from_millis(500)
+        );
+    }
+
+    #[test]
+    fn animation_status_requests_frame_ticks() {
+        let now = Instant::now();
+        let clock = PlaybackClock::new();
+        let state = UiState::new();
+        let animation = AnimationStatus {
+            effects_active: true,
+            ..AnimationStatus::default()
+        };
+
+        assert_eq!(
+            next_wait(&state, &clock, now, animation),
+            Duration::from_millis(16)
+        );
+        assert!(
+            AnimationStatus {
+                countdown_active: true,
+                ..AnimationStatus::default()
+            }
+            .needs_frame_tick()
+        );
+        assert!(
+            AnimationStatus {
+                ribbon_animating: true,
+                ..AnimationStatus::default()
+            }
+            .needs_frame_tick()
+        );
+        assert!(!AnimationStatus::default().needs_frame_tick());
     }
 
     #[test]
@@ -717,7 +793,10 @@ mod tests {
         let clock = PlaybackClock::new();
         let state = UiState::new();
 
-        assert_eq!(next_wait(&state, &clock, now), Duration::from_secs(1));
+        assert_eq!(
+            next_wait(&state, &clock, now, AnimationStatus::default()),
+            Duration::from_secs(1)
+        );
     }
 
     #[test]
@@ -911,7 +990,9 @@ mod tests {
         state.resize(120, 40);
         let mut clock = PlaybackClock::new();
         clock.on_status_changed(PlaybackStatus::Playing, Instant::now());
-        draw_frame(&mut terminal, &mut state, &clock).unwrap();
+        for _ in 0..50 {
+            draw_frame(&mut terminal, &mut state, &clock).unwrap();
+        }
 
         let mut samples_us = Vec::with_capacity(200);
         for _ in 0..200 {
