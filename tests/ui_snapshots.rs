@@ -1134,3 +1134,17 @@ fn block_waiting_countdown_120x40() {
         "120x40_block_waiting_countdown",
     );
 }
+
+#[test]
+fn kinetic_phrase_80x24() {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Kinetic;
+    snapshot(&mut state, 80, 24, 9_500, "80x24_kinetic_phrase");
+}
+
+#[test]
+fn kinetic_phrase_120x40() {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Kinetic;
+    snapshot(&mut state, 120, 40, 9_500, "120x40_kinetic_phrase");
+}

@@ -36,6 +36,7 @@ pub enum DisplayMode {
     #[default]
     Normal,
     Block,
+    Kinetic,
 }
 
 impl DisplayMode {
@@ -43,6 +44,7 @@ impl DisplayMode {
         match self {
             Self::Normal => "normal",
             Self::Block => "block",
+            Self::Kinetic => "kinetic",
         }
     }
 
@@ -50,6 +52,7 @@ impl DisplayMode {
         match name {
             "normal" => Some(Self::Normal),
             "block" => Some(Self::Block),
+            "kinetic" => Some(Self::Kinetic),
             _ => None,
         }
     }
@@ -57,7 +60,8 @@ impl DisplayMode {
     pub const fn toggled(self) -> Self {
         match self {
             Self::Normal => Self::Block,
-            Self::Block => Self::Normal,
+            Self::Block => Self::Kinetic,
+            Self::Kinetic => Self::Normal,
         }
     }
 }
@@ -439,6 +443,7 @@ impl UiState {
         self.timeline_context.padding_horizontal = style.padding[1];
         self.timeline_context.max_width = style.resolved_max_width(self.viewport_width);
         self.timeline_context.synthetic_word_timing = style.synthetic_word_timing;
+        self.timeline_context.phrase_max_chars = style.big_text_max_chars_per_phrase;
         self.timeline_context.min_gap_ms = style.instrumental_min_gap_ms;
         self.style = style;
         self.recompile_if_context_changed();
@@ -800,6 +805,7 @@ impl UiState {
     fn sync_timeline_context(&mut self) {
         self.timeline_context.viewport_width = self.viewport_width;
         self.timeline_context.synthetic_word_timing = self.style.synthetic_word_timing;
+        self.timeline_context.phrase_max_chars = self.style.big_text_max_chars_per_phrase;
         self.timeline_context.track_duration_ms =
             self.track.as_ref().and_then(|track| track.duration_ms);
     }
@@ -932,6 +938,14 @@ mod tests {
         state.set_terminal_unicode(true);
         assert_eq!(state.effective_display_mode(), DisplayMode::Block);
         state.toggle_display_mode();
+        assert_eq!(state.display_mode, DisplayMode::Kinetic);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Kinetic);
+
+        state.set_terminal_unicode(false);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        state.set_terminal_unicode(true);
+
+        state.toggle_display_mode();
         assert_eq!(state.display_mode, DisplayMode::Normal);
 
         state.toggle_word_highlight();
@@ -943,11 +957,15 @@ mod tests {
         assert_eq!(DisplayMode::default(), DisplayMode::Normal);
         assert_eq!(DisplayMode::Normal.as_str(), "normal");
         assert_eq!(DisplayMode::Block.as_str(), "block");
+        assert_eq!(DisplayMode::Kinetic.as_str(), "kinetic");
         assert_eq!(
             DisplayMode::from_config_name("block"),
             Some(DisplayMode::Block)
         );
-        assert_eq!(DisplayMode::from_config_name("kinetic"), None);
+        assert_eq!(
+            DisplayMode::from_config_name("kinetic"),
+            Some(DisplayMode::Kinetic)
+        );
     }
 
     #[test]

@@ -1,6 +1,7 @@
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
+use crate::compiler::phrase::{PhraseChunk, compile_line_phrases};
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{LineRole, SyncGranularity, SyncedTrack, WordToken};
 use crate::core::text::{estimate_word_timings, wrap_text_with_ambiguous};
@@ -78,6 +79,20 @@ pub struct CompiledLine {
     pub wrapped_main: Vec<WrappedSubLine>,
     pub wrapped_annotations: Vec<String>,
     pub words: Vec<WordToken>,
+    pub phrases: Vec<PhraseChunk>,
+}
+
+impl CompiledLine {
+    pub fn active_phrase_index(&self, effective_ms: u64) -> Option<usize> {
+        if self.phrases.is_empty() {
+            return None;
+        }
+        let next_idx = self
+            .phrases
+            .partition_point(|phrase| phrase.start_ms <= effective_ms);
+        let idx = next_idx.checked_sub(1)?;
+        (effective_ms <= self.phrases[idx].end_ms).then_some(idx)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -171,6 +186,17 @@ impl CompiledTimeline {
                 } else {
                     line.words.clone()
                 };
+                let phrases = if track.is_instrumental || line.role == LineRole::InstrumentalBreak {
+                    Vec::new()
+                } else {
+                    compile_line_phrases(
+                        &line.text,
+                        line.start_ms,
+                        line.end_ms,
+                        &words,
+                        context.phrase_max_chars,
+                    )
+                };
 
                 CompiledLine {
                     source_line_idx,
@@ -180,6 +206,7 @@ impl CompiledTimeline {
                     wrapped_main,
                     wrapped_annotations,
                     words,
+                    phrases,
                 }
             })
             .collect();
@@ -339,6 +366,15 @@ impl CompiledTimeline {
                     earliest = min_boundary(earliest, Some(word.end_ms + 1));
                 }
             }
+
+            let next_phrase_idx = line
+                .phrases
+                .partition_point(|phrase| phrase.start_ms <= effective_ms);
+            let next_phrase_start = line
+                .phrases
+                .get(next_phrase_idx)
+                .map(|phrase| phrase.start_ms);
+            earliest = min_boundary(earliest, next_phrase_start);
         }
 
         if let Some(gap) = self.waiting_gap(effective_ms, self.line_index(effective_ms))

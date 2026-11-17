@@ -174,7 +174,7 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
         match DisplayMode::from_config_name(&name) {
             Some(mode) => config.display_mode = mode,
             None => warnings.push(format!(
-                "config: unknown ui.display_mode `{name}`; valid values: normal, block"
+                "config: unknown ui.display_mode `{name}`; valid values: normal, block, kinetic"
             )),
         }
     }
@@ -664,12 +664,20 @@ l1_entries = 8
         assert!(!outcome.config.word_highlight);
         assert!(outcome.warnings.is_empty());
 
-        fs::remove_file(path).unwrap();
+        fs::remove_file(&path).unwrap();
+
+        let kinetic_path = temp_file("ui-display-kinetic", "[ui]\ndisplay_mode = \"kinetic\"\n");
+        let kinetic_outcome = RuntimeConfig::resolve(&kinetic_path, Vec::new(), &args(&[]));
+
+        assert_eq!(kinetic_outcome.config.display_mode, DisplayMode::Kinetic);
+        assert!(kinetic_outcome.warnings.is_empty());
+
+        fs::remove_file(kinetic_path).unwrap();
     }
 
     #[test]
     fn warns_on_unknown_display_mode() {
-        let path = temp_file("ui-display-invalid", "[ui]\ndisplay_mode = \"kinetic\"\n");
+        let path = temp_file("ui-display-invalid", "[ui]\ndisplay_mode = \"marquee\"\n");
         let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
 
         assert_eq!(outcome.config.display_mode, DisplayMode::Normal);
@@ -677,7 +685,7 @@ l1_entries = 8
             outcome
                 .warnings
                 .iter()
-                .any(|warning| warning.contains("display_mode") && warning.contains("kinetic"))
+                .any(|warning| warning.contains("display_mode") && warning.contains("marquee"))
         );
 
         fs::remove_file(path).unwrap();

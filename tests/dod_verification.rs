@@ -376,7 +376,8 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
     let previous_style = state.style.clone();
     state.display_mode = match mode {
         BenchmarkMode::Block | BenchmarkMode::WipeEffects => DisplayMode::Block,
-        BenchmarkMode::Normal | BenchmarkMode::Kinetic => DisplayMode::Normal,
+        BenchmarkMode::Normal => DisplayMode::Normal,
+        BenchmarkMode::Kinetic => DisplayMode::Kinetic,
     };
     let wipe = mode == BenchmarkMode::WipeEffects;
     if wipe {
@@ -493,4 +494,41 @@ fn dod_13_synthetic_word_timing_satisfies_utf8_monotonicity_and_leaves_track_int
     );
     state.set_resolved_style(default_resolved);
     assert_eq!(state.track_status_label(), Some("line"));
+}
+
+#[test]
+fn dod_14_kinetic_phrase_mode_preserves_text_and_timing_precedence() {
+    let fixture = include_str!("fixtures/enhanced_karaoke.elrc");
+    let parsed = parse_lrc(fixture, Some(30_000)).unwrap();
+    let track = normalize_track(parsed, "local", None, 1.0, Some(30_000), 0);
+
+    let mut ctx = TimelineContext::new(80);
+    ctx.phrase_max_chars = 12;
+    let compiled = CompiledTimeline::compile(&track, ctx);
+
+    for (idx, line) in compiled.lines.iter().enumerate() {
+        let source_text = &track.lines[idx].text;
+        let reconstructed: String = line.phrases.iter().map(|p| p.slice(source_text)).collect();
+        assert_eq!(reconstructed, *source_text);
+        for pair in line.phrases.windows(2) {
+            assert_eq!(pair[0].end_ms, pair[1].start_ms);
+            assert_eq!(pair[0].byte_range.1, pair[1].byte_range.0);
+        }
+    }
+
+    let mut state = UiState::new();
+    state.set_player(Some("mpv".to_string()));
+    state.playback = PlaybackStatus::Playing;
+    state.display_mode = DisplayMode::Kinetic;
+    state.set_lyrics(track);
+    state.resize(120, 40);
+
+    let now = Instant::now();
+    let mut clock = PlaybackClock::new();
+    clock.on_status_changed(PlaybackStatus::Playing, now);
+    clock.on_seeked(11_400, now);
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    draw_frame(&mut terminal, &mut state, &clock).unwrap();
 }

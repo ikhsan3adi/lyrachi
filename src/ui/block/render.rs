@@ -71,6 +71,49 @@ pub(crate) fn render_lines(
     lines
 }
 
+pub(crate) fn render_phrase_lines(
+    layout: &BlockLayout,
+    chunk_range: (usize, usize),
+    context: BlockRenderContext<'_>,
+) -> Vec<Line<'static>> {
+    let (chunk_start, chunk_end) = chunk_range;
+    if chunk_start == 0 {
+        return render_lines(layout, context);
+    }
+
+    let mut chunk_words = Vec::new();
+    let mut remapped_active = None;
+    for (global_idx, word) in context.words.iter().enumerate() {
+        if word.byte_range.1 <= chunk_start || word.byte_range.0 >= chunk_end {
+            continue;
+        }
+        let local_idx = chunk_words.len();
+        if context.cursor.active_word_idx == Some(global_idx) {
+            remapped_active = Some(local_idx);
+        }
+        chunk_words.push(WordToken {
+            byte_range: (
+                word.byte_range.0.saturating_sub(chunk_start),
+                word.byte_range.1.min(chunk_end).saturating_sub(chunk_start),
+            ),
+            start_ms: word.start_ms,
+            end_ms: word.end_ms,
+            display_width: word.display_width,
+        });
+    }
+
+    let mut cursor = context.cursor;
+    cursor.active_word_idx = remapped_active;
+    render_lines(
+        layout,
+        BlockRenderContext {
+            words: &chunk_words,
+            cursor,
+            ..context
+        },
+    )
+}
+
 impl BlockCellState {
     fn style(self, styles: BlockStyles, style: &ResolvedStyle, role: LineRole) -> Style {
         match self {

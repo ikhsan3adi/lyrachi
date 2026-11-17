@@ -474,6 +474,13 @@ impl StyleProfile {
                 warnings,
             );
         }
+        self.big_text.max_chars_per_phrase = clamp_u16(
+            self.big_text.max_chars_per_phrase,
+            1,
+            120,
+            "big_text.max_chars_per_phrase",
+            warnings,
+        );
     }
 
     /// Resolve this profile for a concrete terminal capability and background hint.
@@ -541,6 +548,7 @@ impl StyleProfile {
             header_format: self.header.format.clone(),
             big_text_max_size: self.big_text.max_size,
             big_text_overflow: self.big_text.overflow,
+            big_text_max_chars_per_phrase: self.big_text.max_chars_per_phrase.clamp(1, 120),
         }
     }
 }
@@ -1022,11 +1030,22 @@ pub enum BigTextOverflow {
 }
 
 /// Block mode typography limits (`[big_text]`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleBigText {
     pub max_size: BigTextMaxSize,
     pub overflow: BigTextOverflow,
+    pub max_chars_per_phrase: u16,
+}
+
+impl Default for StyleBigText {
+    fn default() -> Self {
+        Self {
+            max_size: BigTextMaxSize::default(),
+            overflow: BigTextOverflow::default(),
+            max_chars_per_phrase: 18,
+        }
+    }
 }
 
 /// Lightweight, `Clone + PartialEq` presentation snapshot stored on `UiState`.
@@ -1076,6 +1095,7 @@ pub struct ResolvedStyle {
     pub header_format: Option<String>,
     pub big_text_max_size: BigTextMaxSize,
     pub big_text_overflow: BigTextOverflow,
+    pub big_text_max_chars_per_phrase: u16,
 }
 
 impl Default for ResolvedStyle {
