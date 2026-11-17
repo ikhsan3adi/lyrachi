@@ -612,6 +612,14 @@ mod tests {
     }
 
     #[test]
+    fn falls_back_to_plain_when_a_combining_mark_has_no_glyph() {
+        let text = "x\u{301}";
+        let layout = BlockLayout::new(text, 80, 24, 1);
+        assert_eq!(layout.font_size, BlockFontSize::Plain);
+        assert!(rendered(&layout).contains(text));
+    }
+
+    #[test]
     fn preserves_multibyte_ranges_and_does_not_case_fold_eszett() {
         let text = "straße 👩🏽‍💻";
         let layout = BlockLayout::new(text, 120, 24, 1);

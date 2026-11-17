@@ -72,7 +72,11 @@ pub fn glyph_bitmap_for_cluster(text: &str, size: BlockFontSize) -> Option<Glyph
     if size == BlockFontSize::Plain {
         return None;
     }
-    let ch = text.nfc().next()?;
+    let mut normalized = text.nfc();
+    let ch = normalized.next()?;
+    if normalized.next().is_some() {
+        return None;
+    }
     glyph_bitmap(ch, size)
 }
 
@@ -234,6 +238,12 @@ mod tests {
         );
         assert!(glyph_bitmap_for_cluster("ß", BlockFontSize::Block).is_some());
         assert!(glyph_bitmap_for_cluster("👩🏽‍💻", BlockFontSize::Block).is_none());
+    }
+
+    #[test]
+    fn rejects_clusters_that_do_not_collapse_to_one_glyph() {
+        assert!(glyph_bitmap_for_cluster("x\u{301}", BlockFontSize::Block).is_none());
+        assert!(glyph_bitmap_for_cluster("1\u{fe0f}\u{20e3}", BlockFontSize::Block).is_none());
     }
 
     #[test]
