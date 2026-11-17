@@ -35,6 +35,7 @@ pub struct RuntimeConfig {
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
     pub ribbon: RibbonMode,
+    pub fps_active: u16,
     pub style: String,
     pub color_mode: ColorMode,
     pub bg_blend_hint: Option<(u8, u8, u8)>,
@@ -59,6 +60,7 @@ impl Default for RuntimeConfig {
             display_mode: DisplayMode::Normal,
             word_highlight: true,
             ribbon: RibbonMode::default(),
+            fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
             color_mode: ColorMode::Auto,
             bg_blend_hint: None,
@@ -182,6 +184,9 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     if let Some(ribbon) = file.ui.ribbon {
         config.ribbon = ribbon;
     }
+    if let Some(fps_active) = file.ui.fps_active {
+        config.fps_active = clamp_fps_active(fps_active, "ui.fps_active", warnings);
+    }
     if let Some(style) = file.ui.style {
         if let Some(style) = non_empty(style) {
             config.style = style;
@@ -285,6 +290,16 @@ fn clamp_l1_entries(value: usize, field: &str, warnings: &mut Vec<String>) -> us
     clamped
 }
 
+fn clamp_fps_active(value: u16, field: &str, warnings: &mut Vec<String>) -> u16 {
+    let clamped = value.clamp(15, 120);
+    if clamped != value {
+        warnings.push(format!(
+            "config: {field} {value} is outside 15..=120; using {clamped}"
+        ));
+    }
+    clamped
+}
+
 fn clamp_ambiguous_width(value: u8, field: &str, warnings: &mut Vec<String>) -> u8 {
     let clamped = if value == 2 { 2 } else { 1 };
     if clamped != value {
@@ -343,6 +358,7 @@ pub struct UiSection {
     pub display_mode: Option<String>,
     pub word_highlight: Option<bool>,
     pub ribbon: Option<RibbonMode>,
+    pub fps_active: Option<u16>,
     pub style: Option<String>,
 }
 
@@ -428,6 +444,8 @@ display_mode = "normal"
 word_highlight = true
 # Collapsible ribbon mode: "auto", "top", "bottom", or "off"
 ribbon = "auto"
+# Frame rate while wipe/effects/countdown animations are active (15..=120)
+fps_active = 60
 # Active style name or preset (e.g. "builtin:default", "builtin:dark", "builtin:aurora", "builtin:minimal")
 style = "builtin:default"
 
@@ -661,6 +679,32 @@ l1_entries = 8
                 .iter()
                 .any(|warning| warning.contains("display_mode") && warning.contains("kinetic"))
         );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_and_clamps_active_frame_rate() {
+        let path = temp_file("ui-fps", "[ui]\nfps_active = 30\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.fps_active, 30);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-fps-low", "[ui]\nfps_active = 5\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.fps_active, 15);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("fps_active"))
+        );
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-fps-high", "[ui]\nfps_active = 240\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.fps_active, 120);
 
         fs::remove_file(path).unwrap();
     }

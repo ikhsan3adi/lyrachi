@@ -23,13 +23,13 @@ use crate::{
         CandidateSummary, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery,
     },
     style::{
-        DEFAULT_STYLE_NAME,
+        DEFAULT_STYLE_NAME, HighlightMode,
         color::{ColorCapability, detect_process_color_capability},
         loader::load_style_name_or_default,
     },
     ui::{
         CandidateMenuItem, ContextMenuAction, ContextMenuView, UiModal, UiState,
-        block::BlockStageCache, render,
+        block::BlockStageCache, effects::UiEffects, render,
     },
 };
 
@@ -54,19 +54,21 @@ pub struct Resolution<'a> {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct AnimationStatus {
     pub effects_active: bool,
+    pub wipe_active: bool,
     pub countdown_active: bool,
     pub ribbon_animating: bool,
 }
 
 impl AnimationStatus {
     pub fn needs_frame_tick(self) -> bool {
-        self.effects_active || self.countdown_active || self.ribbon_animating
+        self.effects_active || self.wipe_active || self.countdown_active || self.ribbon_animating
     }
 }
 
 pub struct AppRuntime {
     pub animation: AnimationStatus,
     pub block_cache: BlockStageCache,
+    pub effects: UiEffects,
     pub base_style_name: String,
     pub styles_dir: Option<PathBuf>,
     pub color_capability: ColorCapability,
@@ -96,6 +98,7 @@ impl Default for AppRuntime {
         Self {
             animation: AnimationStatus::default(),
             block_cache: BlockStageCache::default(),
+            effects: UiEffects::default(),
             base_style_name: DEFAULT_STYLE_NAME.to_string(),
             styles_dir: None,
             color_capability: ColorCapability::TrueColor,
@@ -218,6 +221,7 @@ pub async fn run(
     state.set_terminal_unicode(config.unicode.is_full());
     state.display_mode = config.display_mode;
     state.word_highlight = config.word_highlight;
+    state.fps_active = config.fps_active;
     refresh_hidden_status_banner(&mut state, Instant::now());
     let mut clock = PlaybackClock::new();
     let mut runtime = AppRuntime {
@@ -270,8 +274,16 @@ pub async fn run(
                 warn!(%error, "failed to persist lyric offset");
             }
 
-            draw_frame_with_cache(terminal, &mut state, &mut runtime.block_cache, &clock)?;
+            draw_frame_with_effects(
+                terminal,
+                &mut state,
+                &mut runtime.block_cache,
+                &mut runtime.effects,
+                &clock,
+            )?;
 
+            runtime.animation.effects_active = runtime.effects.is_running();
+            runtime.animation.wipe_active = is_wipe_active(&state, &clock, now);
             runtime.animation.countdown_active = is_countdown_active(&state, &clock, now);
             let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
@@ -448,6 +460,26 @@ pub fn draw_frame_with_cache<B: ratatui::backend::Backend>(
     block_cache: &mut BlockStageCache,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
+    draw_frame_internal(terminal, state, block_cache, None, clock)
+}
+
+pub fn draw_frame_with_effects<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut UiState,
+    block_cache: &mut BlockStageCache,
+    effects: &mut UiEffects,
+    clock: &PlaybackClock,
+) -> Result<(), B::Error> {
+    draw_frame_internal(terminal, state, block_cache, Some(effects), clock)
+}
+
+fn draw_frame_internal<B: ratatui::backend::Backend>(
+    terminal: &mut ratatui::Terminal<B>,
+    state: &mut UiState,
+    block_cache: &mut BlockStageCache,
+    effects: Option<&mut UiEffects>,
+    clock: &PlaybackClock,
+) -> Result<(), B::Error> {
     let draw_started = Instant::now();
     let span = debug_span!(
         "terminal_draw",
@@ -466,7 +498,18 @@ pub fn draw_frame_with_cache<B: ratatui::backend::Backend>(
         }
         state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
-        render::render_with_cache(frame, state, block_cache, effective_ms);
+        match effects {
+            Some(effects) => {
+                render::render_with_cache_and_effects(
+                    frame,
+                    state,
+                    block_cache,
+                    effects,
+                    effective_ms,
+                );
+            }
+            None => render::render_with_cache(frame, state, block_cache, effective_ms),
+        }
     })?;
 
     let elapsed_us = u64::try_from(draw_started.elapsed().as_micros()).unwrap_or(u64::MAX);
@@ -669,6 +712,7 @@ fn handle_media_with_runtime(
     ) {
         runtime.cancel_menu_requests();
         runtime.bump_preference_revision();
+        runtime.effects.reset();
     }
     match event {
         MediaEvent::TrackChanged(meta) => {
@@ -947,6 +991,7 @@ pub fn reload_active_style(state: &mut UiState, runtime: &mut AppRuntime, now: I
                     .resolve(desired, runtime.color_capability, runtime.bg_blend_hint);
             state.set_resolved_style(resolved);
             runtime.block_cache.clear();
+            runtime.effects.reset();
         }
         Err(error) => {
             warn!(%error, "hot-reload style failed for `{desired}`; retaining previous valid profile");
@@ -1238,6 +1283,7 @@ fn handle_input_with_runtime(
                 }
                 apply_active_style(state, runtime);
                 runtime.block_cache.clear();
+                runtime.effects.reset();
                 if let Some(pinned) = state.pinned_style.as_deref() {
                     state.show_banner(
                         format!(
@@ -1382,7 +1428,7 @@ fn handle_search_input_key(
 
 fn handle_menu_select(
     state: &mut UiState,
-    runtime: Option<&mut AppRuntime>,
+    mut runtime: Option<&mut AppRuntime>,
     coordinator: &mut ResolveCoordinator,
     now: Instant,
 ) -> InputOutcome {
@@ -1461,8 +1507,9 @@ fn handle_menu_select(
             };
             state.pinned_style = next_style.clone();
             state.sync_menu_preferences();
-            if let Some(rt) = runtime.as_deref() {
+            if let Some(rt) = runtime.as_deref_mut() {
                 apply_active_style(state, rt);
+                rt.effects.reset();
             }
             if next_style.is_some() {
                 state.show_banner("Pinned style: builtin:default", now);
@@ -1665,8 +1712,30 @@ fn track_label(track: &TrackMeta) -> String {
     }
 }
 
+fn is_wipe_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> bool {
+    if state.is_modal_open()
+        || state.style.reduced_motion
+        || !state.word_highlight
+        || state.style.highlight_mode != HighlightMode::Wipe
+        || !matches!(clock.state(), ClockState::Playing { .. })
+    {
+        return false;
+    }
+    let Some(timeline) = state.timeline() else {
+        return false;
+    };
+    let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
+    timeline
+        .evaluate_for_status(effective_ms, state.playback)
+        .active_word_idx
+        .is_some()
+}
+
 fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> bool {
-    if state.is_modal_open() || !matches!(clock.state(), ClockState::Playing { .. }) {
+    if state.is_modal_open()
+        || state.style.reduced_motion
+        || !matches!(clock.state(), ClockState::Playing { .. })
+    {
         return false;
     }
     if state.is_unsynced() || state.is_instrumental() || !state.instrumental_countdown_enabled() {
@@ -1706,11 +1775,11 @@ fn base_next_wait(
     if state.is_modal_open() {
         return Duration::from_secs(1);
     }
-    if animation.needs_frame_tick() {
-        return Duration::from_millis(16);
-    }
     if !matches!(clock.state(), ClockState::Playing { .. }) {
         return Duration::from_secs(1);
+    }
+    if animation.needs_frame_tick() && !state.style.reduced_motion {
+        return state.frame_interval();
     }
     let Some(timeline) = state.timeline() else {
         return Duration::from_secs(1);
@@ -1729,7 +1798,8 @@ fn base_next_wait(
     let wall_ms = ((media_delta_ms as f64) / rate).round().clamp(1.0, 1_000.0) as u64;
     let boundary_wait = Duration::from_millis(wall_ms);
 
-    if cursor.active_word_idx.is_some() || cursor.waiting.is_some() {
+    if !state.style.reduced_motion && (cursor.active_word_idx.is_some() || cursor.waiting.is_some())
+    {
         boundary_wait.min(Duration::from_millis(16))
     } else {
         boundary_wait
@@ -1822,7 +1892,8 @@ mod tests {
     #[test]
     fn animation_status_requests_frame_ticks() {
         let now = Instant::now();
-        let clock = PlaybackClock::new();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, now);
         let state = UiState::new();
         let animation = AnimationStatus {
             effects_active: true,
@@ -1851,6 +1922,69 @@ mod tests {
     }
 
     #[test]
+    fn animation_wait_follows_fps_active_and_reduced_motion() {
+        let now = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, now);
+        let mut state = UiState::new();
+        state.fps_active = 30;
+        let animation = AnimationStatus {
+            effects_active: true,
+            ..AnimationStatus::default()
+        };
+
+        assert_eq!(
+            next_wait(&state, &clock, now, animation),
+            Duration::from_millis(33)
+        );
+
+        state.fps_active = 120;
+        assert_eq!(
+            next_wait(&state, &clock, now, animation),
+            Duration::from_millis(8)
+        );
+
+        state.style.reduced_motion = true;
+        assert_eq!(
+            next_wait(&state, &clock, now, animation),
+            Duration::from_secs(1)
+        );
+
+        // With lyrics loaded, reduced_motion returns to adaptive boundary sleep even during an active word.
+        state.set_lyrics(track());
+        assert_eq!(
+            next_wait(
+                &state,
+                &clock,
+                now + Duration::from_millis(1_500),
+                animation
+            ),
+            Duration::from_millis(501)
+        );
+    }
+
+    #[test]
+    fn wipe_animation_is_active_only_for_playing_wipe_highlight() {
+        let now = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, now);
+        let mut state = UiState::new();
+        state.set_lyrics(track());
+        state.style.highlight_mode = HighlightMode::Wipe;
+
+        let during_word = now + Duration::from_millis(1_500);
+        assert!(is_wipe_active(&state, &clock, during_word));
+
+        state.style.reduced_motion = true;
+        assert!(!is_wipe_active(&state, &clock, during_word));
+
+        state.style.reduced_motion = false;
+        state.word_highlight = false;
+        assert!(!is_wipe_active(&state, &clock, during_word));
+        assert!(!is_wipe_active(&state, &clock, now));
+    }
+
+    #[test]
     fn paused_state_waits_up_to_one_second() {
         let now = Instant::now();
         let clock = PlaybackClock::new();
@@ -1858,6 +1992,19 @@ mod tests {
 
         assert_eq!(
             next_wait(&state, &clock, now, AnimationStatus::default()),
+            Duration::from_secs(1)
+        );
+        assert_eq!(
+            next_wait(
+                &state,
+                &clock,
+                now,
+                AnimationStatus {
+                    effects_active: true,
+                    wipe_active: true,
+                    ..AnimationStatus::default()
+                }
+            ),
             Duration::from_secs(1)
         );
     }
@@ -2529,6 +2676,7 @@ mod tests {
                 now,
                 AnimationStatus {
                     effects_active: true,
+                    wipe_active: true,
                     countdown_active: true,
                     ribbon_animating: true,
                 }

@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Layout, Rect},
@@ -5,12 +7,13 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Paragraph, Wrap},
 };
+use unicode_segmentation::UnicodeSegmentation;
 
 use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, WaitKind, WaitingGap, WrappedSubLine,
 };
 use crate::core::model::{LineRole, SyncedTrack, WordToken};
-use crate::style::{AnnotationPosition, InstrumentalStyle, ResolvedStyle};
+use crate::style::{AnnotationPosition, HighlightMode, InstrumentalStyle, ResolvedStyle};
 
 use super::{
     LyricsView, RibbonPlacement, UiModal, UiState,
@@ -18,6 +21,7 @@ use super::{
         BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockStageCache,
         render::{BlockRenderContext, BlockStyles, render_lines as render_block_lines},
     },
+    effects::UiEffects,
     help, menu, ribbon,
     status::footer_line,
 };
@@ -27,7 +31,7 @@ const BLOCK_VOICE_PLAIN_MIN_WIDTH: u16 = 40;
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let mut cache = BlockStageCache::default();
-    render_with_cache(frame, state, &mut cache, effective_ms);
+    let _ = render_with_cache_area(frame, state, &mut cache, effective_ms);
 }
 
 pub fn render_with_cache(
@@ -36,9 +40,40 @@ pub fn render_with_cache(
     block_cache: &mut BlockStageCache,
     effective_ms: u64,
 ) {
+    let _ = render_with_cache_area(frame, state, block_cache, effective_ms);
+}
+
+pub fn render_with_cache_and_effects(
+    frame: &mut Frame,
+    state: &UiState,
+    block_cache: &mut BlockStageCache,
+    effects: &mut UiEffects,
+    effective_ms: u64,
+) -> Rect {
+    effects.observe_state(state, effective_ms);
+    let stage_area = render_internal(frame, state, block_cache, effective_ms);
+    effects.process_now(Instant::now(), state, frame.buffer_mut(), stage_area);
+    stage_area
+}
+
+pub fn render_with_cache_area(
+    frame: &mut Frame,
+    state: &UiState,
+    block_cache: &mut BlockStageCache,
+    effective_ms: u64,
+) -> Rect {
+    render_internal(frame, state, block_cache, effective_ms)
+}
+
+fn render_internal(
+    frame: &mut Frame,
+    state: &UiState,
+    block_cache: &mut BlockStageCache,
+    effective_ms: u64,
+) -> Rect {
     let area = frame.area();
     if area.height == 0 || area.width == 0 {
-        return;
+        return area;
     }
 
     if state.style.bg.is_some() {
@@ -60,19 +95,14 @@ pub fn render_with_cache(
     .areas(area);
 
     let padding = state.timeline_context().padding_horizontal;
+    let stage_area = vertical_padded_area(content_area(body, padding), state.style.padding[0]);
     if header_rows > 0 {
         render_header(frame, content_area(header, padding), state);
     }
     if top_ribbon_rows > 0 {
         ribbon::render(frame, content_area(top_ribbon, padding), state);
     }
-    render_body(
-        frame,
-        vertical_padded_area(content_area(body, padding), state.style.padding[0]),
-        state,
-        block_cache,
-        effective_ms,
-    );
+    render_body(frame, stage_area, state, block_cache, effective_ms);
     if bottom_ribbon_rows > 0 {
         ribbon::render(frame, content_area(bottom_ribbon, padding), state);
     }
@@ -84,6 +114,7 @@ pub fn render_with_cache(
         Some(UiModal::ContextMenu(menu_state)) => menu::render(frame, area, menu_state),
         None => {}
     }
+    stage_area
 }
 
 fn content_area(area: Rect, padding: u16) -> Rect {
@@ -321,8 +352,7 @@ fn render_synced(
         countdown_rendered = true;
     }
 
-    for index in start..end {
-        let compiled = &timeline.lines[index];
+    for (index, compiled) in timeline.lines.iter().enumerate().take(end).skip(start) {
         if let Some(waiting) = cursor.waiting
             && !countdown_rendered
             && compiled_is_waiting_break(compiled, waiting)
@@ -423,8 +453,7 @@ fn render_block_synced(
         cursor.waiting.is_some() && !has_break_slot && state.instrumental_countdown_enabled(),
     );
 
-    for index in start..end {
-        let compiled = &timeline.lines[index];
+    for (index, compiled) in timeline.lines.iter().enumerate().take(end).skip(start) {
         let countdown_slot = cursor
             .waiting
             .is_some_and(|waiting| compiled_is_waiting_break(compiled, waiting));
@@ -535,6 +564,12 @@ fn render_block_synced(
                 effective_ms,
                 active: meta.active,
                 word_highlight: word_highlight && compiled.role != LineRole::InstrumentalBreak,
+                wipe: word_highlight
+                    && style.highlight_mode == HighlightMode::Wipe
+                    && !style.reduced_motion
+                    && compiled.role != LineRole::InstrumentalBreak,
+                role: compiled.role,
+                style,
                 styles: block_styles(compiled, word_highlight, distance, style),
                 alignment,
             },
@@ -632,7 +667,11 @@ fn waiting_countdown_line(
         WaitKind::Instrumental => "Instrumental",
         WaitKind::Outro => "Outro",
     };
-    let progress = waiting.progress(effective_ms);
+    let progress = if style.reduced_motion {
+        0.0
+    } else {
+        waiting.progress(effective_ms)
+    };
     let mut accent_style = Style::default().add_modifier(Modifier::BOLD);
     if let Some(accent) = style.accent {
         accent_style = accent_style.fg(accent);
@@ -876,13 +915,28 @@ fn spans_for_subline(
         } else {
             WordState::Unsung
         };
-        push_span(
-            &mut spans,
-            subline,
-            word_start,
-            word_end,
-            word_state_style(stage.style, compiled.role, word_state),
-        );
+        if Some(index) == active_word_idx
+            && stage.style.highlight_mode == HighlightMode::Wipe
+            && !stage.style.reduced_motion
+        {
+            push_wipe_word_spans(
+                &mut spans,
+                subline,
+                word_start,
+                word_end,
+                stage.cursor.progress,
+                stage.style,
+                compiled.role,
+            );
+        } else {
+            push_span(
+                &mut spans,
+                subline,
+                word_start,
+                word_end,
+                word_state_style(stage.style, compiled.role, word_state),
+            );
+        }
         cursor = word_end;
     }
 
@@ -910,6 +964,55 @@ fn spans_for_subline(
     }
 
     spans
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_wipe_word_spans(
+    spans: &mut Vec<Span<'static>>,
+    subline: &WrappedSubLine,
+    word_start: usize,
+    word_end: usize,
+    progress: f32,
+    style: &ResolvedStyle,
+    role: LineRole,
+) {
+    let (sub_start, _) = subline.source_byte_range;
+    let Some(text) = subline
+        .text
+        .get(word_start.saturating_sub(sub_start)..word_end.saturating_sub(sub_start))
+    else {
+        return;
+    };
+    let graphemes = text
+        .grapheme_indices(true)
+        .map(|(start, grapheme)| (start, start + grapheme.len()))
+        .collect::<Vec<_>>();
+    if graphemes.is_empty() {
+        return;
+    }
+
+    let head = progress.clamp(0.0, 1.0) * graphemes.len() as f32;
+    let head_index = head.floor() as usize;
+    let trail = f32::from(style.highlight_trail);
+    for (ordinal, (start, end)) in graphemes.into_iter().enumerate() {
+        let distance = head - (ordinal as f32 + 0.5);
+        let cell_style = if ordinal == head_index {
+            word_state_style(style, role, WordState::Active)
+        } else if distance < 0.0 {
+            word_state_style(style, role, WordState::Unsung)
+        } else if trail > 0.0 && distance <= trail {
+            style.wipe_style(role, distance / trail)
+        } else {
+            word_state_style(style, role, WordState::Sung)
+        };
+        push_span(
+            spans,
+            subline,
+            word_start + start,
+            word_start + end,
+            cell_style,
+        );
+    }
 }
 
 fn trailing_gap_style(
@@ -1177,5 +1280,142 @@ mod tests {
             .expect("before line rendered");
         assert_eq!(active_pos.saturating_sub(before_pos), 2, "{output}");
         assert!(lines[before_pos + 1].is_empty(), "{output}");
+    }
+
+    #[test]
+    fn wipe_highlight_renders_gradient_across_active_word() {
+        let mut profile = StyleProfile::builtin("builtin:dark", 80).unwrap();
+        profile.highlight.mode = HighlightMode::Wipe;
+        profile.highlight.trail = 3;
+        let active_rgb = Color::Rgb(0, 200, 255);
+        let sung_rgb = Color::Rgb(180, 180, 180);
+        let unsung_rgb = Color::Rgb(60, 60, 60);
+        profile.highlight.active_fg = Some(crate::style::color::StyleColor::new(active_rgb));
+        profile.highlight.sung_fg = Some(crate::style::color::StyleColor::new(sung_rgb));
+        profile.highlight.unsung_fg = Some(crate::style::color::StyleColor::new(unsung_rgb));
+
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        state.set_resolved_style(profile.resolve("dark", ColorCapability::TrueColor, None));
+        state.set_lyrics(sample_track());
+
+        let backend = TestBackend::new(80, 14);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal.draw(|frame| render(frame, &state, 2_500)).unwrap();
+        let buf = terminal.backend().buffer();
+        let mut word_colors = Vec::new();
+        let mut found = false;
+        for y in 0..14 {
+            let row = (0..80).map(|x| buf[(x, y)].symbol()).collect::<String>();
+            if let Some(col) = row.find("Active") {
+                found = true;
+                for offset in 0..6 {
+                    word_colors.push(buf[(u16::try_from(col + offset).unwrap(), y)].fg);
+                }
+            }
+        }
+        assert!(found, "active line was not rendered");
+        let has_blended_trail = word_colors.iter().any(|fg| {
+            matches!(fg, Color::Rgb(..))
+                && *fg != active_rgb
+                && *fg != sung_rgb
+                && *fg != unsung_rgb
+        });
+        assert!(
+            has_blended_trail,
+            "expected an interpolated trail color in \"Active\", got {word_colors:?}"
+        );
+    }
+
+    #[test]
+    fn effects_preserve_header_status_and_modal_on_test_backend() {
+        let mut profile = StyleProfile::builtin("builtin:default", 80).unwrap();
+        profile.palette.bg = crate::style::color::StyleColor::new(Color::Reset);
+        profile.animation.on_line_change = vec![crate::style::LineChangeEffect {
+            effect: crate::style::LineChangeEffectKind::FadeOut,
+            duration_ms: 400,
+        }];
+        let resolved = profile.resolve("default", ColorCapability::TrueColor, None);
+
+        let mut state = UiState::new();
+        state.set_player(Some("mpv".to_string()));
+        state.set_track(crate::media::TrackMeta {
+            title: "Song Title".to_string(),
+            artist: "Artist".to_string(),
+            album: None,
+            duration_ms: Some(10_000),
+            track_id: None,
+            url: None,
+        });
+        state.playback = PlaybackStatus::Playing;
+        state.set_resolved_style(resolved.clone());
+        state.set_lyrics(sample_track());
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut block_cache = BlockStageCache::default();
+
+        // Render clean reference without effects to compare header and status rows.
+        terminal
+            .draw(|frame| render_with_cache(frame, &state, &mut block_cache, 2_500))
+            .unwrap();
+        let ref_buf = terminal.backend().buffer().clone();
+
+        // Render with active line-change effects using Color::Reset.
+        let mut effects = UiEffects::new();
+        effects.observe_state(&state, 2_500);
+        assert!(effects.is_running());
+
+        terminal
+            .draw(|frame| {
+                let stage_area = render_with_cache_area(frame, &state, &mut block_cache, 2_500);
+                effects.process_elapsed(
+                    std::time::Duration::from_millis(100),
+                    frame.buffer_mut(),
+                    stage_area,
+                    &resolved,
+                    false,
+                );
+            })
+            .unwrap();
+        let fx_buf = terminal.backend().buffer();
+        for x in 0..80 {
+            assert_eq!(
+                fx_buf[(x, 0)],
+                ref_buf[(x, 0)],
+                "header row mutated at x={x}"
+            );
+            assert_eq!(
+                fx_buf[(x, 23)],
+                ref_buf[(x, 23)],
+                "status row mutated at x={x}"
+            );
+        }
+
+        // Open Help modal: effects stay frozen while modal is visible.
+        state.toggle_help();
+        assert!(state.is_modal_open());
+        terminal
+            .draw(|frame| {
+                render_with_cache_and_effects(frame, &state, &mut block_cache, &mut effects, 2_600);
+            })
+            .unwrap();
+        assert!(effects.is_running(), "modal must freeze active effects");
+
+        // Close modal and complete effect duration.
+        state.toggle_help();
+        terminal
+            .draw(|frame| {
+                let stage_area = render_with_cache_area(frame, &state, &mut block_cache, 2_600);
+                effects.process_elapsed(
+                    std::time::Duration::from_millis(1_000),
+                    frame.buffer_mut(),
+                    stage_area,
+                    &resolved,
+                    false,
+                );
+            })
+            .unwrap();
+        assert!(!effects.is_running());
     }
 }

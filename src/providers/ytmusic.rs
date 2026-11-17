@@ -921,10 +921,7 @@ fn is_known_empty_lyrics(val: &Value) -> bool {
     {
         return true;
     }
-    if find_object_with_key(val, "messageRenderer").is_some() {
-        return true;
-    }
-    false
+    find_object_with_key(val, "messageRenderer").is_some()
 }
 
 #[cfg(test)]

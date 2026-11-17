@@ -1,4 +1,5 @@
 pub mod block;
+pub mod effects;
 pub mod help;
 pub mod menu;
 pub mod render;
@@ -101,6 +102,7 @@ pub struct UiState {
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub fps_active: u16,
     pub style: ResolvedStyle,
     pub modal: Option<UiModal>,
     pub pinned_source_label: Option<String>,
@@ -143,6 +145,7 @@ impl UiState {
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
+            fps_active: 60,
             style: ResolvedStyle::default(),
             modal: None,
             pinned_source_label: None,
@@ -408,9 +411,18 @@ impl UiState {
         self.word_highlight = !self.word_highlight;
     }
 
-    /// Return whether word-level highlight is active under `[ui].word_highlight` and `[highlight].mode`.
+    /// Return whether word-level highlight or wipe is active under `[ui].word_highlight`.
     pub fn effective_word_highlight(&self) -> bool {
-        self.word_highlight && self.style.highlight_mode == HighlightMode::Word
+        self.word_highlight
+            && matches!(
+                self.style.highlight_mode,
+                HighlightMode::Word | HighlightMode::Wipe
+            )
+    }
+
+    /// Frame interval used only while an active animation needs ticks.
+    pub fn frame_interval(&self) -> Duration {
+        Duration::from_millis(1_000 / u64::from(self.fps_active.clamp(15, 120)))
     }
 
     /// Return effective header visibility respecting `fullscreen`, `[ui].show_header`, and `[header].show`.

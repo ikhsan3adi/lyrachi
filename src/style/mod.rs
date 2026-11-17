@@ -9,6 +9,7 @@ use ratatui::{
     style::{Color, Modifier, Style},
 };
 use serde::{Deserialize, Deserializer};
+use tachyonfx::ColorSpace as FxColorSpace;
 
 use crate::core::model::LineRole;
 
@@ -71,6 +72,9 @@ const LINE_SPACING_MAX: u16 = 4;
 const VISIBLE_CONTEXT_MAX: usize = 10;
 const MIN_GAP_MS_MAX: u64 = 60_000;
 const DUET_RIGHT_ALIGN_MIN_WIDTH: u16 = 60;
+const HIGHLIGHT_TRAIL_MAX: u16 = 32;
+const ANIMATION_EFFECTS_MAX: usize = 8;
+const ANIMATION_EFFECT_DURATION_MAX_MS: u32 = 5_000;
 
 const PRESET_DEFAULT_TOML: &str = r##"
 schema_version = 1
@@ -366,6 +370,7 @@ pub struct StyleProfile {
     pub layout: StyleLayout,
     pub lines: StyleLines,
     pub highlight: StyleHighlight,
+    pub animation: StyleAnimation,
     pub instrumental: StyleInstrumental,
     pub annotations: StyleAnnotations,
     pub header: StyleHeader,
@@ -382,6 +387,7 @@ impl Default for StyleProfile {
             layout: StyleLayout::default(),
             lines: StyleLines::default(),
             highlight: StyleHighlight::default(),
+            animation: StyleAnimation::default(),
             instrumental: StyleInstrumental::default(),
             annotations: StyleAnnotations::default(),
             header: StyleHeader::default(),
@@ -443,6 +449,31 @@ impl StyleProfile {
             "instrumental.min_gap_ms",
             warnings,
         );
+        self.highlight.trail = clamp_u16(
+            self.highlight.trail,
+            0,
+            HIGHLIGHT_TRAIL_MAX,
+            "highlight.trail",
+            warnings,
+        );
+        if self.animation.on_line_change.len() > ANIMATION_EFFECTS_MAX {
+            warnings.push(format!(
+                "style: animation.on_line_change has {} effects; using first {ANIMATION_EFFECTS_MAX}",
+                self.animation.on_line_change.len()
+            ));
+            self.animation
+                .on_line_change
+                .truncate(ANIMATION_EFFECTS_MAX);
+        }
+        for effect in &mut self.animation.on_line_change {
+            effect.duration_ms = clamp_u32(
+                effect.duration_ms,
+                0,
+                ANIMATION_EFFECT_DURATION_MAX_MS,
+                "animation.on_line_change[].duration_ms",
+                warnings,
+            );
+        }
     }
 
     /// Resolve this profile for a concrete terminal capability and background hint.
@@ -483,6 +514,11 @@ impl StyleProfile {
             fade_curve: self.lines.fade.curve,
             fade_falloff: self.lines.fade.falloff,
             highlight_mode: self.highlight.mode,
+            highlight_trail: self.highlight.trail,
+            animation_color_space: self.animation.color_space,
+            on_line_change: self.animation.on_line_change.clone(),
+            onset_pulse: self.animation.onset_pulse,
+            reduced_motion: self.meta.reduced_motion,
             accent: self
                 .highlight
                 .active_fg
@@ -515,6 +551,7 @@ pub struct StyleMeta {
     pub name: String,
     pub author: Option<String>,
     pub description: Option<String>,
+    pub reduced_motion: bool,
 }
 
 /// Named color tokens plus custom user variables for `$var` expansion.
@@ -787,23 +824,100 @@ impl Default for StyleLines {
     }
 }
 
-/// Word highlight granularity supported in M33 (no `wipe` yet).
+/// Word highlight granularity supported in M35.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum HighlightMode {
     Line,
     #[default]
     Word,
+    Wipe,
 }
 
 /// Highlight settings (`[highlight]`).
-#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(default)]
 pub struct StyleHighlight {
     pub mode: HighlightMode,
     pub active_fg: Option<StyleColor>,
     pub sung_fg: Option<StyleColor>,
     pub unsung_fg: Option<StyleColor>,
+    pub trail: u16,
+}
+
+impl Default for StyleHighlight {
+    fn default() -> Self {
+        Self {
+            mode: HighlightMode::default(),
+            active_fg: None,
+            sung_fg: None,
+            unsung_fg: None,
+            trail: 3,
+        }
+    }
+}
+
+/// Color space used for wipe gradients and line-change effects.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum AnimationColorSpace {
+    Rgb,
+    #[default]
+    Hsl,
+    Hsv,
+}
+
+impl AnimationColorSpace {
+    pub const fn to_tachyonfx(self) -> FxColorSpace {
+        match self {
+            Self::Rgb => FxColorSpace::Rgb,
+            Self::Hsl => FxColorSpace::Hsl,
+            Self::Hsv => FxColorSpace::Hsv,
+        }
+    }
+
+    pub fn lerp(self, from: Color, to: Color, alpha: f32) -> Color {
+        self.to_tachyonfx().lerp(&from, &to, alpha)
+    }
+}
+
+/// Built-in effects that can run when the active lyric line changes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Hash, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum LineChangeEffectKind {
+    #[default]
+    FadeIn,
+    FadeOut,
+    Sweep,
+    Dissolve,
+    Coalesce,
+    Pulse,
+}
+
+/// One declarative line-change effect.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct LineChangeEffect {
+    pub effect: LineChangeEffectKind,
+    pub duration_ms: u32,
+}
+
+impl Default for LineChangeEffect {
+    fn default() -> Self {
+        Self {
+            effect: LineChangeEffectKind::FadeIn,
+            duration_ms: 250,
+        }
+    }
+}
+
+/// Line-change animation settings (`[animation]`).
+#[derive(Debug, Clone, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(default)]
+pub struct StyleAnimation {
+    pub color_space: AnimationColorSpace,
+    pub on_line_change: Vec<LineChangeEffect>,
+    pub onset_pulse: bool,
 }
 
 /// Instrumental wait countdown visual style.
@@ -937,6 +1051,11 @@ pub struct ResolvedStyle {
     pub fade_curve: FadeCurve,
     pub fade_falloff: f32,
     pub highlight_mode: HighlightMode,
+    pub highlight_trail: u16,
+    pub animation_color_space: AnimationColorSpace,
+    pub on_line_change: Vec<LineChangeEffect>,
+    pub onset_pulse: bool,
+    pub reduced_motion: bool,
     pub accent: Option<Color>,
     pub sung_fg: Option<Color>,
     pub unsung_fg: Option<Color>,
@@ -1071,6 +1190,27 @@ impl ResolvedStyle {
         }
     }
 
+    /// Compute a wipe-gradient trail style where `mix` 0.0 is active and 1.0 is sung.
+    pub fn wipe_style(&self, role: LineRole, mix: f32) -> Style {
+        let active = self.word_style(role, true, true);
+        let sung = self.word_style(role, false, true);
+        let mix = mix.clamp(0.0, 1.0);
+        if mix <= 0.0 {
+            return active;
+        }
+        if mix >= 1.0 {
+            return sung;
+        }
+        let (Some(from), Some(to)) = (active.fg, sung.fg) else {
+            return if mix < 0.5 { active } else { sung };
+        };
+        let blended = self.animation_color_space.lerp(from, to, mix);
+        match degrade_color(blended, self.capability) {
+            Some(color) => sung.fg(color),
+            None => sung,
+        }
+    }
+
     /// Compute annotation text `Style`.
     pub fn annotation_style(&self) -> Style {
         apply_opt_fg(Style::default(), self.annotations_fg).add_modifier(self.annotations_modifiers)
@@ -1098,6 +1238,16 @@ fn apply_opt_fg(style: Style, fg: Option<Color>) -> Style {
 }
 
 fn clamp_u16(value: u16, min: u16, max: u16, field: &str, warnings: &mut Vec<String>) -> u16 {
+    let clamped = value.clamp(min, max);
+    if clamped != value {
+        warnings.push(format!(
+            "style: {field} {value} is outside {min}..={max}; using {clamped}"
+        ));
+    }
+    clamped
+}
+
+fn clamp_u32(value: u32, min: u32, max: u32, field: &str, warnings: &mut Vec<String>) -> u32 {
     let clamped = value.clamp(min, max);
     if clamped != value {
         warnings.push(format!(
@@ -1196,5 +1346,65 @@ mod tests {
         );
         assert!(json["properties"]["palette"].is_object());
         assert!(json["properties"]["layout"].is_object());
+    }
+
+    #[test]
+    fn clamps_wipe_trail_and_animation_limits() {
+        let mut profile = StyleProfile::default();
+        profile.highlight.trail = 99;
+        profile.animation.on_line_change = (0..12)
+            .map(|_| LineChangeEffect {
+                effect: LineChangeEffectKind::FadeIn,
+                duration_ms: 30_000,
+            })
+            .collect();
+        let mut warnings = Vec::new();
+        profile.clamp(&mut warnings);
+
+        assert_eq!(profile.highlight.trail, HIGHLIGHT_TRAIL_MAX);
+        assert_eq!(
+            profile.animation.on_line_change.len(),
+            ANIMATION_EFFECTS_MAX
+        );
+        assert!(
+            profile
+                .animation
+                .on_line_change
+                .iter()
+                .all(|effect| effect.duration_ms == ANIMATION_EFFECT_DURATION_MAX_MS)
+        );
+        assert!(warnings.iter().any(|warning| warning.contains("trail")));
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("on_line_change"))
+        );
+    }
+
+    #[test]
+    fn wipe_style_hits_active_and_sung_endpoints() {
+        let mut profile = StyleProfile::default();
+        profile.highlight.active_fg = Some(StyleColor::new(Color::Rgb(20, 40, 80)));
+        profile.highlight.sung_fg = Some(StyleColor::new(Color::Rgb(220, 200, 180)));
+        let resolved = profile.resolve("wipe", ColorCapability::TrueColor, None);
+
+        assert_eq!(
+            resolved.wipe_style(LineRole::Primary, 0.0),
+            resolved.word_style(LineRole::Primary, true, true)
+        );
+        assert_eq!(
+            resolved.wipe_style(LineRole::Primary, 1.0),
+            resolved.word_style(LineRole::Primary, false, true)
+        );
+        let midpoint = resolved.wipe_style(LineRole::Primary, 0.5);
+        assert!(midpoint.fg.is_some());
+        assert_ne!(
+            midpoint.fg,
+            resolved.word_style(LineRole::Primary, true, true).fg
+        );
+        assert_ne!(
+            midpoint.fg,
+            resolved.word_style(LineRole::Primary, false, true).fg
+        );
     }
 }

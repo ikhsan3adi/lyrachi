@@ -34,6 +34,7 @@ toml = "1.2.1"
 toml_edit = "0.25.19"
 notify = "8.2.2"
 schemars = "1.2.3"
+tachyonfx = { version = "0.25.2", default-features = false, features = ["std", "std-duration"] }
 blake3 = "1.8.7"
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 roxmltree = "0.21.2"

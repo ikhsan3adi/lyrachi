@@ -16,6 +16,7 @@ const ROOT_SECTIONS: &[&str] = &[
     "layout",
     "lines",
     "highlight",
+    "animation",
     "instrumental",
     "annotations",
     "header",
@@ -575,8 +576,8 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
-    use crate::style::HighlightMode;
     use crate::style::color::FadeCurve;
+    use crate::style::{AnimationColorSpace, HighlightMode, LineChangeEffectKind};
 
     fn temp_styles_dir(label: &str) -> PathBuf {
         let unique = SystemTime::now()
@@ -810,6 +811,44 @@ text = "$"
 
         let _ = fs::remove_dir_all(&dir);
         let _ = fs::remove_dir_all(&outside);
+    }
+
+    #[test]
+    fn loads_wipe_highlight_and_animation_sections() {
+        let dir = temp_styles_dir("animation");
+        fs::write(
+            dir.join("animated.toml"),
+            r#"
+[highlight]
+mode = "wipe"
+trail = 5
+
+[animation]
+color_space = "hsv"
+onset_pulse = true
+
+[[animation.on_line_change]]
+effect = "sweep"
+duration_ms = 400
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("animated", Some(&dir), 80).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(outcome.profile.highlight.mode, HighlightMode::Wipe);
+        assert_eq!(outcome.profile.highlight.trail, 5);
+        assert_eq!(
+            outcome.profile.animation.color_space,
+            AnimationColorSpace::Hsv
+        );
+        assert!(outcome.profile.animation.onset_pulse);
+        assert_eq!(
+            outcome.profile.animation.on_line_change[0].effect,
+            LineChangeEffectKind::Sweep
+        );
+
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

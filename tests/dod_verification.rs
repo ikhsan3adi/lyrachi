@@ -2,7 +2,7 @@ use std::time::{Duration, Instant};
 
 use lyrachi::{
     app::{
-        draw_frame, draw_frame_with_cache,
+        draw_frame, draw_frame_with_cache, draw_frame_with_effects,
         event::AppEvent,
         handle_resolved,
         resolve::{ResolveCoordinator, TrackPlan},
@@ -16,7 +16,8 @@ use lyrachi::{
     },
     media::TrackMeta,
     providers::{Provider, ProviderAnswer, ProviderError, TrackQuery, lrclib::LrclibRecord, score},
-    ui::{DisplayMode, UiState, block::BlockStageCache},
+    style::{HighlightMode, LineChangeEffect, LineChangeEffectKind},
+    ui::{DisplayMode, UiState, block::BlockStageCache, effects::UiEffects},
 };
 use ratatui::{Terminal, backend::TestBackend};
 use tokio::sync::mpsc;
@@ -278,6 +279,15 @@ fn dod_6_terminal_draw_p99_under_2ms_on_120x40() {
     clock.on_status_changed(PlaybackStatus::Playing, now);
     clock.on_seeked(10_500, now);
 
+    let wipe_track = normalize_track(
+        parse_lrc(include_str!("fixtures/enhanced_karaoke.elrc"), Some(30_000)).unwrap(),
+        "local",
+        None,
+        1.0,
+        Some(30_000),
+        0,
+    );
+
     let budget_us = if cfg!(debug_assertions) {
         10_000
     } else {
@@ -285,7 +295,16 @@ fn dod_6_terminal_draw_p99_under_2ms_on_120x40() {
     };
 
     for mode in BenchmarkMode::ALL {
-        let stats = draw_stats_for_mode(&mut terminal, &mut state, &clock, mode, 50, 200);
+        let mut bench_clock = clock.clone();
+        let previous_lyrics = state.lyrics_track().cloned();
+        if mode == BenchmarkMode::WipeEffects {
+            state.set_lyrics(wipe_track.clone());
+            bench_clock.on_seeked(11_400, now);
+        }
+        let stats = draw_stats_for_mode(&mut terminal, &mut state, &bench_clock, mode, 50, 200);
+        if let Some(prev) = previous_lyrics {
+            state.set_lyrics(prev);
+        }
         println!(
             "dod_6_terminal_draw_120x40 [{}]: p50={}us p99={}us (budget={budget_us}us)",
             mode.label(),
@@ -354,25 +373,49 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
     samples: usize,
 ) -> DrawStats {
     let previous_mode = state.display_mode;
+    let previous_style = state.style.clone();
     state.display_mode = match mode {
-        BenchmarkMode::Block => DisplayMode::Block,
-        BenchmarkMode::Normal | BenchmarkMode::Kinetic | BenchmarkMode::WipeEffects => {
-            DisplayMode::Normal
-        }
+        BenchmarkMode::Block | BenchmarkMode::WipeEffects => DisplayMode::Block,
+        BenchmarkMode::Normal | BenchmarkMode::Kinetic => DisplayMode::Normal,
     };
+    let wipe = mode == BenchmarkMode::WipeEffects;
+    if wipe {
+        state.style.highlight_mode = HighlightMode::Wipe;
+        state.style.highlight_trail = 3;
+        state.style.accent = Some(ratatui::style::Color::Rgb(122, 162, 247));
+        state.style.sung_fg = Some(ratatui::style::Color::Rgb(169, 177, 214));
+        state.style.unsung_fg = Some(ratatui::style::Color::Rgb(86, 95, 137));
+        state.style.on_line_change = vec![LineChangeEffect {
+            effect: LineChangeEffectKind::Sweep,
+            duration_ms: 3_000,
+        }];
+    }
 
     let mut cache = BlockStageCache::default();
+    let mut effects = UiEffects::new();
+    if wipe {
+        effects.trigger_line_change(&state.style);
+    }
     for _ in 0..warmup {
-        draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
+        if wipe {
+            draw_frame_with_effects(terminal, state, &mut cache, &mut effects, clock).unwrap();
+        } else {
+            draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
+        }
     }
 
     let mut durations_us = Vec::with_capacity(samples);
     for _ in 0..samples {
         let started = Instant::now();
-        draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
+        if wipe {
+            draw_frame_with_effects(terminal, state, &mut cache, &mut effects, clock).unwrap();
+        } else {
+            draw_frame_with_cache(terminal, state, &mut cache, clock).unwrap();
+        }
         durations_us.push(started.elapsed().as_micros());
     }
     state.display_mode = previous_mode;
+    state.style = previous_style;
     durations_us.sort_unstable();
 
     DrawStats {

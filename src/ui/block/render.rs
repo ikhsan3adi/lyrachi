@@ -5,16 +5,18 @@ use ratatui::{
 };
 
 use crate::compiler::timeline::ActiveStageCursor;
-use crate::core::model::WordToken;
+use crate::core::model::{LineRole, WordToken};
+use crate::style::ResolvedStyle;
 
 use super::BlockLayout;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 enum BlockCellState {
     Active,
     Sung,
     Unsung,
     Inactive,
+    Wipe(f32),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -32,6 +34,9 @@ pub(crate) struct BlockRenderContext<'a> {
     pub effective_ms: u64,
     pub active: bool,
     pub word_highlight: bool,
+    pub wipe: bool,
+    pub role: LineRole,
+    pub style: &'a ResolvedStyle,
     pub styles: BlockStyles,
     pub alignment: Alignment,
 }
@@ -53,7 +58,11 @@ pub(crate) fn render_lines(
             let mut spans = Vec::new();
             for (cell, state) in visual.cells.iter().zip(line_states.iter()) {
                 let text = cell.rows.get(row_index).map_or(" ", String::as_str);
-                push_span(&mut spans, text, state.style(context.styles));
+                push_span(
+                    &mut spans,
+                    text,
+                    state.style(context.styles, context.style, context.role),
+                );
             }
             lines.push(Line::from(spans).alignment(context.alignment));
         }
@@ -63,12 +72,13 @@ pub(crate) fn render_lines(
 }
 
 impl BlockCellState {
-    fn style(self, styles: BlockStyles) -> Style {
+    fn style(self, styles: BlockStyles, style: &ResolvedStyle, role: LineRole) -> Style {
         match self {
             Self::Active => styles.active,
             Self::Sung => styles.sung,
             Self::Unsung => styles.unsung,
             Self::Inactive => styles.inactive,
+            Self::Wipe(mix) => style.wipe_style(role, mix),
         }
     }
 }
@@ -80,6 +90,8 @@ fn cell_states(layout: &BlockLayout, context: BlockRenderContext<'_>) -> Vec<Vec
         effective_ms,
         active,
         word_highlight,
+        wipe,
+        style,
         ..
     } = context;
     let mut states = layout
@@ -118,34 +130,56 @@ fn cell_states(layout: &BlockLayout, context: BlockRenderContext<'_>) -> Vec<Vec
             ((cursor.progress * count as f32).ceil() as usize).clamp(1, count)
         }
     });
+    let trail = f32::from(style.highlight_trail);
     let mut token_seen = vec![0usize; words.len()];
     word_idx = 0;
 
     for (visual, line_states) in layout.lines.iter().zip(states.iter_mut()) {
         for (cell, state) in visual.cells.iter().zip(line_states.iter_mut()) {
             *state = match token_index(words, &mut word_idx, cell.source_byte_range) {
-                Some(index) if Some(index) == active_word_idx => {
+                Some(index) => {
                     let ordinal = token_seen[index];
                     token_seen[index] = token_seen[index].saturating_add(1);
-                    if ordinal < reveal_count {
-                        BlockCellState::Active
+                    if Some(index) == active_word_idx {
+                        if wipe {
+                            wipe_cell_state(ordinal, token_counts[index], cursor.progress, trail)
+                        } else if ordinal < reveal_count {
+                            BlockCellState::Active
+                        } else {
+                            BlockCellState::Unsung
+                        }
+                    } else if active_word_idx.is_some_and(|active| index < active)
+                        || effective_ms > words[index].end_ms
+                    {
+                        BlockCellState::Sung
                     } else {
                         BlockCellState::Unsung
                     }
                 }
-                Some(index)
-                    if active_word_idx.is_some_and(|active| index < active)
-                        || effective_ms > words[index].end_ms =>
-                {
-                    BlockCellState::Sung
-                }
-                Some(_) => BlockCellState::Unsung,
                 None => gap_state(words, word_idx, effective_ms),
             };
         }
     }
 
     states
+}
+
+fn wipe_cell_state(ordinal: usize, count: usize, progress: f32, trail: f32) -> BlockCellState {
+    if count == 0 {
+        return BlockCellState::Unsung;
+    }
+    let head = progress.clamp(0.0, 1.0) * count as f32;
+    let head_index = head.floor() as usize;
+    let distance = head - (ordinal as f32 + 0.5);
+    if ordinal == head_index {
+        BlockCellState::Active
+    } else if distance < 0.0 {
+        BlockCellState::Unsung
+    } else if trail > 0.0 && distance <= trail {
+        BlockCellState::Wipe(distance / trail)
+    } else {
+        BlockCellState::Sung
+    }
 }
 
 fn token_index(words: &[WordToken], word_idx: &mut usize, range: (usize, usize)) -> Option<usize> {
@@ -246,6 +280,9 @@ mod tests {
                 effective_ms: 1_600,
                 active: true,
                 word_highlight: true,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
                 styles: styles(),
                 alignment: Alignment::Left,
             },
@@ -272,6 +309,9 @@ mod tests {
                 effective_ms: 1_600,
                 active: true,
                 word_highlight: false,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
                 styles: styles(),
                 alignment: Alignment::Left,
             },
@@ -298,6 +338,9 @@ mod tests {
                 effective_ms: 1_200,
                 active: false,
                 word_highlight: true,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
                 styles: styles(),
                 alignment: Alignment::Left,
             },
@@ -305,5 +348,14 @@ mod tests {
 
         assert_eq!(text_with_style(&lines, styles().inactive), "Hello");
         assert!(text_with_style(&lines, styles().active).is_empty());
+    }
+
+    #[test]
+    fn wipe_cell_state_marks_head_and_trail() {
+        assert_eq!(wipe_cell_state(1, 4, 0.3, 1.0), BlockCellState::Active);
+        assert_eq!(wipe_cell_state(1, 4, 0.5, 1.0), BlockCellState::Wipe(0.5));
+        assert_eq!(wipe_cell_state(2, 4, 0.5, 1.0), BlockCellState::Active);
+        assert_eq!(wipe_cell_state(0, 4, 0.5, 1.0), BlockCellState::Sung);
+        assert_eq!(wipe_cell_state(3, 4, 0.5, 1.0), BlockCellState::Unsung);
     }
 }
