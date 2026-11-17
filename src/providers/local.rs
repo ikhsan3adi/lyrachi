@@ -299,7 +299,7 @@ async fn file_exists(path: &Path, cancel: &CancellationToken) -> Result<bool, Pr
         _ = cancel.cancelled() => return Err(ProviderError::Cancelled),
         result = fs::metadata(path) => result,
     };
-    Ok(meta.is_ok_and(|m| m.is_file()))
+    Ok(meta.is_ok_and(|m| m.is_file() && m.len() > 0 && m.len() <= MAX_LOCAL_LYRIC_BYTES))
 }
 
 async fn read_and_parse_local(

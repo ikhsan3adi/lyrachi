@@ -157,18 +157,17 @@ impl LyricsPlusProvider {
         let Some(body) = self.fetch_raw(query, cancel).await? else {
             return Ok(Vec::new());
         };
-        let Some(answer) = Self::parse_response(&body, query)? else {
+        let Some((answer, meta)) = Self::parse_response_with_meta(&body, query)? else {
             return Ok(Vec::new());
         };
 
-        let (title, artist, album, duration_ms) = extract_response_summary_meta(&body, query);
         Ok(vec![CandidateSummary {
             provider: Provider::LyricsPlus,
             source_track_id: answer.track.source_track_id.clone(),
-            title,
-            artist,
-            album,
-            duration_ms,
+            title: meta.title,
+            artist: meta.artist,
+            album: meta.album,
+            duration_ms: meta.duration_ms,
             tier: answer.tier,
             confidence: answer.confidence,
             local_path: None,
@@ -228,17 +227,28 @@ impl LyricsPlusProvider {
         body: &str,
         query: &TrackQuery,
     ) -> Result<Option<ProviderAnswer>, ProviderError> {
+        Ok(Self::parse_response_with_meta(body, query)?.map(|(answer, _)| answer))
+    }
+
+    fn parse_response_with_meta(
+        body: &str,
+        query: &TrackQuery,
+    ) -> Result<Option<(ProviderAnswer, SummaryMeta)>, ProviderError> {
         let body = body.trim();
         if body.is_empty() {
             return Ok(None);
         }
 
         if body.starts_with('<') {
-            return ttml_answer(body, 1.0, query);
+            let Some(answer) = ttml_answer(body, 1.0, query)? else {
+                return Ok(None);
+            };
+            return Ok(Some((answer, fallback_summary_meta(query))));
         }
 
         let response: LyricsPlusResponse = serde_json::from_str(body).map_err(invalid_json)?;
         let confidence = response_confidence(&response, query);
+        let summary_meta = summary_meta_from_response(&response, query);
 
         if let Some(ttml) = response
             .ttml
@@ -252,7 +262,10 @@ impl LyricsPlusProvider {
                 );
                 return Ok(None);
             }
-            return ttml_answer(ttml, confidence, query);
+            let Some(answer) = ttml_answer(ttml, confidence, query)? else {
+                return Ok(None);
+            };
+            return Ok(Some((answer, summary_meta)));
         }
 
         if response.lyrics.is_empty() {
@@ -285,7 +298,10 @@ impl LyricsPlusProvider {
             return Ok(None);
         }
 
-        Ok(Some(ProviderAnswer::new(Provider::LyricsPlus, track)))
+        Ok(Some((
+            ProviderAnswer::new(Provider::LyricsPlus, track),
+            summary_meta,
+        )))
     }
 }
 
@@ -305,24 +321,23 @@ fn ttml_answer(
     Ok(Some(ProviderAnswer::new(Provider::LyricsPlus, track)))
 }
 
-fn extract_response_summary_meta(
-    body: &str,
-    query: &TrackQuery,
-) -> (String, Option<String>, Option<String>, Option<u64>) {
-    let trimmed = body.trim();
-    if trimmed.is_empty()
-        || trimmed.starts_with('<')
-        || serde_json::from_str::<LyricsPlusResponse>(trimmed).is_err()
-    {
-        return (
-            query.title.clone(),
-            (!query.artist.is_empty()).then(|| query.artist.clone()),
-            query.album.clone(),
-            query.duration_ms,
-        );
-    }
+struct SummaryMeta {
+    title: String,
+    artist: Option<String>,
+    album: Option<String>,
+    duration_ms: Option<u64>,
+}
 
-    let response: LyricsPlusResponse = serde_json::from_str(trimmed).unwrap_or_default();
+fn fallback_summary_meta(query: &TrackQuery) -> SummaryMeta {
+    SummaryMeta {
+        title: query.title.clone(),
+        artist: (!query.artist.is_empty()).then(|| query.artist.clone()),
+        album: query.album.clone(),
+        duration_ms: query.duration_ms,
+    }
+}
+
+fn summary_meta_from_response(response: &LyricsPlusResponse, query: &TrackQuery) -> SummaryMeta {
     let selected = response.processing_time.selected_song_metadata.as_ref();
 
     let title = response
@@ -365,7 +380,12 @@ fn extract_response_summary_meta(
         .map(|d| (d * 1_000.0).round() as u64)
         .or(query.duration_ms);
 
-    (title, artist, album, duration_ms)
+    SummaryMeta {
+        title,
+        artist,
+        album,
+        duration_ms,
+    }
 }
 
 fn response_to_parsed(response: &LyricsPlusResponse) -> Result<ParsedTrack, ProviderError> {

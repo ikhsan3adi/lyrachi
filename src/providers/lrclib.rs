@@ -126,12 +126,24 @@ impl LrclibClient {
         }
 
         let records = self.search(query, cancel).await?;
+        let mut scored = records
+            .iter()
+            .map(|record| (record, score::score_candidate(query, record)))
+            .collect::<Vec<_>>();
+        scored.sort_by(|(left_rec, left_score), (right_rec, right_score)| {
+            right_score
+                .total_cmp(left_score)
+                .then_with(|| left_rec.id.cmp(&right_rec.id))
+        });
+
         let mut summaries = Vec::new();
-        for record in records.iter().take(MAX_CANDIDATES) {
+        for (record, confidence) in scored {
+            if summaries.len() >= MAX_CANDIDATES {
+                break;
+            }
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }
-            let confidence = score::score_candidate(query, record);
             match Self::record_to_track(record, confidence, query) {
                 Ok(Some(answer)) => {
                     let duration_ms = record
