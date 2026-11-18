@@ -52,7 +52,7 @@ pub fn compile_line_phrases(
     if words.is_empty() {
         assign_interpolated_timings(line_text, &ranges, start_ms, end_ms)
     } else {
-        assign_word_backed_timings(&ranges, words, start_ms, end_ms)
+        assign_word_backed_timings(line_text, &ranges, words, start_ms, end_ms)
     }
 }
 
@@ -191,52 +191,98 @@ fn is_cjk_grapheme(grapheme: &str) -> bool {
 }
 
 fn assign_word_backed_timings(
+    line_text: &str,
     ranges: &[(usize, usize)],
     words: &[WordToken],
     start_ms: u64,
     end_ms: u64,
 ) -> Vec<PhraseChunk> {
-    let mut chunks: Vec<PhraseChunk> = Vec::with_capacity(ranges.len());
-
+    let mut chunks = Vec::with_capacity(ranges.len());
+    let fallback = assign_interpolated_timings(line_text, ranges, start_ms, end_ms);
     for (idx, &(c_start, c_end)) in ranges.iter().enumerate() {
-        let mut first_word_start = None;
-        let mut last_word_end = None;
-        for word in words {
-            if word.byte_range.1 > c_start && word.byte_range.0 < c_end {
-                if first_word_start.is_none() {
-                    first_word_start = Some(word.start_ms.clamp(start_ms, end_ms));
-                }
-                last_word_end = Some(word.end_ms.clamp(start_ms, end_ms));
-            }
-        }
-
         let chunk_start = if idx == 0 {
             start_ms
         } else {
-            let prev_end = chunks[idx - 1].end_ms;
-            let raw_start = first_word_start.unwrap_or(prev_end).clamp(prev_end, end_ms);
-            if raw_start > prev_end {
-                chunks[idx - 1].end_ms = raw_start;
-            }
-            raw_start
+            phrase_boundary_ms(
+                line_text,
+                c_start,
+                words,
+                fallback[idx].start_ms,
+                start_ms,
+                end_ms,
+            )
         };
-
-        let chunk_end = last_word_end
-            .unwrap_or(chunk_start)
-            .clamp(chunk_start, end_ms);
-
+        let chunk_end = if idx + 1 == ranges.len() {
+            end_ms
+        } else {
+            phrase_boundary_ms(
+                line_text,
+                c_end,
+                words,
+                fallback[idx].end_ms,
+                start_ms,
+                end_ms,
+            )
+        };
         chunks.push(PhraseChunk {
             byte_range: (c_start, c_end),
             start_ms: chunk_start,
-            end_ms: chunk_end,
+            end_ms: chunk_end.max(chunk_start),
         });
     }
-
-    if let Some(last) = chunks.last_mut() {
-        last.end_ms = end_ms;
+    let mut previous_end = start_ms;
+    for chunk in &mut chunks {
+        chunk.start_ms = chunk.start_ms.max(previous_end);
+        chunk.end_ms = chunk.end_ms.max(chunk.start_ms);
+        previous_end = chunk.end_ms;
     }
-
+    if let Some(last) = chunks.last_mut() {
+        last.end_ms = end_ms.max(last.start_ms);
+    }
     chunks
+}
+
+fn phrase_boundary_ms(
+    line_text: &str,
+    byte_pos: usize,
+    words: &[WordToken],
+    fallback_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+) -> u64 {
+    if let Some(word) = words
+        .iter()
+        .find(|word| word.byte_range.0 < byte_pos && byte_pos < word.byte_range.1)
+    {
+        return word_time_at(line_text, word, byte_pos, start_ms, end_ms);
+    }
+    words
+        .iter()
+        .find(|word| word.byte_range.0 >= byte_pos)
+        .map(|word| word.start_ms.clamp(start_ms, end_ms))
+        .unwrap_or(fallback_ms)
+}
+
+fn word_time_at(
+    line_text: &str,
+    word: &WordToken,
+    byte_pos: usize,
+    start_ms: u64,
+    end_ms: u64,
+) -> u64 {
+    let word_start = word.start_ms.clamp(start_ms, end_ms);
+    let word_end = word.end_ms.clamp(word_start, end_ms);
+    let Some(text) = line_text.get(word.byte_range.0..word.byte_range.1) else {
+        return word_start;
+    };
+    let offset = byte_pos.saturating_sub(word.byte_range.0).min(text.len());
+    let Some(prefix) = text.get(..offset) else {
+        return word_start;
+    };
+    let total = text.graphemes(true).count().max(1) as u64;
+    let before = prefix.graphemes(true).count() as u64;
+    let elapsed = word_end.saturating_sub(word_start).saturating_mul(before) / total;
+    word_start.saturating_add(elapsed).min(end_ms)
 }
 
 fn assign_interpolated_timings(
@@ -379,5 +425,31 @@ mod tests {
         let chunks = compile_line_phrases(text, 500, 3_500, &[], 12);
         assert_chunk_invariants(text, 500, 3_500, &chunks);
         assert_eq!(chunks.len(), 3);
+    }
+
+    #[test]
+    fn source_word_spanning_chunks_still_yields_visible_durations() {
+        let text = "supercalifragilisticexpialidocious";
+        let words = vec![WordToken {
+            byte_range: (0, text.len()),
+            start_ms: 500,
+            end_ms: 3_500,
+            display_width: display_width(text),
+        }];
+        let chunks = compile_line_phrases(text, 500, 3_500, &words, 12);
+        assert_chunk_invariants(text, 500, 3_500, &chunks);
+        assert_eq!(chunks.len(), 3);
+        assert!(
+            chunks.iter().all(|chunk| chunk.end_ms > chunk.start_ms),
+            "{chunks:?}"
+        );
+    }
+
+    #[test]
+    fn whitespace_only_line_keeps_one_full_range_chunk() {
+        let chunks = compile_line_phrases("   ", 100, 900, &[], 2);
+        assert_eq!(chunks.len(), 1);
+        assert_eq!(chunks[0].byte_range, (0, 3));
+        assert_eq!((chunks[0].start_ms, chunks[0].end_ms), (100, 900));
     }
 }

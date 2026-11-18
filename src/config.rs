@@ -438,7 +438,7 @@ fullscreen = false
 show_header = true
 # Display status bar at the bottom
 show_status = true
-# Display mode: "normal" or "block"
+# Display mode: "normal", "block", or "kinetic"
 display_mode = "normal"
 # Enable word-level karaoke highlighting
 word_highlight = true
