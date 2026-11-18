@@ -452,4 +452,22 @@ mod tests {
         assert_eq!(chunks[0].byte_range, (0, 3));
         assert_eq!((chunks[0].start_ms, chunks[0].end_ms), (100, 900));
     }
+
+    proptest::proptest! {
+        #[test]
+        fn phrase_chunks_satisfy_invariants_for_arbitrary_text_and_max_chars(
+            text in "([a-zA-Z0-9 ,.!?\"'()\\[\\]\\u{3000}-\\u{303F}\\u{3042}-\\u{3093}\\u{4e00}-\\u{4e20}\\u{ac00}-\\u{ac10}\\u{0301}\\u{2728}]){0,64}",
+            start_ms in 0u64..100_000,
+            duration_ms in 0u64..60_000,
+            max_chars in 1u16..64,
+        ) {
+            let end_ms = start_ms + duration_ms;
+            let chunks = compile_line_phrases(&text, start_ms, end_ms, &[], max_chars);
+            assert_chunk_invariants(&text, start_ms, end_ms, &chunks);
+
+            let words = estimate_word_timings(&text, start_ms, end_ms);
+            let word_chunks = compile_line_phrases(&text, start_ms, end_ms, &words, max_chars);
+            assert_chunk_invariants(&text, start_ms, end_ms, &word_chunks);
+        }
+    }
 }

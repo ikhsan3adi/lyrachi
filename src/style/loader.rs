@@ -879,6 +879,35 @@ synthetic_word_timing = true
     }
 
     #[test]
+    fn style_loads_and_clamps_max_chars_per_phrase() {
+        let dir = temp_styles_dir("phrase-chars");
+        fs::write(
+            dir.join("phrase.toml"),
+            r#"
+[meta]
+name = "phrase-demo"
+
+[big_text]
+max_chars_per_phrase = 24
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("phrase", Some(&dir), 80).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(outcome.profile.big_text.max_chars_per_phrase, 24);
+
+        let resolved = outcome.profile.resolve(
+            "phrase",
+            crate::style::color::ColorCapability::TrueColor,
+            None,
+        );
+        assert_eq!(resolved.big_text_max_chars_per_phrase, 24);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn all_builtin_presets_load_without_warnings() {
         for name in super::super::BUILTIN_PRESETS {
             let outcome = load_style(name, None, 80).unwrap();

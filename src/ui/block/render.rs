@@ -77,7 +77,12 @@ pub(crate) fn render_phrase_lines(
     context: BlockRenderContext<'_>,
 ) -> Vec<Line<'static>> {
     let (chunk_start, chunk_end) = chunk_range;
-    if chunk_start == 0 {
+    if chunk_start == 0
+        && context
+            .words
+            .last()
+            .is_none_or(|w| w.byte_range.1 <= chunk_end)
+    {
         return render_lines(layout, context);
     }
 
@@ -400,5 +405,84 @@ mod tests {
         assert_eq!(wipe_cell_state(2, 4, 0.5, 1.0), BlockCellState::Active);
         assert_eq!(wipe_cell_state(0, 4, 0.5, 1.0), BlockCellState::Sung);
         assert_eq!(wipe_cell_state(3, 4, 0.5, 1.0), BlockCellState::Unsung);
+    }
+
+    #[test]
+    fn render_phrase_lines_remaps_words_and_active_index() {
+        let words = vec![
+            WordToken {
+                byte_range: (0, 5),
+                start_ms: 1_000,
+                end_ms: 1_500,
+                display_width: 5,
+            },
+            WordToken {
+                byte_range: (6, 11),
+                start_ms: 1_500,
+                end_ms: 2_000,
+                display_width: 5,
+            },
+            WordToken {
+                byte_range: (12, 17),
+                start_ms: 2_000,
+                end_ms: 2_500,
+                display_width: 5,
+            },
+        ];
+
+        // Chunk 1 is "world", byte range (6, 11) in the original line.
+        let layout = layout_text("world", 10, 10, 1);
+        let lines = render_phrase_lines(
+            &layout,
+            (6, 11),
+            BlockRenderContext {
+                words: &words,
+                cursor: ActiveStageCursor {
+                    active_line_idx: Some(0),
+                    active_word_idx: Some(1), // global index 1 is "world"
+                    progress: 0.5,
+                    waiting: None,
+                },
+                effective_ms: 1_750,
+                active: true,
+                word_highlight: true,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
+                styles: styles(),
+                alignment: Alignment::Left,
+            },
+        );
+
+        assert_eq!(text_with_style(&lines, styles().active), "wor");
+        assert_eq!(text_with_style(&lines, styles().unsung), "ld");
+
+        // Chunk 0 is "hello", byte range (0, 5) in a multi-chunk line where active word is "world" (index 1).
+        let chunk0_layout = layout_text("hello", 10, 10, 1);
+        let chunk0_lines = render_phrase_lines(
+            &chunk0_layout,
+            (0, 5),
+            BlockRenderContext {
+                words: &words,
+                cursor: ActiveStageCursor {
+                    active_line_idx: Some(0),
+                    active_word_idx: Some(1), // active word is in chunk 1, not chunk 0
+                    progress: 0.5,
+                    waiting: None,
+                },
+                effective_ms: 1_750,
+                active: true,
+                word_highlight: true,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
+                styles: styles(),
+                alignment: Alignment::Left,
+            },
+        );
+
+        // Word 0 is already past 1_750 ms, so it should be Sung in chunk 0.
+        assert_eq!(text_with_style(&chunk0_lines, styles().sung), "hello");
+        assert!(text_with_style(&chunk0_lines, styles().active).is_empty());
     }
 }
