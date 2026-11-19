@@ -40,5 +40,5 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                                 normal | default | lrclib (word) | word-hl: on | +0 ms
-limusic | playing | lrclib | +0 ms | 97% | word
+                                normal | default | lrclib (word) | word-hl: on | +300 ms
+limusic | playing | lrclib | +300 ms | 97% | word

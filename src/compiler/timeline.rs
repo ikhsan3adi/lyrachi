@@ -11,6 +11,7 @@ const MIN_WRAP_WIDTH: u16 = 1;
 const DEFAULT_VIEWPORT_WIDTH: u16 = 80;
 const DEFAULT_PHRASE_MAX_CHARS: u16 = 18;
 const DEFAULT_MIN_GAP_MS: u64 = 4_000;
+pub const MIN_LINE_HIGHLIGHT_MS: u64 = 1_500;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct TimelineContext {
@@ -105,6 +106,7 @@ pub enum WaitKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct WaitingGap {
     pub start_ms: u64,
+    pub display_start_ms: u64,
     pub end_ms: u64,
     pub kind: WaitKind,
 }
@@ -119,7 +121,7 @@ impl WaitingGap {
     }
 
     pub fn progress(self, effective_ms: u64) -> f32 {
-        interval_progress(self.start_ms, self.end_ms, effective_ms)
+        interval_progress(self.display_start_ms, self.end_ms, effective_ms)
     }
 }
 
@@ -315,12 +317,14 @@ impl CompiledTimeline {
             (None, Some(next)) => (effective_ms < next.start_ms && next.start_ms >= min_gap_ms)
                 .then_some(WaitingGap {
                     start_ms: 0,
+                    display_start_ms: 0,
                     end_ms: next.start_ms,
                     kind: WaitKind::Intro,
                 }),
             (Some(prev), Some(next)) => (next.start_ms.saturating_sub(prev.end_ms) >= min_gap_ms)
                 .then_some(WaitingGap {
                     start_ms: prev.end_ms,
+                    display_start_ms: line_hold_end_ms(prev).min(next.start_ms),
                     end_ms: next.start_ms,
                     kind: WaitKind::Instrumental,
                 }),
@@ -334,6 +338,7 @@ impl CompiledTimeline {
                 (effective_ms < end_ms && end_ms.saturating_sub(prev.end_ms) >= min_gap_ms)
                     .then_some(WaitingGap {
                         start_ms: prev.end_ms,
+                        display_start_ms: line_hold_end_ms(prev).min(end_ms),
                         end_ms,
                         kind: WaitKind::Outro,
                     })
@@ -351,19 +356,25 @@ impl CompiledTimeline {
         if let Some(line_idx) = self.line_index(effective_ms) {
             let line = &self.lines[line_idx];
             if line.end_ms < u64::MAX {
-                earliest = min_boundary(earliest, Some(line.end_ms + 1));
+                earliest = min_boundary(earliest, Some(line.end_ms + 1), effective_ms);
+            }
+            if line.role != LineRole::InstrumentalBreak {
+                let held_end_ms = line_hold_end_ms(line);
+                if held_end_ms > line.end_ms {
+                    earliest = min_boundary(earliest, Some(held_end_ms), effective_ms);
+                }
             }
 
             let next_word_idx = line
                 .words
                 .partition_point(|word| word.start_ms <= effective_ms);
             let next_word_start = line.words.get(next_word_idx).map(|word| word.start_ms);
-            earliest = min_boundary(earliest, next_word_start);
+            earliest = min_boundary(earliest, next_word_start, effective_ms);
 
             if let Some(word_idx) = self.word_index(line, effective_ms) {
                 let word = &line.words[word_idx];
                 if word.end_ms < u64::MAX {
-                    earliest = min_boundary(earliest, Some(word.end_ms + 1));
+                    earliest = min_boundary(earliest, Some(word.end_ms + 1), effective_ms);
                 }
             }
 
@@ -374,13 +385,11 @@ impl CompiledTimeline {
                 .phrases
                 .get(next_phrase_idx)
                 .map(|phrase| phrase.start_ms);
-            earliest = min_boundary(earliest, next_phrase_start);
+            earliest = min_boundary(earliest, next_phrase_start, effective_ms);
         }
 
-        if let Some(gap) = self.waiting_gap(effective_ms, self.line_index(effective_ms))
-            && gap.end_ms > effective_ms
-        {
-            earliest = min_boundary(earliest, Some(gap.end_ms));
+        if let Some(gap) = self.waiting_gap(effective_ms, self.line_index(effective_ms)) {
+            earliest = min_boundary(earliest, Some(gap.end_ms), effective_ms);
         }
 
         earliest
@@ -404,7 +413,28 @@ impl CompiledTimeline {
             .lines
             .partition_point(|line| line.start_ms <= effective_ms);
         let idx = next_idx.checked_sub(1)?;
-        (effective_ms <= self.lines[idx].end_ms).then_some(idx)
+        let line = &self.lines[idx];
+
+        if line.role == LineRole::InstrumentalBreak {
+            if let Some(prev_idx) = self.previous_lyric_index(idx)
+                && effective_ms < line_hold_end_ms(&self.lines[prev_idx])
+            {
+                return Some(prev_idx);
+            }
+            return (effective_ms <= line.end_ms).then_some(idx);
+        }
+
+        if effective_ms <= line.end_ms {
+            return Some(idx);
+        }
+
+        (effective_ms < line_hold_end_ms(line)).then_some(idx)
+    }
+
+    fn previous_lyric_index(&self, idx: usize) -> Option<usize> {
+        self.lines[..idx]
+            .iter()
+            .rposition(|line| line.role != LineRole::InstrumentalBreak)
     }
 
     fn word_index(&self, line: &CompiledLine, effective_ms: u64) -> Option<usize> {
@@ -416,7 +446,13 @@ impl CompiledTimeline {
     }
 }
 
-fn min_boundary(current: Option<u64>, candidate: Option<u64>) -> Option<u64> {
+fn line_hold_end_ms(line: &CompiledLine) -> u64 {
+    line.end_ms
+        .max(line.start_ms.saturating_add(MIN_LINE_HIGHLIGHT_MS))
+}
+
+fn min_boundary(current: Option<u64>, candidate: Option<u64>, after: u64) -> Option<u64> {
+    let candidate = candidate.filter(|candidate| *candidate > after);
     match (current, candidate) {
         (Some(a), Some(b)) => Some(a.min(b)),
         (Some(a), None) => Some(a),
@@ -522,7 +558,11 @@ mod tests {
         assert_eq!(second.active_word_idx, Some(0));
         assert!((second.progress - 0.5).abs() < 0.0001);
 
-        let after = timeline.evaluate(5_001);
+        let held = timeline.evaluate(5_001);
+        assert_eq!(held.active_line_idx, Some(1));
+        assert_eq!(held.active_word_idx, None);
+
+        let after = timeline.evaluate(5_500);
         assert_eq!(after.active_line_idx, None);
     }
 
@@ -535,6 +575,7 @@ mod tests {
         assert_eq!(timeline.next_boundary_ms(2_500), Some(3_001));
         assert_eq!(timeline.next_boundary_ms(3_500), Some(4_000));
         assert_eq!(timeline.next_boundary_ms(4_500), Some(5_001));
+        assert_eq!(timeline.next_boundary_ms(5_001), Some(5_500));
         assert_eq!(timeline.next_boundary_ms(5_500), None);
     }
 
@@ -803,6 +844,7 @@ mod tests {
             intro.waiting,
             Some(WaitingGap {
                 start_ms: 0,
+                display_start_ms: 0,
                 end_ms: 8_000,
                 kind: WaitKind::Intro,
             })
@@ -823,6 +865,7 @@ mod tests {
             inst_break.waiting,
             Some(WaitingGap {
                 start_ms: 10_000,
+                display_start_ms: 10_000,
                 end_ms: 20_000,
                 kind: WaitKind::Instrumental,
             })
@@ -835,6 +878,7 @@ mod tests {
             inter_gap.waiting,
             Some(WaitingGap {
                 start_ms: 22_000,
+                display_start_ms: 22_000,
                 end_ms: 27_000,
                 kind: WaitKind::Instrumental,
             })
@@ -847,6 +891,7 @@ mod tests {
             outro.waiting,
             Some(WaitingGap {
                 start_ms: 29_000,
+                display_start_ms: 29_000,
                 end_ms: 35_000,
                 kind: WaitKind::Outro,
             })
@@ -873,6 +918,135 @@ mod tests {
                 .waiting,
             None
         );
+    }
+
+    #[test]
+    fn holds_short_line_until_next_line_without_waiting_gap() {
+        let mut held_track = track();
+        held_track.lines = vec![
+            LyricLine {
+                start_ms: 1_000,
+                end_ms: 1_200,
+                role: LineRole::Primary,
+                text: "short".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 1_800,
+                end_ms: 2_500,
+                role: LineRole::Primary,
+                text: "next".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+        ];
+        let timeline = CompiledTimeline::compile(&held_track, TimelineContext::new(40));
+
+        for effective_ms in [1_201, 1_300, 1_799] {
+            let cursor = timeline.evaluate(effective_ms);
+            assert_eq!(cursor.active_line_idx, Some(0), "at {effective_ms}");
+            assert_eq!(cursor.waiting, None, "at {effective_ms}");
+        }
+        assert_eq!(timeline.next_boundary_ms(1_300), Some(1_800));
+        assert_eq!(timeline.evaluate(1_800).active_line_idx, Some(1));
+    }
+
+    #[test]
+    fn holds_short_line_before_instrumental_gap_then_starts_countdown() {
+        let mut held_track = track();
+        held_track.lines = vec![
+            LyricLine {
+                start_ms: 1_000,
+                end_ms: 1_200,
+                role: LineRole::Primary,
+                text: "short".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 6_000,
+                end_ms: 7_000,
+                role: LineRole::Primary,
+                text: "next".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+        ];
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 4_000;
+        let timeline = CompiledTimeline::compile(&held_track, context);
+
+        let held = timeline.evaluate(2_499);
+        assert_eq!(held.active_line_idx, Some(0));
+        assert_eq!(held.waiting, None);
+        assert_eq!(timeline.next_boundary_ms(1_300), Some(2_500));
+
+        let waiting = timeline.evaluate(2_500);
+        assert_eq!(waiting.active_line_idx, None);
+        assert_eq!(
+            waiting.waiting,
+            Some(WaitingGap {
+                start_ms: 1_200,
+                display_start_ms: 2_500,
+                end_ms: 6_000,
+                kind: WaitKind::Instrumental,
+            })
+        );
+        assert_eq!(waiting.progress, 0.0);
+        assert!((timeline.evaluate(4_250).progress - 0.5).abs() < 0.0001);
+    }
+
+    #[test]
+    fn holds_lyric_across_instrumental_break_before_waiting() {
+        let mut held_track = track();
+        held_track.lines = vec![
+            LyricLine {
+                start_ms: 1_000,
+                end_ms: 1_200,
+                role: LineRole::Primary,
+                text: "short".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 1_200,
+                end_ms: 6_000,
+                role: LineRole::InstrumentalBreak,
+                text: "[Instrumental]".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 6_000,
+                end_ms: 7_000,
+                role: LineRole::Primary,
+                text: "next".to_string(),
+                words: Vec::new(),
+                annotations: Vec::new(),
+            },
+        ];
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 4_000;
+        let timeline = CompiledTimeline::compile(&held_track, context);
+
+        let held = timeline.evaluate(2_499);
+        assert_eq!(held.active_line_idx, Some(0));
+        assert_eq!(held.waiting, None);
+        assert_eq!(timeline.next_boundary_ms(2_000), Some(2_500));
+
+        let waiting = timeline.evaluate(2_500);
+        assert_eq!(waiting.active_line_idx, Some(1));
+        assert_eq!(
+            waiting.waiting,
+            Some(WaitingGap {
+                start_ms: 1_200,
+                display_start_ms: 2_500,
+                end_ms: 6_000,
+                kind: WaitKind::Instrumental,
+            })
+        );
+        assert_eq!(waiting.progress, 0.0);
     }
 
     #[test]

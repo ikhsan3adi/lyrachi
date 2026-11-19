@@ -1857,6 +1857,7 @@ mod tests {
         let mut clock = PlaybackClock::new();
         clock.on_status_changed(PlaybackStatus::Playing, now);
         let mut state = UiState::new();
+        state.global_offset_ms = 0;
         state.set_lyrics(track());
 
         assert_eq!(
@@ -1927,6 +1928,7 @@ mod tests {
         let mut clock = PlaybackClock::new();
         clock.on_status_changed(PlaybackStatus::Playing, now);
         let mut state = UiState::new();
+        state.global_offset_ms = 0;
         state.fps_active = 30;
         let animation = AnimationStatus {
             effects_active: true,

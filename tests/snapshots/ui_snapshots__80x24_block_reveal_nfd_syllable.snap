@@ -25,4 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-limusic | playing | test | +0 ms | 100% | syllable
+limusic | playing | test | +300 ms | 100% | syllable

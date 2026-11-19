@@ -14,7 +14,7 @@ pub use menu::{
 use std::time::{Duration, Instant};
 
 use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
-use crate::config::RibbonMode;
+use crate::config::{DEFAULT_GLOBAL_OFFSET_MS, RibbonMode};
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
@@ -134,7 +134,7 @@ impl UiState {
             track: None,
             lyrics: LyricsView::Idle,
             refetching: false,
-            global_offset_ms: 0,
+            global_offset_ms: DEFAULT_GLOBAL_OFFSET_MS,
             user_offset_ms: 0,
             lookahead_ms: 0,
             offline: false,

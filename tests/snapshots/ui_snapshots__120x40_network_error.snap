@@ -41,4 +41,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-limusic | playing | error | +0 ms | -
+limusic | playing | error | +300 ms | -

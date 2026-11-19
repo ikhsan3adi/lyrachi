@@ -187,7 +187,7 @@ fn status_json_prints_one_object_without_tui_or_dbus() {
     assert!(value.is_object());
     assert!(value["player"].is_null());
     assert_eq!(value["playback"], "stopped");
-    assert_eq!(value["offset"]["effective_ms"], 0);
+    assert_eq!(value["offset"]["effective_ms"], 300);
 
     std::fs::remove_dir_all(root).unwrap();
 }

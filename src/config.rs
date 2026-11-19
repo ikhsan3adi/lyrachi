@@ -13,6 +13,7 @@ use crate::style::{
 };
 use crate::ui::DisplayMode;
 
+pub const DEFAULT_GLOBAL_OFFSET_MS: i64 = 300;
 const MIN_OFFSET_MS: i64 = -30_000;
 const MAX_OFFSET_MS: i64 = 30_000;
 const MAX_LOOKAHEAD_MS: u64 = 5_000;
@@ -47,7 +48,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             player_filter: None,
-            global_offset_ms: 0,
+            global_offset_ms: DEFAULT_GLOBAL_OFFSET_MS,
             lookahead_ms: 0,
             provider_order: Provider::all().to_vec(),
             network: true,
@@ -415,7 +416,7 @@ schema_version = 1
 
 [sync]
 # Manual lyric delay in milliseconds (positive values delay lyrics)
-global_offset_ms = 0
+global_offset_ms = 300
 # Lookahead in milliseconds (render transitions earlier)
 lookahead_ms = 0
 
@@ -579,7 +580,7 @@ mod tests {
         let outcome = RuntimeConfig::resolve(&path, vec![PathBuf::from("/music")], &args(&[]));
 
         assert!(outcome.warnings.is_empty());
-        assert_eq!(outcome.config.global_offset_ms, 0);
+        assert_eq!(outcome.config.global_offset_ms, DEFAULT_GLOBAL_OFFSET_MS);
         assert_eq!(outcome.config.local_dirs, vec![PathBuf::from("/music")]);
         assert_eq!(outcome.config.provider_order, Provider::all());
     }

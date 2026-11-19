@@ -1370,6 +1370,7 @@ mod tests {
                 WaitingGap {
                     kind: WaitKind::Intro,
                     start_ms: 0,
+                    display_start_ms: 0,
                     end_ms: 5_000,
                 },
                 1_000,

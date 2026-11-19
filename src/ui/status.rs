@@ -106,7 +106,7 @@ mod tests {
         let mut state = UiState::new();
         assert_eq!(
             status_line(&state).to_string(),
-            "no player | stopped | - | +0 ms | -"
+            "no player | stopped | - | +300 ms | -"
         );
 
         state.set_player(Some("mpv".to_string()));
@@ -114,31 +114,31 @@ mod tests {
         state.set_lyrics(sample_track(SyncGranularity::Syllable, false));
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | lrclib | +0 ms | 90% | syllable"
+            "mpv | playing | lrclib | +300 ms | 90% | syllable"
         );
 
         state.set_lyrics(sample_track(SyncGranularity::Word, false));
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | lrclib | +0 ms | 90% | word"
+            "mpv | playing | lrclib | +300 ms | 90% | word"
         );
 
         state.set_lyrics(sample_track(SyncGranularity::Line, false));
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | lrclib | +0 ms | 90% | line"
+            "mpv | playing | lrclib | +300 ms | 90% | line"
         );
 
         state.set_lyrics(sample_track(SyncGranularity::Line, true));
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | lrclib | +0 ms | 90% | instrumental"
+            "mpv | playing | lrclib | +300 ms | 90% | instrumental"
         );
 
         state.refetching = true;
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | refetching... | +0 ms | 90% | instrumental"
+            "mpv | playing | refetching... | +300 ms | 90% | instrumental"
         );
     }
 
@@ -162,7 +162,7 @@ mod tests {
 
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | stopped | not found | +0 ms | - | offline | invalid config: unknown key"
+            "mpv | stopped | not found | +300 ms | - | offline | invalid config: unknown key"
         );
     }
 
@@ -183,7 +183,7 @@ mod tests {
 
         assert_eq!(
             status_line(&state).to_string(),
-            "mpv | playing | lrclib | +0 ms | 90% | line (est. word)"
+            "mpv | playing | lrclib | +300 ms | 90% | line (est. word)"
         );
     }
 }

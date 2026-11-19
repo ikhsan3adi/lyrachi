@@ -121,7 +121,7 @@ mod tests {
         let mut state = UiState::new();
         assert_eq!(
             ribbon_line(&state).to_string(),
-            "normal | default | - | word-hl: off | +0 ms"
+            "normal | default | - | word-hl: off | +300 ms"
         );
 
         state.global_offset_ms = -100;
