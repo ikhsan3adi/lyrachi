@@ -457,18 +457,22 @@ fn response_to_parsed(response: &LyricsPlusResponse) -> Result<ParsedTrack, Prov
 }
 
 fn primary_singer(response: &LyricsPlusResponse) -> Option<String> {
-    if response.metadata.agents.contains_key("v1") {
-        return Some("v1".to_string());
-    }
-    if let Some(agent) = response.metadata.agents.keys().next() {
-        return Some(agent.clone());
+    let mut singers = Vec::new();
+    for line in &response.lyrics {
+        let Some(singer) = line.element.singer.as_deref().and_then(non_empty) else {
+            continue;
+        };
+        if !singers.iter().any(|known| known == singer) {
+            singers.push(singer.to_string());
+        }
     }
 
-    response
-        .lyrics
-        .iter()
-        .find_map(|line| line.element.singer.as_deref().and_then(non_empty))
-        .map(str::to_string)
+    match singers.as_slice() {
+        [] => None,
+        [only] => Some(only.clone()),
+        _ if singers.iter().any(|singer| singer == "v1") => Some("v1".to_string()),
+        _ => Some(singers[0].clone()),
+    }
 }
 
 fn build_line_content(
@@ -834,6 +838,37 @@ mod tests {
                 .annotations
                 .iter()
                 .any(|annotation| annotation.kind == AnnotationKind::Translation)
+        );
+    }
+
+    #[test]
+    fn single_used_singer_maps_every_line_to_primary() {
+        let body = serde_json::json!({
+            "metadata": {
+                "title": "Yellow",
+                "artist": "Coldplay",
+                "agents": {
+                    "v1": { "type": "person", "name": "Chris Martin" },
+                    "v2": { "type": "person", "name": "Jonny Buckland" }
+                }
+            },
+            "lyrics": [
+                { "time": 1000, "duration": 2000, "text": "One", "element": { "singer": "v2" } },
+                { "time": 4000, "duration": 2000, "text": "Two", "element": { "singer": "v2" } }
+            ]
+        })
+        .to_string();
+
+        let answer = LyricsPlusProvider::parse_response(&body, &query())
+            .unwrap()
+            .unwrap();
+
+        assert!(
+            answer
+                .track
+                .lines
+                .iter()
+                .all(|line| line.role == LineRole::Primary)
         );
     }
 
