@@ -1285,7 +1285,8 @@ mod tests {
     use crate::core::clock::PlaybackStatus;
     use crate::core::model::{Annotation, LyricLine, SyncGranularity, SyncedTrack};
     use crate::style::{
-        AnnotationPosition, HighlightMode, InstrumentalStyle, StyleProfile, color::ColorCapability,
+        AnnotationPosition, BUILTIN_PRESETS, HighlightMode, InstrumentalStyle, StyleProfile,
+        color::ColorCapability,
     };
 
     fn sample_track() -> SyncedTrack {
@@ -1362,6 +1363,45 @@ mod tests {
             .map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn every_builtin_style_renders_lyrics_states_and_modals() {
+        for name in BUILTIN_PRESETS {
+            for (width, height) in [(80, 24), (120, 40)] {
+                let profile = StyleProfile::builtin(name, width).unwrap();
+                let resolved = profile.resolve(*name, ColorCapability::TrueColor, None);
+                let mut state = UiState::new();
+                state.playback = PlaybackStatus::Playing;
+                state.track = Some(crate::media::TrackMeta {
+                    title: "Song Title".to_string(),
+                    artist: "Artist".to_string(),
+                    album: None,
+                    duration_ms: Some(10_000),
+                    track_id: None,
+                    url: None,
+                });
+                state.set_resolved_style(resolved);
+                state.set_lyrics(sample_track());
+                render_buffer_text(&state, 2_200, width, height);
+
+                state.show_banner("Offline mode", Instant::now());
+                render_buffer_text(&state, 2_200, width, height);
+
+                state.open_context_menu();
+                render_buffer_text(&state, 2_200, width, height);
+
+                state.open_candidate_loading("Artist - Song Title".to_string());
+                render_buffer_text(&state, 2_200, width, height);
+
+                state.open_search_input("Artist".to_string(), "Song Title".to_string());
+                render_buffer_text(&state, 2_200, width, height);
+
+                state.close_modal();
+                state.set_not_found();
+                render_buffer_text(&state, 0, width, height);
+            }
+        }
     }
 
     #[test]
