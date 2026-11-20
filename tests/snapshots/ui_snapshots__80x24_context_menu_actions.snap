@@ -9,16 +9,16 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                ╭ Context Menu ───────────────────────────────╮
-                │                                             │
-                │ Coldplay - Yellow                           │
-                │                                             │
-                │ > Select lyrics candidate...                │
-                │   Manual search query...                    │
-                │   Reset preferred source (pinned: lrclib)   │
-                │   Pin style to track                        │
-                │                                             │
-                ╰────── Up/Down move  Enter select  Esc close ╯
+          ╭ Context Menu ────────────────────────────────────────────╮
+          │                                                          │
+          │  Coldplay - Yellow                                       │
+          │                                                          │
+          │  Select lyrics candidate...                              │
+          │  Manual search query...                                  │
+          │  Reset preferred source (pinned: lrclib)                 │
+          │  Pin style to track                                      │
+          │                                                          │
+          ╰─────────────────── Up/Down move  Enter select  Esc close ╯
 
 
 

@@ -18,13 +18,13 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                          ╭ Select Candidate ────────────────────────────────────────────────╮
-                          │                                                                  │
-                          │ Query: Coldplay - Yellow                                         │
-                          │ > [lyricsplus] Yellow - Coldplay (04:27, syllable, 99%)          │
-                          │   [lrclib] Yellow - Coldplay (04:27, word, 97%) *                │
-                          │                                                                  │
-                          ╰────────────────────────────── Up/Down move  Enter pin  Esc close ╯
+               ╭ Select Candidate ──────────────────────────────────────────────────────────────────────╮
+               │                                                                                        │
+               │  Query: Coldplay - Yellow                                                              │
+               │  [lyricsplus] Yellow - Coldplay (04:27, syllable, 99%)                                 │
+               │  [lrclib] Yellow - Coldplay (04:27, word, 97%) *                                       │
+               │                                                                                        │
+               ╰──────────────────────────────────────────────────── Up/Down move  Enter pin  Esc close ╯
 
 
 

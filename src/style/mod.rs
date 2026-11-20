@@ -146,6 +146,7 @@ description = "Deep slate canvas with indigo accents and smooth distance fade"
 
 [palette]
 bg = "#1a1b26"
+surface = "#24283b"
 fg = "#c0caf5"
 accent = "#7aa2f7"
 dim = "#565f89"
@@ -220,6 +221,7 @@ description = "High-contrast northern lights palette with active line prefix"
 
 [palette]
 bg = "#0f172a"
+surface = "#1e293b"
 fg = "#e2e8f0"
 accent = "#38bdf8"
 dim = "#64748b"
@@ -499,6 +501,11 @@ impl StyleProfile {
             name,
             capability,
             bg: self.palette.bg.resolve(capability),
+            surface: self
+                .palette
+                .surface
+                .and_then(|surface| surface.resolve(capability))
+                .or_else(|| self.palette.bg.resolve(capability)),
             stage_bg_rgb,
             align: self.layout.align,
             max_width: self.layout.max_width,
@@ -564,6 +571,7 @@ pub struct StyleMeta {
 #[serde(default)]
 pub struct StylePalette {
     pub bg: StyleColor,
+    pub surface: Option<StyleColor>,
     pub fg: StyleColor,
     pub accent: StyleColor,
     pub dim: StyleColor,
@@ -578,6 +586,7 @@ impl Default for StylePalette {
     fn default() -> Self {
         Self {
             bg: StyleColor::new(Color::Reset),
+            surface: None,
             fg: StyleColor::new(Color::Reset),
             accent: StyleColor::new(Color::Cyan),
             dim: StyleColor::new(Color::Reset),
@@ -1043,6 +1052,7 @@ pub struct ResolvedStyle {
     pub name: String,
     pub capability: ColorCapability,
     pub bg: Option<Color>,
+    pub surface: Option<Color>,
     pub stage_bg_rgb: Option<(u8, u8, u8)>,
     pub align: TextAlign,
     pub max_width: Option<MaxWidth>,
@@ -1345,6 +1355,33 @@ mod tests {
         assert_eq!(cycle_next_style("unknown", Some(&dir)), "builtin:default");
 
         let _ = fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn builtin_surfaces_follow_background_or_terminal_default() {
+        let dark = loader::load_style("builtin:dark", None, 120)
+            .unwrap()
+            .profile;
+        let dark = dark.resolve("dark", ColorCapability::TrueColor, None);
+        assert_eq!(dark.surface, Some(Color::Rgb(0x24, 0x28, 0x3b)));
+
+        let aurora = loader::load_style("builtin:aurora", None, 120)
+            .unwrap()
+            .profile;
+        let aurora = aurora.resolve("aurora", ColorCapability::TrueColor, None);
+        assert_eq!(aurora.surface, Some(Color::Rgb(0x1e, 0x29, 0x3b)));
+
+        let default = StyleProfile::default().resolve("default", ColorCapability::TrueColor, None);
+        assert_eq!(default.surface, None);
+
+        let mut fallback = StyleProfile::default();
+        fallback.palette.bg = StyleColor::new(Color::Rgb(1, 2, 3));
+        assert_eq!(
+            fallback
+                .resolve("fallback", ColorCapability::TrueColor, None)
+                .surface,
+            Some(Color::Rgb(1, 2, 3))
+        );
     }
 
     #[test]

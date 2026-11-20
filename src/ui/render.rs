@@ -125,7 +125,9 @@ fn render_internal(
     }
     match &state.modal {
         Some(UiModal::Help) => help::render(frame, area),
-        Some(UiModal::ContextMenu(menu_state)) => menu::render(frame, area, menu_state),
+        Some(UiModal::ContextMenu(menu_state)) => {
+            menu::render(frame, area, menu_state, &state.style)
+        }
         None => {}
     }
     stage_area

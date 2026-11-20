@@ -18,14 +18,14 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                          ╭ Manual Search ───────────────────────────────────────────────────╮
-                          │                                                                  │
-                          │ > Artist: Coldplay_                                              │
-                          │                                                                  │
-                          │   Title : Yellow (Acoustic)                                      │
-                          │ Type query text directly; global hotkeys are locked.             │
-                          │                                                                  │
-                          ╰───────────────────────────── Tab field  Enter search  Esc cancel ╯
+               ╭ Manual Search ─────────────────────────────────────────────────────────────────────────╮
+               │                                                                                        │
+               │  > Artist: Coldplay_                                                                   │
+               │                                                                                        │
+               │    Title : Yellow (Acoustic)                                                           │
+               │  Type query text directly; global hotkeys are locked.                                  │
+               │                                                                                        │
+               ╰─────────────────────────────────────────────────── Tab field  Enter search  Esc cancel ╯
 
 
 

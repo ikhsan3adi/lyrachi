@@ -3,17 +3,22 @@ use ratatui::{
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
+    widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph},
 };
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::core::text::{display_width, truncate_to_width};
+use crate::style::ResolvedStyle;
 
 use super::help::centered_rect;
 
-const MAX_MODAL_WIDTH: u16 = 68;
-const MIN_MODAL_WIDTH: u16 = 24;
+const MAX_MODAL_WIDTH: u16 = 96;
+const MIN_MODAL_WIDTH: u16 = 56;
+const MAX_ACTIONS_WIDTH: u16 = 68;
+const MIN_ACTIONS_WIDTH: u16 = 56;
 const MIN_MODAL_HEIGHT: u16 = 6;
+const HORIZONTAL_PADDING: u16 = 2;
+const CHROME_WIDTH: u16 = 2 + HORIZONTAL_PADDING * 2;
 pub const MIN_AREA_WIDTH: u16 = MIN_MODAL_WIDTH + 2;
 pub const MIN_AREA_HEIGHT: u16 = MIN_MODAL_HEIGHT + 2;
 
@@ -193,7 +198,7 @@ impl ContextMenuState {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState) {
+pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState, style: &ResolvedStyle) {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
     if available_width < MIN_MODAL_WIDTH || available_height < MIN_MODAL_HEIGHT {
@@ -209,6 +214,7 @@ pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState) {
                 *selected,
                 available_width,
                 available_height,
+                style,
             );
         }
         ContextMenuView::Candidates {
@@ -230,12 +236,48 @@ pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState) {
                 status_message.as_deref(),
                 available_width,
                 available_height,
+                style,
             );
         }
         ContextMenuView::SearchInput(search) => {
-            render_search_input(frame, area, search, available_width, available_height);
+            render_search_input(frame, area, search, available_height, style);
         }
     }
+}
+
+fn modal_width(area_width: u16) -> u16 {
+    let available = area_width.saturating_sub(2);
+    let preferred = area_width.saturating_mul(3) / 4;
+    preferred
+        .clamp(MIN_MODAL_WIDTH, MAX_MODAL_WIDTH)
+        .min(available)
+}
+
+fn content_style(style: &ResolvedStyle) -> Style {
+    let mut content = Style::default();
+    if let Some(surface) = style.surface {
+        content = content.bg(surface);
+    }
+    content
+}
+
+fn accent(style: &ResolvedStyle) -> Color {
+    style.accent.unwrap_or(Color::Cyan)
+}
+
+fn full_row_line(text: &str, width: usize, style: Style) -> Line<'static> {
+    let text = truncate_display(text, width);
+    let padding = width.saturating_sub(usize::from(display_width(&text)));
+    Line::from(Span::styled(
+        format!("{text}{}", " ".repeat(padding)),
+        style,
+    ))
+}
+
+fn selected_style(style: &ResolvedStyle) -> Style {
+    Style::default()
+        .fg(accent(style))
+        .add_modifier(Modifier::BOLD | Modifier::REVERSED)
 }
 
 fn render_actions(
@@ -245,17 +287,11 @@ fn render_actions(
     selected: usize,
     available_width: u16,
     available_height: u16,
+    style: &ResolvedStyle,
 ) {
     let rows = build_action_rows(menu);
-    let content_width = rows
-        .iter()
-        .map(|label| usize::from(display_width(label)) + 4)
-        .max()
-        .unwrap_or(32)
-        .max(usize::from(display_width(&menu.track_label)) + 4);
-    let width = u16::try_from(content_width + 4)
-        .unwrap_or(MAX_MODAL_WIDTH)
-        .clamp(36, MAX_MODAL_WIDTH)
+    let width = modal_width(area.width)
+        .clamp(MIN_ACTIONS_WIDTH, MAX_ACTIONS_WIDTH)
         .min(available_width);
 
     let compact = available_height < u16::try_from(rows.len() + 6).unwrap_or(u16::MAX);
@@ -273,14 +309,12 @@ fn render_actions(
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
 
-    let inner_width = usize::from(popup.width.saturating_sub(4));
+    let inner_width = usize::from(popup.width.saturating_sub(CHROME_WIDTH));
     let inner_height = usize::from(popup.height.saturating_sub(chrome_rows));
     let mut lines = Vec::with_capacity(inner_height.max(1));
     lines.push(Line::from(Span::styled(
         truncate_display(&menu.track_label, inner_width),
-        Style::default()
-            .fg(Color::DarkGray)
-            .add_modifier(Modifier::BOLD),
+        Style::default().add_modifier(Modifier::BOLD),
     )));
     if !compact {
         lines.push(Line::raw(""));
@@ -295,32 +329,25 @@ fn render_actions(
     let end = (start + action_slots).min(rows.len());
 
     for (index, label) in rows.into_iter().enumerate().take(end).skip(start) {
-        let is_selected = index == selected;
-        let prefix = if is_selected { "> " } else { "  " };
-        let style = if is_selected {
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD)
+        let row_style = if index == selected {
+            selected_style(style)
         } else {
             Style::default()
         };
-        lines.push(Line::from(vec![
-            Span::styled(prefix, style),
-            Span::styled(
-                truncate_display(&label, inner_width.saturating_sub(2)),
-                style,
-            ),
-        ]));
+        lines.push(full_row_line(&label, inner_width, row_style));
     }
 
+    let border_style = Style::default().fg(accent(style));
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::symmetric(1, vertical_pad))
+        .border_style(border_style)
+        .padding(Padding::symmetric(HORIZONTAL_PADDING, vertical_pad))
         .title(Line::from(Span::styled(
             " Context Menu ",
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(accent(style))
+                .add_modifier(Modifier::BOLD),
         )))
         .title_bottom(
             Line::from(Span::styled(
@@ -332,8 +359,8 @@ fn render_actions(
 
     frame.render_widget(
         Paragraph::new(lines)
-            .block(block)
-            .wrap(Wrap { trim: false }),
+            .style(content_style(style))
+            .block(block),
         popup,
     );
 }
@@ -355,6 +382,10 @@ fn build_action_rows(menu: &ContextMenuState) -> Vec<String> {
     ]
 }
 
+fn muted_fg(style: &ResolvedStyle) -> Color {
+    style.active_fg.or(style.inactive_fg).unwrap_or(Color::Gray)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn render_candidates(
     frame: &mut Frame,
@@ -367,17 +398,19 @@ fn render_candidates(
     status_message: Option<&str>,
     available_width: u16,
     available_height: u16,
+    style: &ResolvedStyle,
 ) {
-    let width = MAX_MODAL_WIDTH.min(available_width);
+    let width = modal_width(area.width).min(available_width);
     let extra_rows: u16 = if hydrating || status_message.is_some() {
         1
     } else {
         0
     };
+    let max_items = usize::from(available_height.saturating_sub(5 + extra_rows)).clamp(1, 16);
     let desired_rows = if loading || items.is_empty() {
         7
     } else {
-        items.len().min(10) + 5 + usize::from(extra_rows)
+        items.len().min(max_items) + 5 + usize::from(extra_rows)
     };
     let height = u16::try_from(desired_rows)
         .unwrap_or(u16::MAX)
@@ -386,18 +419,18 @@ fn render_candidates(
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
 
-    let inner_width = usize::from(popup.width.saturating_sub(4));
+    let inner_width = usize::from(popup.width.saturating_sub(CHROME_WIDTH));
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(Span::styled(
         truncate_display(&format!("Query: {query_label}"), inner_width),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(muted_fg(style)),
     )));
 
     if loading {
         lines.push(Line::raw(""));
         lines.push(Line::from(Span::styled(
             "Searching providers...",
-            Style::default().fg(Color::Cyan),
+            Style::default().fg(accent(style)),
         )));
     } else if items.is_empty() {
         lines.push(Line::raw(""));
@@ -407,7 +440,7 @@ fn render_candidates(
             Style::default().fg(Color::Yellow),
         )));
     } else {
-        let available_slots = usize::from(popup.height.saturating_sub(5 + extra_rows)).max(1);
+        let available_slots = usize::from(popup.height.saturating_sub(5 + extra_rows)).clamp(1, 16);
         let start = if selected >= available_slots {
             selected + 1 - available_slots
         } else {
@@ -415,21 +448,16 @@ fn render_candidates(
         };
         let end = (start + available_slots).min(items.len());
         for (idx, item) in items.iter().enumerate().take(end).skip(start) {
-            let is_selected = idx == selected;
-            let prefix = if is_selected { "> " } else { "  " };
-            let formatted = format_candidate_line(item);
-            let truncated = truncate_display(&formatted, inner_width.saturating_sub(2));
-            let style = if is_selected {
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD)
+            let row_style = if idx == selected {
+                selected_style(style)
             } else {
                 Style::default()
             };
-            lines.push(Line::from(vec![
-                Span::styled(prefix, style),
-                Span::styled(truncated, style),
-            ]));
+            lines.push(full_row_line(
+                &format_candidate_line(item),
+                inner_width,
+                row_style,
+            ));
         }
         if hydrating {
             lines.push(Line::from(Span::styled(
@@ -444,7 +472,8 @@ fn render_candidates(
         }
     }
 
-    let is_scrolling = items.len() > usize::from(popup.height.saturating_sub(5 + extra_rows));
+    let available_slots = usize::from(popup.height.saturating_sub(5 + extra_rows)).clamp(1, 16);
+    let is_scrolling = items.len() > available_slots;
     let title = if is_scrolling {
         format!(" Select Candidate ({}/{}) ", selected + 1, items.len())
     } else {
@@ -459,31 +488,40 @@ fn render_candidates(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::symmetric(1, 1))
+        .border_style(Style::default().fg(accent(style)))
+        .padding(Padding::symmetric(HORIZONTAL_PADDING, 1))
         .title(Line::from(Span::styled(
             title,
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(accent(style))
+                .add_modifier(Modifier::BOLD),
         )))
         .title_bottom(
             Line::from(Span::styled(
                 bottom_hint,
-                Style::default().add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(muted_fg(style))
+                    .add_modifier(Modifier::DIM),
             ))
             .alignment(Alignment::Right),
         );
 
-    frame.render_widget(Paragraph::new(lines).block(block), popup);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .style(content_style(style))
+            .block(block),
+        popup,
+    );
 }
 
 fn render_search_input(
     frame: &mut Frame,
     area: Rect,
     search: &SearchInputState,
-    available_width: u16,
     available_height: u16,
+    style: &ResolvedStyle,
 ) {
-    let width = MAX_MODAL_WIDTH.min(available_width);
+    let width = modal_width(area.width);
     let height = 8u16.min(available_height);
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
@@ -491,22 +529,26 @@ fn render_search_input(
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::symmetric(1, 1))
+        .border_style(Style::default().fg(accent(style)))
+        .padding(Padding::symmetric(HORIZONTAL_PADDING, 1))
         .title(Line::from(Span::styled(
             " Manual Search ",
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default()
+                .fg(accent(style))
+                .add_modifier(Modifier::BOLD),
         )))
         .title_bottom(
             Line::from(Span::styled(
                 " Tab field  Enter search  Esc cancel ",
-                Style::default().add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(muted_fg(style))
+                    .add_modifier(Modifier::DIM),
             ))
             .alignment(Alignment::Right),
         );
 
     let inner = block.inner(popup);
-    frame.render_widget(block, popup);
+    frame.render_widget(block.style(content_style(style)), popup);
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
@@ -524,6 +566,7 @@ fn render_search_input(
         "Artist",
         &search.artist,
         search.active_field == SearchField::Artist,
+        style,
     );
     render_input_row(
         frame,
@@ -531,25 +574,36 @@ fn render_search_input(
         "Title ",
         &search.title,
         search.active_field == SearchField::Title,
+        style,
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
             "Type query text directly; global hotkeys are locked.",
-            Style::default().add_modifier(Modifier::DIM),
-        )),
+            Style::default()
+                .fg(muted_fg(style))
+                .add_modifier(Modifier::DIM),
+        ))
+        .style(content_style(style)),
         rows[3],
     );
 }
 
-fn render_input_row(frame: &mut Frame, area: Rect, label: &str, value: &str, active: bool) {
+fn render_input_row(
+    frame: &mut Frame,
+    area: Rect,
+    label: &str,
+    value: &str,
+    active: bool,
+    style: &ResolvedStyle,
+) {
     let marker = if active { "> " } else { "  " };
     let cursor = if active { "_" } else { "" };
     let label_style = if active {
         Style::default()
-            .fg(Color::Cyan)
+            .fg(accent(style))
             .add_modifier(Modifier::BOLD)
     } else {
-        Style::default().fg(Color::DarkGray)
+        Style::default().fg(muted_fg(style))
     };
     let max_val_len = usize::from(area.width).saturating_sub(marker.len() + label.len() + 3);
     let visible = tail_display(value, max_val_len);
@@ -557,9 +611,9 @@ fn render_input_row(frame: &mut Frame, area: Rect, label: &str, value: &str, act
         Span::styled(marker, label_style),
         Span::styled(format!("{label}: "), label_style),
         Span::raw(visible),
-        Span::styled(cursor, Style::default().fg(Color::Cyan)),
+        Span::styled(cursor, Style::default().fg(accent(style))),
     ]);
-    frame.render_widget(Paragraph::new(line), area);
+    frame.render_widget(Paragraph::new(line).style(content_style(style)), area);
 }
 
 fn format_candidate_line(item: &CandidateMenuItem) -> String {
@@ -743,14 +797,23 @@ mod tests {
     }
 
     #[test]
+    fn modal_width_follows_viewport_bounds() {
+        assert_eq!(modal_width(120), 90);
+        assert_eq!(modal_width(80), 60);
+        assert_eq!(modal_width(40), 38);
+        assert_eq!(modal_width(400), MAX_MODAL_WIDTH);
+    }
+
+    #[test]
     fn render_skips_tiny_areas_without_panic() {
         let backend = TestBackend::new(10, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         let menu = ContextMenuState::actions("Artist - Title".to_string(), None, None);
+        let style = ResolvedStyle::default();
 
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu);
+                render(frame, frame.area(), &menu, &style);
             })
             .unwrap();
     }
@@ -783,9 +846,10 @@ mod tests {
             status_message: None,
         };
 
+        let style = ResolvedStyle::default();
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu);
+                render(frame, frame.area(), &menu, &style);
             })
             .unwrap();
 
@@ -802,6 +866,58 @@ mod tests {
     }
 
     #[test]
+    fn selected_row_fills_width_and_content_uses_surface() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let menu = ContextMenuState::actions("Artist - Title".to_string(), None, None);
+        let style = ResolvedStyle {
+            surface: Some(Color::Rgb(10, 20, 30)),
+            accent: Some(Color::Rgb(0, 200, 200)),
+            ..ResolvedStyle::default()
+        };
+
+        terminal
+            .draw(|frame| {
+                render(frame, frame.area(), &menu, &style);
+            })
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let width = usize::from(buffer.area.width);
+        let rows: Vec<String> = (0..buffer.area.height)
+            .map(|y| {
+                (0..buffer.area.width)
+                    .map(|x| buffer.content()[usize::from(y) * width + usize::from(x)].symbol())
+                    .collect()
+            })
+            .collect();
+        let selected_y = rows
+            .iter()
+            .position(|row| row.contains("Select lyrics candidate"))
+            .unwrap();
+        let track_y = rows
+            .iter()
+            .position(|row| row.contains("Artist - Title"))
+            .unwrap();
+        let reversed = (0..buffer.area.width)
+            .filter(|&x| {
+                buffer.content()[selected_y * width + usize::from(x)]
+                    .modifier
+                    .contains(Modifier::REVERSED)
+            })
+            .count();
+        assert!(
+            reversed > 50,
+            "selected row only highlighted {reversed} cells"
+        );
+        let track_x = rows[track_y].find('A').unwrap();
+        assert_eq!(
+            buffer.content()[track_y * width + track_x].bg,
+            Color::Rgb(10, 20, 30)
+        );
+    }
+
+    #[test]
     fn actions_fit_on_80x9_without_clipping_and_truncate_cjk_by_width() {
         let backend = TestBackend::new(80, 9);
         let mut terminal = Terminal::new(backend).unwrap();
@@ -811,9 +927,10 @@ mod tests {
             None,
         );
 
+        let style = ResolvedStyle::default();
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu);
+                render(frame, frame.area(), &menu, &style);
             })
             .unwrap();
 
