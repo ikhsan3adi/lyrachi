@@ -1,4 +1,4 @@
-//! Lyrachi: terminal lyrics for MPRIS players.
+//! Lyrachi: terminal lyrics for active media players.
 
 #![forbid(unsafe_code)]
 

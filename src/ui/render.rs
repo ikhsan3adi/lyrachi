@@ -14,6 +14,7 @@ use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, WaitKind, WaitingGap, WrappedSubLine,
 };
 use crate::core::model::{LineRole, SyncedTrack, WordToken};
+use crate::media::MediaAvailability;
 use crate::style::{
     AnnotationPosition, BigTextMaxSize, HighlightMode, InstrumentalStyle, ResolvedStyle,
 };
@@ -240,29 +241,38 @@ fn render_body(
     }
 
     match &state.lyrics {
-        LyricsView::Idle => {
-            if state.player.is_none() {
-                centered_message(
-                    frame,
-                    area,
-                    "No MPRIS player found",
-                    "Start a player that exposes MPRIS.",
-                );
-            } else {
-                centered_message(
-                    frame,
-                    area,
-                    "No track playing",
-                    "Play something to load lyrics.",
-                );
-            }
-        }
+        LyricsView::Idle => match state.media_availability {
+            MediaAvailability::Unsupported => centered_message(
+                frame,
+                area,
+                "Media source unavailable",
+                "This build has no media backend for this platform yet.",
+            ),
+            MediaAvailability::Unavailable => centered_message(
+                frame,
+                area,
+                "Media source unavailable",
+                "Could not connect to the media session.",
+            ),
+            MediaAvailability::Available if state.player.is_none() => centered_message(
+                frame,
+                area,
+                "No active player",
+                "Start playback in a supported media player.",
+            ),
+            MediaAvailability::Available => centered_message(
+                frame,
+                area,
+                "No track playing",
+                "Play something to load lyrics.",
+            ),
+        },
         LyricsView::Loading => {
             centered_message(
                 frame,
                 area,
                 "Loading lyrics",
-                "Searching local files and LRCLIB.",
+                "Searching local files and online providers.",
             );
         }
         LyricsView::NotFound => {

@@ -185,6 +185,7 @@ fn status_json_prints_one_object_without_tui_or_dbus() {
     let value: serde_json::Value =
         serde_json::from_slice(&output.stdout).expect("status --json should print valid JSON");
     assert!(value.is_object());
+    assert_eq!(value["backend_available"], false);
     assert!(value["player"].is_null());
     assert_eq!(value["playback"], "stopped");
     assert_eq!(value["offset"]["effective_ms"], -300);

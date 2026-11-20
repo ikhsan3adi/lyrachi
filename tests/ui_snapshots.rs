@@ -5,7 +5,7 @@ use lyrachi::core::model::{
 };
 use lyrachi::core::parse::ttml::parse_ttml;
 use lyrachi::core::text::display_width;
-use lyrachi::media::TrackMeta;
+use lyrachi::media::{MediaAvailability, TrackMeta};
 use lyrachi::ui::{CandidateMenuItem, DisplayMode, LyricsView, UiState, render};
 use ratatui::{
     Terminal,
@@ -196,6 +196,18 @@ fn base_state() -> UiState {
 
 fn no_player() -> UiState {
     UiState::new()
+}
+
+fn no_media_backend() -> UiState {
+    let mut state = UiState::new();
+    state.media_availability = MediaAvailability::Unsupported;
+    state
+}
+
+fn media_session_unavailable() -> UiState {
+    let mut state = UiState::new();
+    state.media_availability = MediaAvailability::Unavailable;
+    state
 }
 
 fn no_track() -> UiState {
@@ -422,6 +434,28 @@ fn no_player_80x24() {
 #[test]
 fn no_player_120x40() {
     snapshot(&mut no_player(), 120, 40, 0, "120x40_no_player");
+}
+
+#[test]
+fn no_media_backend_80x24() {
+    snapshot(
+        &mut no_media_backend(),
+        80,
+        24,
+        0,
+        "80x24_media_unsupported",
+    );
+}
+
+#[test]
+fn media_session_unavailable_80x24() {
+    snapshot(
+        &mut media_session_unavailable(),
+        80,
+        24,
+        0,
+        "80x24_media_unavailable",
+    );
 }
 
 #[test]

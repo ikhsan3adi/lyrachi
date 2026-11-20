@@ -15,8 +15,7 @@ use crate::config::RuntimeConfig;
 use crate::core::clock::{ClockState, PlaybackClock};
 use crate::core::model::SyncGranularity;
 use crate::core::text::truncate_to_width;
-use crate::media::MediaEvent;
-use crate::media::mpris::arbiter;
+use crate::media::{MediaEvent, backend};
 use crate::offsets::OffsetStore;
 use crate::providers::{ProviderResolver, TrackQuery};
 use crate::ui::{LyricsView, UiState};
@@ -61,12 +60,7 @@ pub async fn run(
     let (tx, rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
-    let connection = zbus::Connection::session().await?;
-    let monitor = tokio::spawn(async move {
-        if let Err(error) = arbiter::run(player_filter, connection, tx, monitor_cancel).await {
-            warn!(%error, "MPRIS monitor stopped");
-        }
-    });
+    let monitor = backend::start_monitor(player_filter, tx, monitor_cancel).await?;
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let result = tokio::select! {

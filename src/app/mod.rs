@@ -15,7 +15,7 @@ use crate::{
     config::RuntimeConfig,
     core::clock::{ClockState, EffectiveOffsets, PlaybackClock, PlaybackStatus},
     core::model::CanonicalTrackKey,
-    media::{MediaEvent, TrackMeta, mpris::arbiter, player_short_name},
+    media::{MediaAvailability, MediaEvent, TrackMeta, backend, player_short_name},
     offsets::{DebouncedOffsetWriter, OffsetStore},
     prefs::{self, UiPrefs},
     providers::engine::EngineUpdate,
@@ -250,15 +250,11 @@ pub async fn run(
     let player_filter = config.player_filter.clone();
     let monitor_cancel = cancel.clone();
     let monitor_tx = media_tx.clone();
-    let monitor = match zbus::Connection::session().await {
-        Ok(conn) => Some(tokio::spawn(async move {
-            if let Err(error) = arbiter::run(player_filter, conn, monitor_tx, monitor_cancel).await
-            {
-                warn!(%error, "MPRIS monitor stopped");
-            }
-        })),
+    let monitor = match backend::start_monitor(player_filter, monitor_tx, monitor_cancel).await {
+        Ok(handle) => Some(handle),
         Err(error) => {
-            warn!(%error, "session bus unavailable");
+            warn!(%error, "media backend unavailable");
+            state.media_availability = error.availability();
             None
         }
     };
@@ -406,9 +402,7 @@ pub async fn run_dump_events(player_filter: Option<String>) -> color_eyre::Resul
     let (tx, mut rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
-    let conn = zbus::Connection::session().await?;
-    let mut monitor =
-        tokio::spawn(async move { arbiter::run(player_filter, conn, tx, monitor_cancel).await });
+    let mut monitor = backend::start_monitor(player_filter, tx, monitor_cancel).await?;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
@@ -429,9 +423,8 @@ pub async fn run_dump_events(player_filter: Option<String>) -> color_eyre::Resul
             }
             result = &mut monitor => {
                 match result {
-                    Ok(Ok(())) => {}
-                    Ok(Err(error)) => eprintln!("lyrachi: MPRIS monitor failed: {error:?}"),
-                    Err(error) => eprintln!("lyrachi: MPRIS monitor task failed: {error}"),
+                    Ok(()) => {}
+                    Err(error) => eprintln!("lyrachi: media monitor task failed: {error}"),
                 }
                 break;
             }
@@ -739,6 +732,7 @@ pub fn handle_media(
     resolution: Resolution<'_>,
     now: Instant,
 ) {
+    state.media_availability = MediaAvailability::Available;
     match event {
         MediaEvent::PlayerChanged { bus, .. } => {
             state.set_player(Some(player_short_name(&bus).to_string()));

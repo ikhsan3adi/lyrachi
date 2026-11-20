@@ -37,7 +37,7 @@ pub struct Args {
     #[arg(long, global = true, value_name = "PATH")]
     pub config: Option<PathBuf>,
 
-    /// Write logs to this file instead of the XDG state directory.
+    /// Write logs to this file instead of the default state directory.
     #[arg(long, global = true, value_name = "PATH")]
     pub log_file: Option<PathBuf>,
 

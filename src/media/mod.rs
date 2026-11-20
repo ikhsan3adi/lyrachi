@@ -2,10 +2,76 @@ use std::time::Duration;
 
 use crate::core::clock::PlaybackStatus;
 
+pub mod backend;
 pub mod fake;
+#[cfg(any(
+    target_os = "linux",
+    target_os = "freebsd",
+    target_os = "openbsd",
+    target_os = "netbsd",
+    target_os = "dragonfly"
+))]
 pub mod mpris;
 
 pub const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BackendKind {
+    Mpris,
+    Unsupported,
+}
+
+impl BackendKind {
+    pub const fn current() -> Self {
+        if cfg!(any(
+            target_os = "linux",
+            target_os = "freebsd",
+            target_os = "openbsd",
+            target_os = "netbsd",
+            target_os = "dragonfly"
+        )) {
+            Self::Mpris
+        } else {
+            Self::Unsupported
+        }
+    }
+
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Mpris => "mpris",
+            Self::Unsupported => "unsupported",
+        }
+    }
+
+    pub const fn is_supported(self) -> bool {
+        matches!(self, Self::Mpris)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum MediaAvailability {
+    #[default]
+    Available,
+    Unsupported,
+    Unavailable,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum MediaError {
+    #[error("media backend is not available on this platform")]
+    Unsupported,
+    #[error("media session unavailable: {0}")]
+    SessionUnavailable(String),
+}
+
+impl MediaError {
+    pub fn availability(&self) -> MediaAvailability {
+        match self {
+            Self::Unsupported => MediaAvailability::Unsupported,
+            Self::SessionUnavailable(_) => MediaAvailability::Unavailable,
+        }
+    }
+}
 
 pub fn player_short_name(bus: &str) -> &str {
     let short = bus.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(bus);
@@ -160,5 +226,31 @@ mod tests {
         );
         assert_eq!(player_short_name("org.mpris.MediaPlayer2.mpv"), "mpv");
         assert_eq!(player_short_name("custom-player"), "custom-player");
+    }
+
+    #[test]
+    fn backend_kind_reports_platform_support() {
+        let backend = BackendKind::current();
+        assert_eq!(backend.is_supported(), backend == BackendKind::Mpris);
+        assert_eq!(
+            backend.as_str(),
+            if backend.is_supported() {
+                "mpris"
+            } else {
+                "unsupported"
+            }
+        );
+    }
+
+    #[test]
+    fn media_errors_map_to_availability() {
+        assert_eq!(
+            MediaError::Unsupported.availability(),
+            MediaAvailability::Unsupported
+        );
+        assert_eq!(
+            MediaError::SessionUnavailable("no session".to_string()).availability(),
+            MediaAvailability::Unavailable
+        );
     }
 }

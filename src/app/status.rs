@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::time::Duration;
 
 use color_eyre::Result;
 use serde::Serialize;
@@ -9,17 +8,12 @@ use tracing::{debug, warn};
 use crate::cache::CacheHandle;
 use crate::config::RuntimeConfig;
 use crate::core::model::SyncedTrack;
-use crate::media::mpris::arbiter::{discover_candidates, select_player};
-use crate::media::mpris::metadata::extract_track_meta;
-use crate::media::mpris::proxy::{PlayerProxy, micros_to_ms};
-use crate::media::{MediaSnapshot, PlayerSnapshot, TrackMeta, player_short_name};
+use crate::media::{BackendKind, MediaSnapshot, TrackMeta, backend, player_short_name};
 use crate::offsets::OffsetStore;
 use crate::providers::sanitize::encode_offset_key;
 use crate::providers::{ProviderAnswer, ProviderResolver, TrackQuery};
 
 use super::resolve::resolve_with_cache;
-
-const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusPlayer {
@@ -59,6 +53,8 @@ pub struct StatusCircuitBreaker {
 
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct StatusReport {
+    pub backend: String,
+    pub backend_available: bool,
     pub player: Option<StatusPlayer>,
     pub playback: String,
     pub track: Option<StatusTrack>,
@@ -76,8 +72,17 @@ pub async fn run(
     json: bool,
     cache: Option<CacheHandle>,
 ) -> Result<()> {
-    let snapshot = probe_live(&config).await;
-    let report = collect_report_with_cache(snapshot, &config, &offsets_file, cache.as_ref()).await;
+    let backend = BackendKind::current();
+    let (snapshot, backend_available) = probe_live(&config).await;
+    let report = collect_report_with_cache(
+        snapshot,
+        backend,
+        backend_available,
+        &config,
+        &offsets_file,
+        cache.as_ref(),
+    )
+    .await;
 
     if json {
         println!("{}", render_json(&report)?);
@@ -99,11 +104,22 @@ pub async fn collect_report(
     config: &RuntimeConfig,
     offsets_file: &Path,
 ) -> StatusReport {
-    collect_report_with_cache(snapshot, config, offsets_file, None).await
+    let backend = BackendKind::current();
+    collect_report_with_cache(
+        snapshot,
+        backend,
+        backend.is_supported(),
+        config,
+        offsets_file,
+        None,
+    )
+    .await
 }
 
 pub async fn collect_report_with_cache(
     snapshot: MediaSnapshot,
+    backend: BackendKind,
+    backend_available: bool,
     config: &RuntimeConfig,
     offsets_file: &Path,
     cache: Option<&CacheHandle>,
@@ -160,6 +176,8 @@ pub async fn collect_report_with_cache(
     let effective_ms = config.global_offset_ms.saturating_add(track_ms);
 
     StatusReport {
+        backend: backend.as_str().to_string(),
+        backend_available,
         player,
         playback: snapshot.playback.as_str().to_string(),
         track,
@@ -197,80 +215,14 @@ async fn resolve_lyrics(
     }
 }
 
-async fn probe_live(config: &RuntimeConfig) -> MediaSnapshot {
-    let connection = match zbus::Connection::session().await {
-        Ok(connection) => connection,
+async fn probe_live(config: &RuntimeConfig) -> (MediaSnapshot, bool) {
+    match backend::probe(config.player_filter.as_deref()).await {
+        Ok(snapshot) => (snapshot, true),
         Err(error) => {
-            debug!(%error, "session bus unavailable");
-            return MediaSnapshot::default();
+            debug!(%error, "media backend unavailable");
+            (MediaSnapshot::default(), false)
         }
-    };
-    let candidates = discover_candidates(&connection, config.player_filter.as_deref()).await;
-    let Some(selected) = select_player(&candidates, config.player_filter.as_deref()).cloned()
-    else {
-        return MediaSnapshot::default();
-    };
-    let player = PlayerSnapshot {
-        bus: selected.bus,
-        kind: selected.kind,
-    };
-    let (track, position_ms) = read_player(&connection, &player).await;
-
-    MediaSnapshot {
-        player: Some(player),
-        track,
-        playback: selected.status,
-        position_ms,
     }
-}
-
-async fn read_player(
-    connection: &zbus::Connection,
-    player: &PlayerSnapshot,
-) -> (Option<TrackMeta>, u64) {
-    let proxy = match tokio::time::timeout(
-        CALL_TIMEOUT,
-        PlayerProxy::builder(connection)
-            .destination(player.bus.as_str())
-            .build(),
-    )
-    .await
-    {
-        Ok(Ok(proxy)) => proxy,
-        Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to build MPRIS proxy");
-            return (None, 0);
-        }
-        Err(_) => {
-            debug!(bus = %player.bus, "building MPRIS proxy timed out");
-            return (None, 0);
-        }
-    };
-
-    let track = match tokio::time::timeout(CALL_TIMEOUT, proxy.metadata()).await {
-        Ok(Ok(metadata)) => extract_track_meta(&metadata, player.kind),
-        Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to read metadata");
-            None
-        }
-        Err(_) => {
-            debug!(bus = %player.bus, "reading metadata timed out");
-            None
-        }
-    };
-    let position_ms = match tokio::time::timeout(CALL_TIMEOUT, proxy.position()).await {
-        Ok(Ok(position)) => micros_to_ms(position),
-        Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to read position");
-            0
-        }
-        Err(_) => {
-            debug!(bus = %player.bus, "reading position timed out");
-            0
-        }
-    };
-
-    (track, position_ms)
 }
 
 pub fn render_text(report: &StatusReport) -> String {
@@ -283,6 +235,19 @@ pub fn render_text(report: &StatusReport) -> String {
         ),
         None => push_line(&mut output, "player", "none"),
     }
+    push_line(
+        &mut output,
+        "backend",
+        format!(
+            "{} ({})",
+            report.backend,
+            if report.backend_available {
+                "available"
+            } else {
+                "unavailable"
+            }
+        ),
+    );
     push_line(&mut output, "playback", &report.playback);
 
     let track = report.track.as_ref();

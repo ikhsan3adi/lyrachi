@@ -5,7 +5,9 @@ use lyrachi::app::status::{collect_report, render_json, render_text};
 use lyrachi::config::RuntimeConfig;
 use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::media::fake::FakeMediaSource;
-use lyrachi::media::{MediaEvent, MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta};
+use lyrachi::media::{
+    BackendKind, MediaEvent, MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta,
+};
 use lyrachi::offsets::OffsetStore;
 use lyrachi::providers::TrackQuery;
 use lyrachi::providers::sanitize::encode_offset_key;
@@ -182,8 +184,17 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     assert_eq!(report.offset.track_ms, -200);
     assert_eq!(report.offset.effective_ms, -100);
 
+    let backend = BackendKind::current();
+    let backend_name = backend.as_str();
+    let backend_available = backend.is_supported();
+    let backend_state = if backend_available {
+        "available"
+    } else {
+        "unavailable"
+    };
     let expected = format!(
         "player: spotify (org.mpris.MediaPlayer2.spotify)\n\
+         backend: {backend_name} ({backend_state})\n\
          playback: paused\n\
          title: Yellow\n\
          artist: Coldplay\n\
@@ -204,6 +215,8 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     assert_eq!(render_text(&report), expected);
 
     let json: Value = serde_json::from_str(&render_json(&report).unwrap()).unwrap();
+    assert_eq!(json["backend"], backend.as_str());
+    assert_eq!(json["backend_available"], backend_available);
     assert_eq!(json["player"]["name"], "spotify");
     assert_eq!(json["player"]["kind"], "native");
     assert_eq!(json["playback"], "paused");

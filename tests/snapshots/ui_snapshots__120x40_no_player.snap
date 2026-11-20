@@ -21,9 +21,9 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                                                  No MPRIS player found
+                                                    No active player
 
-                                           Start a player that exposes MPRIS.
+                                       Start playback in a supported media player.
 
 
 
