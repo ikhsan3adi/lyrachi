@@ -31,6 +31,13 @@ use super::{
 
 const BLOCK_CONTEXT_MAX_ROWS: u16 = 2;
 const BLOCK_VOICE_PLAIN_MIN_WIDTH: u16 = 40;
+const BLOCK_COUNTDOWN_ROWS: usize = 3;
+
+#[derive(Clone, Copy)]
+enum CountdownSize {
+    Line,
+    Block,
+}
 
 pub fn render(frame: &mut Frame, state: &UiState, effective_ms: u64) {
     let mut cache = BlockStageCache::default();
@@ -359,11 +366,16 @@ fn render_synced(
     if let Some(waiting) = cursor.waiting
         && waiting.kind == WaitKind::Intro
         && !has_break_slot
-        && let Some(countdown) =
-            waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, &state.style)
+        && let Some(countdown) = waiting_countdown_lines(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+            &state.style,
+            CountdownSize::Line,
+        )
     {
         active_start = Some(lines.len());
-        lines.push(countdown);
+        lines.extend(countdown);
         active_end = Some(lines.len());
         countdown_rendered = true;
     }
@@ -373,11 +385,15 @@ fn render_synced(
             && !countdown_rendered
             && compiled_is_waiting_break(compiled, waiting)
         {
-            if let Some(countdown) =
-                waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, &state.style)
-            {
+            if let Some(countdown) = waiting_countdown_lines(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+                &state.style,
+                CountdownSize::Line,
+            ) {
                 active_start = Some(lines.len());
-                lines.push(countdown);
+                lines.extend(countdown);
                 active_end = Some(lines.len());
             }
             countdown_rendered = true;
@@ -401,11 +417,16 @@ fn render_synced(
             && !has_break_slot
             && index == anchor
             && matches!(waiting.kind, WaitKind::Instrumental | WaitKind::Outro)
-            && let Some(countdown) =
-                waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, &state.style)
+            && let Some(countdown) = waiting_countdown_lines(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+                &state.style,
+                CountdownSize::Line,
+            )
         {
             active_start = Some(lines.len());
-            lines.push(countdown);
+            lines.extend(countdown);
             active_end = Some(lines.len());
             countdown_rendered = true;
         }
@@ -465,16 +486,27 @@ fn render_block_synced(
         .min(timeline.lines.len());
     let has_break_slot = has_waiting_break_slot(&timeline.lines[start..end], cursor.waiting);
     let mut metas = Vec::new();
-    let mut total_rows = usize::from(
-        cursor.waiting.is_some() && !has_break_slot && state.instrumental_countdown_enabled(),
-    );
+    let mut total_rows = if let Some(waiting) = cursor.waiting
+        && !has_break_slot
+    {
+        waiting_countdown_lines(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+            &state.style,
+            CountdownSize::Block,
+        )
+        .map_or(0, |lines| lines.len())
+    } else {
+        0
+    };
 
     for (index, compiled) in timeline.lines.iter().enumerate().take(end).skip(start) {
         let countdown_slot = cursor
             .waiting
             .is_some_and(|waiting| compiled_is_waiting_break(compiled, waiting));
         let active = cursor.active_line_idx == Some(index);
-        let focus = index == anchor;
+        let focus = index == anchor && cursor.waiting.is_none();
         let annotation_rows = if state.style.annotations_show {
             compiled.wrapped_annotations.len()
         } else {
@@ -482,7 +514,7 @@ fn render_block_synced(
         };
         let max_height = block_line_height(area, compiled.role, focus, annotation_rows);
         let rows = if countdown_slot {
-            usize::from(state.instrumental_countdown_enabled())
+            usize::from(state.instrumental_countdown_enabled()) * BLOCK_COUNTDOWN_ROWS
         } else {
             let text = block_source_text(track, compiled);
             let layout = cache.layout_for_with_options(
@@ -530,11 +562,16 @@ fn render_block_synced(
     if let Some(waiting) = cursor.waiting
         && waiting.kind == WaitKind::Intro
         && !has_break_slot
-        && let Some(countdown) =
-            waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, style)
+        && let Some(countdown) = waiting_countdown_lines(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+            style,
+            CountdownSize::Block,
+        )
     {
         active_start = Some(lines.len());
-        lines.push(countdown);
+        lines.extend(countdown);
         active_end = Some(lines.len());
         countdown_rendered = true;
     }
@@ -545,11 +582,15 @@ fn render_block_synced(
             && let Some(waiting) = cursor.waiting
             && !countdown_rendered
         {
-            if let Some(countdown) =
-                waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, style)
-            {
+            if let Some(countdown) = waiting_countdown_lines(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+                style,
+                CountdownSize::Block,
+            ) {
                 active_start = Some(lines.len());
-                lines.push(countdown);
+                lines.extend(countdown);
                 active_end = Some(lines.len());
             }
             countdown_rendered = true;
@@ -605,13 +646,18 @@ fn render_block_synced(
         if let Some(waiting) = cursor.waiting
             && !countdown_rendered
             && !has_break_slot
-            && meta.focus
+            && meta.index == anchor
             && matches!(waiting.kind, WaitKind::Instrumental | WaitKind::Outro)
-            && let Some(countdown) =
-                waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, style)
+            && let Some(countdown) = waiting_countdown_lines(
+                waiting,
+                effective_ms,
+                state.terminal_unicode,
+                style,
+                CountdownSize::Block,
+            )
         {
             active_start = Some(lines.len());
-            lines.push(countdown);
+            lines.extend(countdown);
             active_end = Some(lines.len());
             countdown_rendered = true;
         }
@@ -637,10 +683,15 @@ fn render_kinetic_synced(
     let style = &state.style;
     let cursor = timeline.evaluate_for_status(effective_ms, state.playback);
     if let Some(waiting) = cursor.waiting {
-        if let Some(countdown) =
-            waiting_countdown_line(waiting, effective_ms, state.terminal_unicode, style)
-        {
-            render_lines(frame, area, vec![countdown], Some(0), Some(1));
+        if let Some(countdown) = waiting_countdown_lines(
+            waiting,
+            effective_ms,
+            state.terminal_unicode,
+            style,
+            CountdownSize::Block,
+        ) {
+            let end = countdown.len();
+            render_lines(frame, area, countdown, Some(0), Some(end));
         }
         return;
     }
@@ -789,100 +840,72 @@ fn block_source_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a
         .map_or("", |line| line.text.as_str())
 }
 
-fn waiting_countdown_line(
+fn waiting_countdown_lines(
     waiting: WaitingGap,
     effective_ms: u64,
     unicode: bool,
     style: &ResolvedStyle,
-) -> Option<Line<'static>> {
+    size: CountdownSize,
+) -> Option<Vec<Line<'static>>> {
     if style.instrumental_style == InstrumentalStyle::Hidden {
         return None;
     }
 
-    let label = match waiting.kind {
-        WaitKind::Intro => "Intro",
-        WaitKind::Instrumental => "Instrumental",
-        WaitKind::Outro => "Outro",
-    };
     let progress = if style.reduced_motion {
         0.0
     } else {
         waiting.progress(effective_ms)
     };
+    let filled_count = ((progress * 4.0).floor() as usize).clamp(0, 3);
     let mut accent_style = Style::default().add_modifier(Modifier::BOLD);
     if let Some(accent) = style.accent {
         accent_style = accent_style.fg(accent);
     }
-    let remaining_secs = waiting.remaining_ms(effective_ms).div_ceil(1_000);
+    let mut empty_style = Style::default().add_modifier(Modifier::DIM);
+    if let Some(fg) = style.inactive_fg {
+        empty_style = empty_style.fg(fg);
+    }
 
-    let spans = match style.instrumental_style {
-        InstrumentalStyle::Hidden => return None,
-        InstrumentalStyle::Text => {
-            let icon = if unicode && !style.instrumental_text.is_empty() {
-                style.instrumental_text.as_str()
-            } else {
-                "*"
-            };
-            vec![
-                Span::styled(format!("{icon} "), accent_style),
-                Span::styled(
-                    label,
-                    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
-                ),
-                Span::styled(
-                    format!("  {remaining_secs}s"),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]
-        }
-        InstrumentalStyle::Bar => {
-            let filled_count = ((progress * 6.0).round() as usize).clamp(0, 6);
-            let (fill_ch, empty_ch) = if unicode { ("━", "─") } else { ("#", "-") };
-            let filled_str = fill_ch.repeat(filled_count);
-            let empty_str = empty_ch.repeat(6 - filled_count);
-            vec![
-                Span::styled(
-                    format!("{label}  "),
-                    Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
-                ),
-                Span::styled(filled_str, accent_style),
-                Span::styled(empty_str, Style::default().add_modifier(Modifier::DIM)),
-                Span::styled(
-                    format!("  {remaining_secs}s"),
-                    Style::default().add_modifier(Modifier::BOLD),
-                ),
-            ]
-        }
-        InstrumentalStyle::Dots => {
-            let filled_count = ((progress * 4.0).floor() as usize).clamp(0, 3);
+    match size {
+        CountdownSize::Line => {
             let (filled_glyph, empty_glyph) = if unicode { ("●", "○") } else { ("*", ".") };
-
-            let mut list = vec![Span::styled(
-                format!("{label}  "),
-                Style::default().add_modifier(Modifier::DIM | Modifier::ITALIC),
-            )];
+            let mut spans = Vec::with_capacity(5);
             for idx in 0..3 {
                 if idx > 0 {
-                    list.push(Span::raw(" "));
+                    spans.push(Span::raw(" "));
                 }
                 if idx < filled_count {
-                    list.push(Span::styled(filled_glyph, accent_style));
+                    spans.push(Span::styled(filled_glyph, accent_style));
                 } else {
-                    list.push(Span::styled(
-                        empty_glyph,
-                        Style::default().add_modifier(Modifier::DIM),
-                    ));
+                    spans.push(Span::styled(empty_glyph, empty_style));
                 }
             }
-            list.push(Span::styled(
-                format!("  {remaining_secs}s"),
-                Style::default().add_modifier(Modifier::BOLD),
-            ));
-            list
+            Some(vec![Line::from(spans).alignment(Alignment::Center)])
         }
-    };
-
-    Some(Line::from(spans).alignment(Alignment::Center))
+        CountdownSize::Block => {
+            let (filled, empty) = if unicode {
+                ([" ███ ", "█████", " ███ "], [" ░░░ ", "░   ░", " ░░░ "])
+            } else {
+                ([" ### ", "#####", " ### "], [" ... ", ".   .", " ... "])
+            };
+            let mut lines = Vec::with_capacity(BLOCK_COUNTDOWN_ROWS);
+            for row in 0..BLOCK_COUNTDOWN_ROWS {
+                let mut spans = Vec::with_capacity(5);
+                for idx in 0..3 {
+                    if idx > 0 {
+                        spans.push(Span::raw("  "));
+                    }
+                    if idx < filled_count {
+                        spans.push(Span::styled(filled[row], accent_style));
+                    } else {
+                        spans.push(Span::styled(empty[row], empty_style));
+                    }
+                }
+                lines.push(Line::from(spans).alignment(Alignment::Center));
+            }
+            Some(lines)
+        }
+    }
 }
 
 fn render_unsynced(frame: &mut Frame, area: Rect, state: &UiState, timeline: &CompiledTimeline) {
@@ -1366,7 +1389,7 @@ mod tests {
         assert!(matches!(far, Some(Color::Rgb(_, _, _))));
 
         assert_eq!(
-            waiting_countdown_line(
+            waiting_countdown_lines(
                 WaitingGap {
                     kind: WaitKind::Intro,
                     start_ms: 0,
@@ -1376,6 +1399,7 @@ mod tests {
                 1_000,
                 true,
                 &resolved,
+                CountdownSize::Line,
             ),
             None
         );

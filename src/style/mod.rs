@@ -121,7 +121,6 @@ active_fg = "$accent"
 [instrumental]
 style = "dots"
 min_gap_ms = 4000
-text = "♪"
 
 [annotations]
 show = true
@@ -195,7 +194,6 @@ unsung_fg = "$unsung"
 [instrumental]
 style = "dots"
 min_gap_ms = 4000
-text = "♪"
 
 [annotations]
 show = true
@@ -270,7 +268,6 @@ unsung_fg = "$unsung"
 [instrumental]
 style = "dots"
 min_gap_ms = 4000
-text = "♪"
 
 [annotations]
 show = true
@@ -330,9 +327,8 @@ mode = "line"
 active_fg = "$accent"
 
 [instrumental]
-style = "text"
+style = "dots"
 min_gap_ms = 4000
-text = "♪"
 
 [annotations]
 show = true
@@ -539,7 +535,6 @@ impl StyleProfile {
             backing_active: self.palette.backing_active.resolve(capability),
             instrumental_style: self.instrumental.style,
             instrumental_min_gap_ms: self.instrumental.min_gap_ms,
-            instrumental_text: self.instrumental.text.clone(),
             annotations_show: self.annotations.show,
             annotations_position: self.annotations.position,
             annotations_fg: self.annotations.fg.resolve(capability),
@@ -936,8 +931,6 @@ pub struct StyleAnimation {
 pub enum InstrumentalStyle {
     #[default]
     Dots,
-    Bar,
-    Text,
     Hidden,
 }
 
@@ -947,7 +940,6 @@ pub enum InstrumentalStyle {
 pub struct StyleInstrumental {
     pub style: InstrumentalStyle,
     pub min_gap_ms: u64,
-    pub text: String,
 }
 
 impl Default for StyleInstrumental {
@@ -955,7 +947,6 @@ impl Default for StyleInstrumental {
         Self {
             style: InstrumentalStyle::Dots,
             min_gap_ms: 4_000,
-            text: "♪".to_string(),
         }
     }
 }
@@ -1086,7 +1077,6 @@ pub struct ResolvedStyle {
     pub backing_active: Option<Color>,
     pub instrumental_style: InstrumentalStyle,
     pub instrumental_min_gap_ms: u64,
-    pub instrumental_text: String,
     pub annotations_show: bool,
     pub annotations_position: AnnotationPosition,
     pub annotations_fg: Option<Color>,

@@ -758,8 +758,6 @@ accent = "cyan"
 fg = "$accent"
 prefix = "$ "
 
-[instrumental]
-text = "$"
 "#,
         )
         .unwrap();
@@ -768,7 +766,6 @@ text = "$"
         assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
         assert_eq!(outcome.profile.lines.active.fg.0, Color::Cyan);
         assert_eq!(outcome.profile.lines.active.prefix, "$ ");
-        assert_eq!(outcome.profile.instrumental.text, "$");
 
         let _ = fs::remove_dir_all(&dir);
     }
