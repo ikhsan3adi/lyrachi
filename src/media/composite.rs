@@ -581,6 +581,78 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn latest_activity_wins_when_status_and_backend_priority_tie() {
+        let (tx, mut rx) = mpsc::channel(32);
+        let cancel = CancellationToken::new();
+
+        let mpris_events = vec![
+            (
+                Duration::ZERO,
+                MediaEvent::PlayerChanged {
+                    id: "spotify".to_string(),
+                    kind: PlayerKind::Native,
+                    backend: BackendKind::Mpris,
+                },
+            ),
+            (Duration::ZERO, MediaEvent::Status(PlaybackStatus::Playing)),
+        ];
+
+        let smtc_events = vec![
+            (
+                Duration::from_millis(5),
+                MediaEvent::PlayerChanged {
+                    id: "apple-music".to_string(),
+                    kind: PlayerKind::Native,
+                    backend: BackendKind::Smtc,
+                },
+            ),
+            (
+                Duration::from_millis(5),
+                MediaEvent::Status(PlaybackStatus::Playing),
+            ),
+        ];
+
+        let b1 = Arc::new(FakeBackend::new(BackendKind::Mpris, mpris_events));
+        let b2 = Arc::new(FakeBackend::new(BackendKind::Smtc, smtc_events));
+        let composite = CompositeBackend::new(vec![b1, b2]);
+
+        let handle = composite
+            .start_monitor(None, tx, cancel.clone())
+            .await
+            .expect("composite monitor");
+
+        let mut received = Vec::new();
+        let timeout = tokio::time::sleep(Duration::from_millis(150));
+        tokio::pin!(timeout);
+
+        loop {
+            tokio::select! {
+                _ = &mut timeout => break,
+                Some(event) = rx.recv() => {
+                    received.push(event);
+                }
+            }
+        }
+
+        cancel.cancel();
+        let _ = handle.await;
+
+        let last_player = received
+            .iter()
+            .filter_map(|e| match e {
+                MediaEvent::PlayerChanged { id, backend, .. } => Some((id.as_str(), *backend)),
+                _ => None,
+            })
+            .next_back();
+
+        assert_eq!(
+            last_player,
+            Some(("apple-music", BackendKind::Smtc)),
+            "the backend with the latest activity must win a full tie"
+        );
+    }
+
+    #[tokio::test]
     async fn explicit_filter_restricts_arbitration_to_matching_backend() {
         let (tx, mut rx) = mpsc::channel(32);
         let cancel = CancellationToken::new();
