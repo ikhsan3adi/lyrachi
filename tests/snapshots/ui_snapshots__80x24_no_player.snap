@@ -25,4 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-no player | stopped | - | +300 ms | -
+stopped · normal · - · +300 ms

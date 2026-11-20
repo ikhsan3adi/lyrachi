@@ -25,4 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
                                Plain lyric line 22
                                Plain lyric line 23
                                Plain lyric line 24
-limusic | playing | lrclib | +300 ms | 91% | unsynced 3/40
+playing · normal · lrclib · +300 ms

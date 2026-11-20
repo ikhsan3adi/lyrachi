@@ -3,8 +3,7 @@ pub mod effects;
 pub mod help;
 pub mod menu;
 pub mod render;
-pub mod ribbon;
-pub mod status;
+pub mod status_bar;
 
 pub use menu::{
     CandidateMenuItem, ContextMenuAction, ContextMenuState, ContextMenuView, SearchField,
@@ -14,7 +13,7 @@ pub use menu::{
 use std::time::{Duration, Instant};
 
 use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
-use crate::config::{DEFAULT_GLOBAL_OFFSET_MS, RibbonMode};
+use crate::config::{DEFAULT_GLOBAL_OFFSET_MS, StatusBarMode};
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
@@ -22,11 +21,11 @@ use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 use crate::style::{HighlightMode, InstrumentalStyle, ResolvedStyle};
 
 const BANNER_DURATION: Duration = Duration::from_secs(3);
-pub const RIBBON_AUTO_HIDE_DURATION: Duration = Duration::from_secs(3);
-pub const MIN_RIBBON_TERMINAL_HEIGHT: u16 = 8;
+pub const STATUS_BAR_PEEK_DURATION: Duration = Duration::from_secs(3);
+pub const MIN_STATUS_BAR_AUTO_HEIGHT: u16 = 8;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum RibbonPlacement {
+pub enum StatusBarPlacement {
     Top,
     Bottom,
 }
@@ -98,11 +97,11 @@ pub struct UiState {
     pub config_warning: Option<String>,
     pub show_header: bool,
     pub header_override: Option<bool>,
-    pub show_status: bool,
-    pub ribbon_mode: RibbonMode,
-    pub ribbon_visible_until: Option<Instant>,
-    pub ribbon_temp_hidden: bool,
-    pub ribbon_paused_at: Option<Instant>,
+    pub fullscreen: bool,
+    pub status_bar: StatusBarMode,
+    pub status_bar_visible_until: Option<Instant>,
+    pub status_bar_paused_at: Option<Instant>,
+    status_bar_last_visible: StatusBarMode,
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
@@ -112,7 +111,6 @@ pub struct UiState {
     pub pinned_source_label: Option<String>,
     pub pinned_style: Option<String>,
     pub transient_banner: Option<(String, Instant)>,
-    fullscreen_restore: Option<(bool, bool)>,
     pub scroll: usize,
     pub viewport_width: u16,
     pub viewport_height: u16,
@@ -141,11 +139,11 @@ impl UiState {
             config_warning: None,
             show_header: true,
             header_override: None,
-            show_status: true,
-            ribbon_mode: RibbonMode::default(),
-            ribbon_visible_until: None,
-            ribbon_temp_hidden: false,
-            ribbon_paused_at: None,
+            fullscreen: false,
+            status_bar: StatusBarMode::default(),
+            status_bar_visible_until: None,
+            status_bar_paused_at: None,
+            status_bar_last_visible: StatusBarMode::default(),
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             word_highlight: true,
@@ -155,7 +153,6 @@ impl UiState {
             pinned_source_label: None,
             pinned_style: None,
             transient_banner: None,
-            fullscreen_restore: None,
             scroll: 0,
             viewport_width: 80,
             viewport_height: 24,
@@ -172,17 +169,17 @@ impl UiState {
         match self.modal {
             Some(UiModal::Help) => {
                 self.modal = None;
-                self.resume_ribbon_timer(now);
+                self.resume_status_bar_timer(now);
             }
             Some(UiModal::ContextMenu(_)) | None => {
-                self.pause_ribbon_timer(now);
+                self.pause_status_bar_timer(now);
                 self.modal = Some(UiModal::Help);
             }
         }
     }
 
     pub fn open_help(&mut self) {
-        self.pause_ribbon_timer(Instant::now());
+        self.pause_status_bar_timer(Instant::now());
         self.modal = Some(UiModal::Help);
     }
 
@@ -199,7 +196,7 @@ impl UiState {
         } else {
             format!("{} - {}", track.artist, track.title)
         };
-        self.pause_ribbon_timer(now);
+        self.pause_status_bar_timer(now);
         self.modal = Some(UiModal::ContextMenu(Box::new(ContextMenuState::actions(
             label,
             self.pinned_source_label.clone(),
@@ -311,7 +308,7 @@ impl UiState {
     pub fn close_context_menu_at(&mut self, now: Instant) {
         if matches!(self.modal, Some(UiModal::ContextMenu(_))) {
             self.modal = None;
-            self.resume_ribbon_timer(now);
+            self.resume_status_bar_timer(now);
         }
     }
 
@@ -321,7 +318,7 @@ impl UiState {
 
     pub fn close_modal_at(&mut self, now: Instant) {
         self.modal = None;
-        self.resume_ribbon_timer(now);
+        self.resume_status_bar_timer(now);
     }
 
     pub fn is_modal_open(&self) -> bool {
@@ -344,17 +341,17 @@ impl UiState {
         self.viewport_width >= menu::MIN_AREA_WIDTH && self.viewport_height >= menu::MIN_AREA_HEIGHT
     }
 
-    fn pause_ribbon_timer(&mut self, now: Instant) {
-        if self.ribbon_visible_until.is_some() && self.ribbon_paused_at.is_none() {
-            self.ribbon_paused_at = Some(now);
+    fn pause_status_bar_timer(&mut self, now: Instant) {
+        if self.status_bar_visible_until.is_some() && self.status_bar_paused_at.is_none() {
+            self.status_bar_paused_at = Some(now);
         }
     }
 
-    fn resume_ribbon_timer(&mut self, now: Instant) {
-        let Some(paused_at) = self.ribbon_paused_at.take() else {
+    fn resume_status_bar_timer(&mut self, now: Instant) {
+        let Some(paused_at) = self.status_bar_paused_at.take() else {
             return;
         };
-        if let Some(visible_until) = &mut self.ribbon_visible_until {
+        if let Some(visible_until) = &mut self.status_bar_visible_until {
             *visible_until += now.saturating_duration_since(paused_at);
         }
     }
@@ -431,7 +428,7 @@ impl UiState {
 
     /// Return effective header visibility respecting `fullscreen`, `[ui].show_header`, and `[header].show`.
     pub fn effective_show_header(&self) -> bool {
-        if !self.show_header {
+        if self.fullscreen || !self.show_header {
             return false;
         }
         self.header_override.unwrap_or(self.style.header_show)
@@ -465,123 +462,146 @@ impl UiState {
         &self.timeline_context
     }
 
-    pub fn configure_layout(&mut self, fullscreen: bool, show_header: bool, show_status: bool) {
-        if fullscreen {
-            self.fullscreen_restore =
-                (show_header || show_status).then_some((show_header, show_status));
-            self.show_header = false;
-            self.show_status = false;
+    pub fn configure_layout(
+        &mut self,
+        fullscreen: bool,
+        show_header: bool,
+        status_bar: StatusBarMode,
+    ) {
+        self.fullscreen = fullscreen;
+        self.show_header = show_header;
+        self.status_bar = status_bar;
+        self.status_bar_last_visible = if status_bar == StatusBarMode::Off {
+            StatusBarMode::Bottom
         } else {
-            self.show_header = show_header;
-            self.show_status = show_status;
-            self.fullscreen_restore = None;
-        }
+            status_bar
+        };
+        self.status_bar_visible_until = None;
+        self.status_bar_paused_at = None;
         self.clamp_scroll();
     }
 
     pub fn toggle_fullscreen(&mut self) {
-        if self.show_header || self.show_status {
-            self.fullscreen_restore = Some((self.show_header, self.show_status));
-            self.show_header = false;
-            self.show_status = false;
-        } else {
-            (self.show_header, self.show_status) =
-                self.fullscreen_restore.take().unwrap_or((true, true));
-        }
+        self.fullscreen = !self.fullscreen;
+        self.status_bar_visible_until = None;
         self.clamp_scroll();
     }
 
     pub fn toggle_header(&mut self) {
         let next = !self.effective_show_header();
+        self.fullscreen = false;
         self.show_header = next;
         self.header_override = Some(next);
-        self.fullscreen_restore = None;
         self.clamp_scroll();
     }
 
-    pub fn toggle_status(&mut self) {
-        self.show_status = !self.show_status;
-        self.fullscreen_restore = None;
-        self.clamp_scroll();
-    }
+    pub fn toggle_status_bar(&mut self) {
+        let visible = !self.fullscreen
+            && self
+                .status_bar_placement_for_height(self.viewport_height)
+                .is_some();
+        self.fullscreen = false;
+        self.status_bar_visible_until = None;
+        self.status_bar_paused_at = None;
 
-    pub fn configure_ribbon(&mut self, mode: RibbonMode) {
-        self.ribbon_mode = mode;
-        self.ribbon_visible_until = None;
-        self.ribbon_temp_hidden = false;
-        self.ribbon_paused_at = None;
-        self.clamp_scroll();
-    }
-
-    pub fn toggle_ribbon(&mut self, now: Instant) {
-        self.ribbon_paused_at = None;
-        match self.ribbon_mode {
-            RibbonMode::Auto | RibbonMode::Off => {
-                if self
-                    .ribbon_visible_until
-                    .is_some_and(|visible_until| now < visible_until)
-                {
-                    self.ribbon_visible_until = None;
-                } else {
-                    self.ribbon_visible_until = Some(now + RIBBON_AUTO_HIDE_DURATION);
+        if visible {
+            self.status_bar_last_visible = self.status_bar;
+            self.status_bar = StatusBarMode::Off;
+        } else {
+            match self.status_bar {
+                StatusBarMode::Off => {
+                    self.status_bar = if self.status_bar_last_visible == StatusBarMode::Auto
+                        && self.viewport_height < MIN_STATUS_BAR_AUTO_HEIGHT
+                    {
+                        StatusBarMode::Bottom
+                    } else {
+                        self.status_bar_last_visible
+                    };
                 }
-            }
-            RibbonMode::Top | RibbonMode::Bottom => {
-                self.ribbon_temp_hidden = !self.ribbon_temp_hidden;
+                StatusBarMode::Auto if self.viewport_height < MIN_STATUS_BAR_AUTO_HEIGHT => {
+                    self.status_bar = StatusBarMode::Bottom;
+                }
+                _ => {}
             }
         }
         self.clamp_scroll();
     }
 
-    pub fn expire_ribbon(&mut self, now: Instant) {
+    pub fn configure_status_bar(&mut self, mode: StatusBarMode) {
+        self.status_bar = mode;
+        self.status_bar_last_visible = if mode == StatusBarMode::Off {
+            StatusBarMode::Bottom
+        } else {
+            mode
+        };
+        self.status_bar_visible_until = None;
+        self.status_bar_paused_at = None;
+        self.clamp_scroll();
+    }
+
+    pub fn peek_status_bar(&mut self, now: Instant) {
+        if self.status_bar_placement().is_some() || self.viewport_height < 2 {
+            return;
+        }
+        self.status_bar_visible_until = Some(now + STATUS_BAR_PEEK_DURATION);
+        self.clamp_scroll();
+    }
+
+    pub fn expire_status_bar(&mut self, now: Instant) {
         if self.is_modal_open() {
             return;
         }
-        if let Some(visible_until) = self.ribbon_visible_until
+        if let Some(visible_until) = self.status_bar_visible_until
             && now >= visible_until
         {
-            self.ribbon_visible_until = None;
+            self.status_bar_visible_until = None;
             self.clamp_scroll();
         }
     }
 
-    pub fn time_until_ribbon_expiry(&self, now: Instant) -> Option<Duration> {
-        if !matches!(self.ribbon_mode, RibbonMode::Auto | RibbonMode::Off) {
-            return None;
-        }
-        let visible_until = self.ribbon_visible_until?;
+    pub fn time_until_status_bar_expiry(&self, now: Instant) -> Option<Duration> {
+        let visible_until = self.status_bar_visible_until?;
         Some(visible_until.saturating_duration_since(now))
     }
 
-    pub fn ribbon_placement(&self) -> Option<RibbonPlacement> {
-        self.ribbon_placement_for_height(self.viewport_height)
+    pub fn status_bar_placement(&self) -> Option<StatusBarPlacement> {
+        self.status_bar_placement_for_height(self.viewport_height)
     }
 
-    pub fn ribbon_placement_for_height(&self, height: u16) -> Option<RibbonPlacement> {
-        if height < MIN_RIBBON_TERMINAL_HEIGHT {
+    pub fn status_bar_placement_for_height(&self, height: u16) -> Option<StatusBarPlacement> {
+        if self.status_bar_visible_until.is_some() && height >= 2 {
+            return Some(match self.status_bar_last_visible {
+                StatusBarMode::Top => StatusBarPlacement::Top,
+                _ => StatusBarPlacement::Bottom,
+            });
+        }
+        if self.fullscreen {
             return None;
         }
-        match self.ribbon_mode {
-            RibbonMode::Auto | RibbonMode::Off => {
-                self.ribbon_visible_until.map(|_| RibbonPlacement::Top)
+        match self.status_bar {
+            StatusBarMode::Top => Some(StatusBarPlacement::Top),
+            StatusBarMode::Bottom => Some(StatusBarPlacement::Bottom),
+            StatusBarMode::Auto if height >= MIN_STATUS_BAR_AUTO_HEIGHT => {
+                Some(StatusBarPlacement::Bottom)
             }
-            RibbonMode::Top => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Top),
-            RibbonMode::Bottom => (!self.ribbon_temp_hidden).then_some(RibbonPlacement::Bottom),
+            StatusBarMode::Auto | StatusBarMode::Off => None,
         }
+    }
+
+    pub fn status_bar_visible(&self) -> bool {
+        self.status_bar_placement().is_some()
+    }
+
+    pub fn banner_visible(&self) -> bool {
+        self.transient_banner.is_some()
     }
 
     pub fn is_fullscreen(&self) -> bool {
-        !self.show_header && !self.show_status
+        self.fullscreen
     }
 
-    pub fn persisted_layout(&self) -> (bool, bool, bool) {
-        let fullscreen = self.is_fullscreen();
-        let (show_header, show_status) = if fullscreen {
-            self.fullscreen_restore.unwrap_or((true, true))
-        } else {
-            (self.show_header, self.show_status)
-        };
-        (fullscreen, show_header, show_status)
+    pub fn persisted_layout(&self) -> (bool, bool, StatusBarMode) {
+        (self.fullscreen, self.show_header, self.status_bar)
     }
 
     pub fn show_banner(&mut self, message: impl Into<String>, now: Instant) {
@@ -745,17 +765,13 @@ impl UiState {
         self.scroll = (self.scroll + 1).min(max_scroll);
     }
 
-    pub fn footer_visible(&self) -> bool {
-        self.show_status || self.transient_banner.is_some()
-    }
-
     fn body_rows(&self) -> usize {
         let header_rows = u16::from(self.effective_show_header());
-        let ribbon_rows = u16::from(self.ribbon_placement().is_some());
-        let footer_rows = u16::from(self.footer_visible());
+        let status_rows = u16::from(self.status_bar_visible());
+        let banner_rows = u16::from(self.banner_visible());
         usize::from(
             self.viewport_height
-                .saturating_sub(header_rows + ribbon_rows + footer_rows)
+                .saturating_sub(header_rows + status_rows + banner_rows)
                 .max(1),
         )
     }
@@ -971,23 +987,42 @@ mod tests {
     #[test]
     fn layout_toggles_restore_fullscreen_state() {
         let mut state = UiState::new();
-        assert_eq!(state.persisted_layout(), (false, true, true));
+        assert_eq!(
+            state.persisted_layout(),
+            (false, true, StatusBarMode::Bottom)
+        );
 
         state.toggle_fullscreen();
         assert!(state.is_fullscreen());
-        assert_eq!(state.persisted_layout(), (true, true, true));
+        assert_eq!(
+            state.persisted_layout(),
+            (true, true, StatusBarMode::Bottom)
+        );
+        assert!(!state.effective_show_header());
 
         state.toggle_fullscreen();
-        assert_eq!((state.show_header, state.show_status), (true, true));
+        assert_eq!(
+            (state.show_header, state.status_bar),
+            (true, StatusBarMode::Bottom)
+        );
 
         state.toggle_header();
-        assert_eq!((state.show_header, state.show_status), (false, true));
-        state.configure_layout(true, state.show_header, state.show_status);
+        assert_eq!(
+            (state.show_header, state.status_bar),
+            (false, StatusBarMode::Bottom)
+        );
+        state.configure_layout(true, state.show_header, state.status_bar);
         assert!(state.is_fullscreen());
-        assert_eq!(state.persisted_layout(), (true, false, true));
+        assert_eq!(
+            state.persisted_layout(),
+            (true, false, StatusBarMode::Bottom)
+        );
 
         state.toggle_fullscreen();
-        assert_eq!((state.show_header, state.show_status), (false, true));
+        assert_eq!(
+            (state.show_header, state.status_bar),
+            (false, StatusBarMode::Bottom)
+        );
     }
 
     #[test]
@@ -999,7 +1034,7 @@ mod tests {
         state.toggle_header();
         assert_eq!(state.body_rows(), 23);
 
-        state.toggle_status();
+        state.toggle_status_bar();
         assert_eq!(state.body_rows(), 24);
 
         state.show_banner("Offline mode", Instant::now());
@@ -1008,8 +1043,11 @@ mod tests {
         state.expire_banner(Instant::now() + BANNER_DURATION);
         assert_eq!(state.body_rows(), 24);
 
-        state.configure_ribbon(RibbonMode::Top);
+        state.configure_status_bar(StatusBarMode::Top);
         assert_eq!(state.body_rows(), 23);
+
+        state.show_banner("Offline mode", Instant::now());
+        assert_eq!(state.body_rows(), 22);
     }
 
     #[test]
@@ -1121,76 +1159,119 @@ mod tests {
     }
 
     #[test]
-    fn ribbon_state_machine_covers_all_modes_and_breakpoint() {
+    fn status_bar_modes_peek_and_breakpoint() {
         let mut state = UiState::new();
         let t0 = Instant::now();
 
-        // Auto: hidden by default, Tab toggles 3s visibility, expires at >= 3s
-        state.configure_ribbon(RibbonMode::Auto);
-        assert_eq!(state.ribbon_placement(), None);
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.configure_status_bar(StatusBarMode::Auto);
+        state.resize(80, 24);
         assert_eq!(
-            state.time_until_ribbon_expiry(t0 + Duration::from_secs(1)),
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.configure_status_bar(StatusBarMode::Off);
+        assert_eq!(state.status_bar_placement(), None);
+        state.peek_status_bar(t0);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        assert_eq!(
+            state.time_until_status_bar_expiry(t0 + Duration::from_secs(1)),
             Some(Duration::from_secs(2))
         );
-        state.expire_ribbon(t0 + Duration::from_secs(2));
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
-        assert_eq!(state.ribbon_placement(), None);
-
-        // Auto: second Tab before expiry hides immediately
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        state.toggle_ribbon(t0 + Duration::from_secs(1));
-        assert_eq!(state.ribbon_placement(), None);
-
-        // Off: same 3s peek behavior on Tab
-        state.configure_ribbon(RibbonMode::Off);
-        assert_eq!(state.ribbon_placement(), None);
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        state.expire_ribbon(t0 + RIBBON_AUTO_HIDE_DURATION);
-        assert_eq!(state.ribbon_placement(), None);
-
-        // Top: permanently visible, Tab toggles temporary hide/show
-        state.configure_ribbon(RibbonMode::Top);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        assert_eq!(state.time_until_ribbon_expiry(t0), None);
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), None);
-        state.toggle_ribbon(t0 + Duration::from_secs(1));
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-
-        // Bottom: permanently visible at bottom, Tab toggles temporary hide/show
-        state.configure_ribbon(RibbonMode::Bottom);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), None);
-        state.toggle_ribbon(t0 + Duration::from_secs(1));
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
-
-        // Terminal height < 8 rows automatically hides ribbon in all modes
-        state.resize(80, 7);
-        assert_eq!(state.ribbon_placement(), None);
-        state.resize(80, 8);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Bottom));
-
-        // Modal pauses auto-hide ribbon timer and resumes remaining time on close
-        state.configure_ribbon(RibbonMode::Auto);
-        state.toggle_ribbon(t0);
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        state.toggle_help_at(t0 + Duration::from_secs(2));
-        state.expire_ribbon(t0 + Duration::from_secs(6));
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
-        state.close_modal_at(t0 + Duration::from_secs(6));
-        assert_eq!(state.ribbon_placement(), Some(RibbonPlacement::Top));
+        state.expire_status_bar(t0 + Duration::from_secs(2));
         assert_eq!(
-            state.time_until_ribbon_expiry(t0 + Duration::from_secs(6)),
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.expire_status_bar(t0 + STATUS_BAR_PEEK_DURATION);
+        assert_eq!(state.status_bar_placement(), None);
+
+        state.configure_status_bar(StatusBarMode::Off);
+        assert_eq!(state.status_bar_placement(), None);
+        state.peek_status_bar(t0);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.expire_status_bar(t0 + STATUS_BAR_PEEK_DURATION);
+        assert_eq!(state.status_bar_placement(), None);
+
+        state.configure_status_bar(StatusBarMode::Top);
+        assert_eq!(state.status_bar_placement(), Some(StatusBarPlacement::Top));
+        assert_eq!(state.time_until_status_bar_expiry(t0), None);
+
+        state.configure_status_bar(StatusBarMode::Bottom);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.toggle_status_bar();
+        assert_eq!(state.status_bar, StatusBarMode::Off);
+        assert_eq!(state.status_bar_placement(), None);
+        state.toggle_status_bar();
+        assert_eq!(state.status_bar, StatusBarMode::Bottom);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+
+        state.configure_status_bar(StatusBarMode::Auto);
+        state.resize(80, 7);
+        assert_eq!(state.status_bar_placement(), None);
+        state.toggle_status_bar();
+        assert_eq!(state.status_bar, StatusBarMode::Bottom);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.toggle_status_bar();
+        assert_eq!(state.status_bar, StatusBarMode::Off);
+        state.toggle_status_bar();
+        state.resize(80, 8);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+
+        state.configure_status_bar(StatusBarMode::Bottom);
+        state.toggle_fullscreen();
+        assert_eq!(state.status_bar_placement(), None);
+        state.toggle_status_bar();
+        assert!(!state.is_fullscreen());
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+
+        state.configure_status_bar(StatusBarMode::Bottom);
+        state.toggle_fullscreen();
+        assert_eq!(state.status_bar_placement(), None);
+        state.peek_status_bar(t0);
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.expire_status_bar(t0 + STATUS_BAR_PEEK_DURATION);
+        assert_eq!(state.status_bar_placement(), None);
+        state.toggle_fullscreen();
+
+        state.configure_status_bar(StatusBarMode::Off);
+        state.peek_status_bar(t0);
+        state.toggle_help_at(t0 + Duration::from_secs(2));
+        state.expire_status_bar(t0 + Duration::from_secs(6));
+        assert_eq!(
+            state.status_bar_placement(),
+            Some(StatusBarPlacement::Bottom)
+        );
+        state.close_modal_at(t0 + Duration::from_secs(6));
+        assert_eq!(
+            state.time_until_status_bar_expiry(t0 + Duration::from_secs(6)),
             Some(Duration::from_secs(1))
         );
-        state.expire_ribbon(t0 + Duration::from_secs(7));
-        assert_eq!(state.ribbon_placement(), None);
+        state.expire_status_bar(t0 + Duration::from_secs(7));
+        assert_eq!(state.status_bar_placement(), None);
     }
 
     #[test]

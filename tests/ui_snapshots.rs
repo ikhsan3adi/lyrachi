@@ -1,4 +1,4 @@
-use lyrachi::config::RibbonMode;
+use lyrachi::config::StatusBarMode;
 use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::core::model::{
     Annotation, AnnotationKind, LineRole, LyricLine, SyncGranularity, SyncedTrack, WordToken,
@@ -320,7 +320,7 @@ fn instrumental() -> UiState {
 
 fn fullscreen() -> UiState {
     let mut state = word_sync();
-    state.configure_layout(true, true, true);
+    state.configure_layout(true, true, StatusBarMode::Bottom);
     state
 }
 
@@ -632,7 +632,7 @@ fn ascii_terminal_forces_normal_rendering() {
 #[test]
 fn block_mode_respects_timeline_max_width() {
     let mut state = block_word_sync();
-    state.configure_layout(false, false, false);
+    state.configure_layout(false, false, StatusBarMode::Off);
     state.set_max_width(Some(10));
     let buffer = render_buffer(&mut state, 80, 24, 9_500);
 
@@ -662,7 +662,7 @@ fn block_mode_does_not_style_anchor_as_active_in_a_gap() {
 #[test]
 fn block_mode_reveals_only_the_active_word_cells() {
     let mut state = block_word_sync();
-    state.configure_layout(false, false, false);
+    state.configure_layout(false, false, StatusBarMode::Off);
     state.set_max_width(Some(10));
     let buffer = render_buffer(&mut state, 80, 24, 9_500);
 
@@ -678,7 +678,7 @@ fn block_mode_reveals_only_the_active_word_cells() {
 #[test]
 fn block_mode_word_highlight_off_styles_the_whole_active_line() {
     let mut state = block_word_sync();
-    state.configure_layout(false, false, false);
+    state.configure_layout(false, false, StatusBarMode::Off);
     state.set_max_width(Some(10));
     state.word_highlight = false;
     let buffer = render_buffer(&mut state, 80, 24, 9_500);
@@ -999,46 +999,34 @@ fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
 }
 
 #[test]
-fn ribbon_top_80x24() {
+fn status_bar_top_80x24() {
     let mut state = word_sync();
-    state.configure_ribbon(RibbonMode::Top);
-    snapshot(&mut state, 80, 24, 9_500, "80x24_ribbon_top");
+    state.configure_status_bar(StatusBarMode::Top);
+    snapshot(&mut state, 80, 24, 9_500, "80x24_status_bar_top");
 }
 
 #[test]
-fn ribbon_bottom_120x40() {
+fn status_bar_bottom_120x40() {
     let mut state = word_sync();
-    state.configure_ribbon(RibbonMode::Bottom);
-    snapshot(&mut state, 120, 40, 9_500, "120x40_ribbon_bottom");
+    state.configure_status_bar(StatusBarMode::Bottom);
+    snapshot(&mut state, 120, 40, 9_500, "120x40_status_bar_bottom");
 }
 
 #[test]
-fn ribbon_hides_below_8_rows() {
+fn status_bar_auto_hides_below_8_rows() {
     let mut state = word_sync();
-    state.configure_ribbon(RibbonMode::Top);
+    state.configure_status_bar(StatusBarMode::Auto);
 
     let short = render_state(&mut state, 80, 7, 9_500);
     assert!(
-        !short.contains("word-hl:"),
-        "unexpected ribbon on 7 rows:\n{short}"
+        !short.contains("playing · normal"),
+        "unexpected status bar on 7 rows:\n{short}"
     );
 
     let tall = render_state(&mut state, 80, 8, 9_500);
     assert!(
-        tall.contains("word-hl:"),
-        "expected ribbon on 8 rows:\n{tall}"
-    );
-
-    state.configure_ribbon(RibbonMode::Bottom);
-    let bottom_short = render_state(&mut state, 80, 7, 9_500);
-    assert!(
-        !bottom_short.contains("word-hl:"),
-        "unexpected bottom ribbon on 7 rows:\n{bottom_short}"
-    );
-    let bottom_tall = render_state(&mut state, 80, 8, 9_500);
-    assert!(
-        bottom_tall.contains("word-hl:"),
-        "expected bottom ribbon on 8 rows:\n{bottom_tall}"
+        tall.contains("playing · normal"),
+        "expected status bar on 8 rows:\n{tall}"
     );
 }
 

@@ -18,7 +18,7 @@ use crate::style::{
 };
 
 use super::{
-    LyricsView, RibbonPlacement, UiModal, UiState,
+    LyricsView, StatusBarPlacement, UiModal, UiState,
     block::{
         BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockFontSize, BlockStageCache,
         render::{
@@ -27,8 +27,8 @@ use super::{
         },
     },
     effects::UiEffects,
-    help, menu, ribbon,
-    status::footer_line,
+    help, menu,
+    status_bar::{banner_line, render as render_status_bar},
 };
 
 const BLOCK_CONTEXT_MAX_ROWS: u16 = 4;
@@ -92,17 +92,17 @@ fn render_internal(
         frame.render_widget(Block::default().style(state.style.canvas_style()), area);
     }
 
-    let placement = state.ribbon_placement_for_height(area.height);
+    let placement = state.status_bar_placement_for_height(area.height);
     let header_rows = u16::from(state.effective_show_header());
-    let top_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Top));
-    let bottom_ribbon_rows = u16::from(placement == Some(RibbonPlacement::Bottom));
-    let footer_rows = u16::from(state.footer_visible());
-    let [header, top_ribbon, body, bottom_ribbon, footer] = Layout::vertical([
+    let top_status_rows = u16::from(placement == Some(StatusBarPlacement::Top));
+    let bottom_status_rows = u16::from(placement == Some(StatusBarPlacement::Bottom));
+    let banner_rows = u16::from(state.banner_visible());
+    let [header, top_status, body, banner, bottom_status] = Layout::vertical([
         Constraint::Length(header_rows),
-        Constraint::Length(top_ribbon_rows),
+        Constraint::Length(top_status_rows),
         Constraint::Min(1),
-        Constraint::Length(bottom_ribbon_rows),
-        Constraint::Length(footer_rows),
+        Constraint::Length(banner_rows),
+        Constraint::Length(bottom_status_rows),
     ])
     .areas(area);
 
@@ -111,15 +111,17 @@ fn render_internal(
     if header_rows > 0 {
         render_header(frame, content_area(header, padding), state);
     }
-    if top_ribbon_rows > 0 {
-        ribbon::render(frame, content_area(top_ribbon, padding), state);
+    if top_status_rows > 0 {
+        render_status_bar(frame, top_status, state);
     }
     render_body(frame, stage_area, state, block_cache, effective_ms);
-    if bottom_ribbon_rows > 0 {
-        ribbon::render(frame, content_area(bottom_ribbon, padding), state);
+    if banner_rows > 0
+        && let Some(line) = banner_line(state)
+    {
+        frame.render_widget(Paragraph::new(line), content_area(banner, padding));
     }
-    if let Some(line) = footer_line(state) {
-        frame.render_widget(Paragraph::new(line), footer);
+    if bottom_status_rows > 0 {
+        render_status_bar(frame, bottom_status, state);
     }
     match &state.modal {
         Some(UiModal::Help) => help::render(frame, area),

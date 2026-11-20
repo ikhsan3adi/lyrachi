@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 
 use toml_edit::{DocumentMut, Item, Table, Value, value};
 
-use crate::config::RibbonMode;
+use crate::config::StatusBarMode;
 
 use crate::ui::DisplayMode;
 
@@ -12,10 +12,9 @@ use crate::ui::DisplayMode;
 pub struct UiPrefs {
     pub fullscreen: bool,
     pub show_header: bool,
-    pub show_status: bool,
+    pub status_bar: StatusBarMode,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
-    pub ribbon: RibbonMode,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -68,10 +67,9 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
 
     set_value(ui, "fullscreen", prefs.fullscreen);
     set_value(ui, "show_header", prefs.show_header);
-    set_value(ui, "show_status", prefs.show_status);
+    set_value(ui, "status_bar", prefs.status_bar.as_str());
     set_value(ui, "display_mode", prefs.display_mode.as_str());
     set_value(ui, "word_highlight", prefs.word_highlight);
-    set_value(ui, "ribbon", prefs.ribbon.as_str());
 
     write_atomic(&target, document.to_string().as_bytes())
 }
@@ -189,10 +187,9 @@ mod tests {
         UiPrefs {
             fullscreen: true,
             show_header: false,
-            show_status: false,
+            status_bar: StatusBarMode::Top,
             display_mode: DisplayMode::Block,
             word_highlight: false,
-            ribbon: RibbonMode::Top,
         }
     }
 
@@ -226,10 +223,9 @@ mod tests {
         assert!(saved.find("[providers]").unwrap() < saved.find("[ui]").unwrap());
         assert!(saved.contains("fullscreen = true"));
         assert!(saved.contains("show_header = false"));
-        assert!(saved.contains("show_status = false"));
+        assert!(saved.contains("status_bar = \"top\""));
         assert!(saved.contains("display_mode = \"block\""));
         assert!(saved.contains("word_highlight = false"));
-        assert!(saved.contains("ribbon = \"top\""));
 
         fs::remove_dir_all(dir).unwrap();
     }

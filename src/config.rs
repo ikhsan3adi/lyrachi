@@ -32,10 +32,9 @@ pub struct RuntimeConfig {
     pub fullscreen: bool,
     pub show_header: bool,
     pub show_header_override: Option<bool>,
-    pub show_status: bool,
+    pub status_bar: StatusBarMode,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
-    pub ribbon: RibbonMode,
     pub fps_active: u16,
     pub style: String,
     pub color_mode: ColorMode,
@@ -57,10 +56,9 @@ impl Default for RuntimeConfig {
             fullscreen: false,
             show_header: true,
             show_header_override: None,
-            show_status: true,
+            status_bar: StatusBarMode::default(),
             display_mode: DisplayMode::Normal,
             word_highlight: true,
-            ribbon: RibbonMode::default(),
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
             color_mode: ColorMode::Auto,
@@ -168,9 +166,6 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
         config.show_header = show_header;
         config.show_header_override = Some(show_header);
     }
-    if let Some(show_status) = file.ui.show_status {
-        config.show_status = show_status;
-    }
     if let Some(name) = file.ui.display_mode {
         match DisplayMode::from_config_name(&name) {
             Some(mode) => config.display_mode = mode,
@@ -182,8 +177,8 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     if let Some(word_highlight) = file.ui.word_highlight {
         config.word_highlight = word_highlight;
     }
-    if let Some(ribbon) = file.ui.ribbon {
-        config.ribbon = ribbon;
+    if let Some(status_bar) = file.ui.status_bar {
+        config.status_bar = status_bar;
     }
     if let Some(fps_active) = file.ui.fps_active {
         config.fps_active = clamp_fps_active(fps_active, "ui.fps_active", warnings);
@@ -355,31 +350,30 @@ pub struct CacheSection {
 pub struct UiSection {
     pub fullscreen: Option<bool>,
     pub show_header: Option<bool>,
-    pub show_status: Option<bool>,
+    pub status_bar: Option<StatusBarMode>,
     pub display_mode: Option<String>,
     pub word_highlight: Option<bool>,
-    pub ribbon: Option<RibbonMode>,
     pub fps_active: Option<u16>,
     pub style: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
-pub enum RibbonMode {
+pub enum StatusBarMode {
     #[default]
-    Auto,
-    Top,
     Bottom,
+    Top,
     Off,
+    Auto,
 }
 
-impl RibbonMode {
+impl StatusBarMode {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::Auto => "auto",
-            Self::Top => "top",
             Self::Bottom => "bottom",
+            Self::Top => "top",
             Self::Off => "off",
+            Self::Auto => "auto",
         }
     }
 }
@@ -437,14 +431,12 @@ l1_entries = 64
 fullscreen = false
 # Display track title and artist header
 show_header = true
-# Display status bar at the bottom
-show_status = true
+# Status bar placement: "bottom", "top", "off", or "auto"
+status_bar = "bottom"
 # Display mode: "normal", "block", or "kinetic"
 display_mode = "normal"
 # Enable word-level karaoke highlighting
 word_highlight = true
-# Collapsible ribbon mode: "auto", "top", "bottom", or "off"
-ribbon = "auto"
 # Frame rate while wipe/effects/countdown animations are active (15..=120)
 fps_active = 60
 # Active style name or preset (e.g. "builtin:default", "builtin:dark", "builtin:aurora", "builtin:minimal")
@@ -642,13 +634,13 @@ l1_entries = 8
     fn loads_ui_layout_preferences() {
         let path = temp_file(
             "ui-layout",
-            "[ui]\nfullscreen = true\nshow_header = false\nshow_status = false\n",
+            "[ui]\nfullscreen = true\nshow_header = false\nstatus_bar = \"off\"\n",
         );
         let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
 
         assert!(outcome.config.fullscreen);
         assert!(!outcome.config.show_header);
-        assert!(!outcome.config.show_status);
+        assert_eq!(outcome.config.status_bar, StatusBarMode::Off);
 
         fs::remove_file(path).unwrap();
     }
@@ -844,29 +836,29 @@ l1_entries = 8
     }
 
     #[test]
-    fn loads_ui_ribbon_modes() {
+    fn loads_ui_status_bar_modes() {
         for (raw, expected) in [
-            ("auto", RibbonMode::Auto),
-            ("top", RibbonMode::Top),
-            ("bottom", RibbonMode::Bottom),
-            ("off", RibbonMode::Off),
+            ("auto", StatusBarMode::Auto),
+            ("top", StatusBarMode::Top),
+            ("bottom", StatusBarMode::Bottom),
+            ("off", StatusBarMode::Off),
         ] {
             let path = temp_file(
-                &format!("ribbon-{raw}"),
-                &format!("[ui]\nribbon = \"{raw}\"\n"),
+                &format!("status-bar-{raw}"),
+                &format!("[ui]\nstatus_bar = \"{raw}\"\n"),
             );
             let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
             assert!(outcome.warnings.is_empty());
-            assert_eq!(outcome.config.ribbon, expected);
+            assert_eq!(outcome.config.status_bar, expected);
             fs::remove_file(path).unwrap();
         }
     }
 
     #[test]
-    fn warns_on_invalid_ribbon_mode() {
-        let path = temp_file("ribbon-invalid", "[ui]\nribbon = \"invalid\"\n");
+    fn warns_on_invalid_status_bar_mode() {
+        let path = temp_file("status-bar-invalid", "[ui]\nstatus_bar = \"invalid\"\n");
         let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
-        assert_eq!(outcome.config.ribbon, RibbonMode::Auto);
+        assert_eq!(outcome.config.status_bar, StatusBarMode::Bottom);
         assert!(!outcome.warnings.is_empty());
         assert!(outcome.warnings[0].contains("unknown variant"));
         fs::remove_file(path).unwrap();

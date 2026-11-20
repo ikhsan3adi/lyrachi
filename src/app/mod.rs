@@ -56,12 +56,11 @@ pub struct AnimationStatus {
     pub effects_active: bool,
     pub wipe_active: bool,
     pub countdown_active: bool,
-    pub ribbon_animating: bool,
 }
 
 impl AnimationStatus {
     pub fn needs_frame_tick(self) -> bool {
-        self.effects_active || self.wipe_active || self.countdown_active || self.ribbon_animating
+        self.effects_active || self.wipe_active || self.countdown_active
     }
 }
 
@@ -214,9 +213,8 @@ pub async fn run(
     state.lookahead_ms = config.lookahead_ms;
     state.offline = !config.network;
     state.config_warning = warnings.first().cloned();
-    state.configure_layout(config.fullscreen, config.show_header, config.show_status);
+    state.configure_layout(config.fullscreen, config.show_header, config.status_bar);
     state.set_header_override(config.show_header_override);
-    state.configure_ribbon(config.ribbon);
     state.set_ambiguous_width(config.ambiguous_width);
     state.set_terminal_unicode(config.unicode.is_full());
     state.display_mode = config.display_mode;
@@ -494,7 +492,7 @@ fn draw_frame_internal<B: ratatui::backend::Backend>(
         let now = Instant::now();
         state.expire_banner(now);
         if !state.is_modal_open() {
-            state.expire_ribbon(now);
+            state.expire_status_bar(now);
         }
         state.resize(area.width, area.height);
         let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
@@ -1251,7 +1249,7 @@ fn handle_input_with_runtime(
             InputOutcome::default()
         }
         KeyAction::ToggleStatus => {
-            state.toggle_status();
+            state.toggle_status_bar();
             persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
@@ -1265,8 +1263,8 @@ fn handle_input_with_runtime(
             persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
-        KeyAction::ToggleRibbon => {
-            state.toggle_ribbon(now);
+        KeyAction::PeekStatusBar => {
+            state.peek_status_bar(now);
             InputOutcome::default()
         }
         KeyAction::CycleStyle => {
@@ -1659,14 +1657,13 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
     let Some(config_file) = config_file else {
         return;
     };
-    let (fullscreen, show_header, show_status) = state.persisted_layout();
+    let (fullscreen, show_header, status_bar) = state.persisted_layout();
     let prefs = UiPrefs {
         fullscreen,
         show_header,
-        show_status,
+        status_bar,
         display_mode: state.display_mode,
         word_highlight: state.word_highlight,
-        ribbon: state.ribbon_mode,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -1676,7 +1673,7 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
 }
 
 fn refresh_hidden_status_banner(state: &mut UiState, now: Instant) {
-    if state.show_status {
+    if state.status_bar_visible() {
         state.clear_banner();
         return;
     }
@@ -1762,8 +1759,8 @@ fn next_wait(
     }
     let wait = base_next_wait(state, clock, now, animation);
     state
-        .time_until_ribbon_expiry(now)
-        .map_or(wait, |ribbon_wait| wait.min(ribbon_wait))
+        .time_until_status_bar_expiry(now)
+        .map_or(wait, |status_wait| wait.min(status_wait))
 }
 
 fn base_next_wait(
@@ -1908,13 +1905,6 @@ mod tests {
         assert!(
             AnimationStatus {
                 countdown_active: true,
-                ..AnimationStatus::default()
-            }
-            .needs_frame_tick()
-        );
-        assert!(
-            AnimationStatus {
-                ribbon_animating: true,
                 ..AnimationStatus::default()
             }
             .needs_frame_tick()
@@ -2602,12 +2592,15 @@ mod tests {
         let saved = std::fs::read_to_string(&config_file).unwrap();
         assert!(saved.contains("fullscreen = true"));
         assert!(saved.contains("show_header = true"));
-        assert!(saved.contains("show_status = true"));
+        assert!(saved.contains("status_bar = \"bottom\""));
 
         press(&mut state, &mut coordinator, &mut offsets, 't');
-        assert_eq!((state.show_header, state.show_status), (true, false));
+        assert!(!state.is_fullscreen());
+        assert!(state.show_header);
         press(&mut state, &mut coordinator, &mut offsets, 's');
-        assert_eq!((state.show_header, state.show_status), (true, true));
+        assert_eq!(state.status_bar, crate::config::StatusBarMode::Off);
+        press(&mut state, &mut coordinator, &mut offsets, 's');
+        assert_eq!(state.status_bar, crate::config::StatusBarMode::Bottom);
 
         press(&mut state, &mut coordinator, &mut offsets, 'm');
         assert_eq!(state.display_mode, crate::ui::DisplayMode::Block);
@@ -2619,7 +2612,7 @@ mod tests {
 
         state.config_warning = Some("invalid config: unknown key".to_string());
         press(&mut state, &mut coordinator, &mut offsets, 's');
-        assert!(!state.show_status);
+        assert_eq!(state.status_bar, crate::config::StatusBarMode::Off);
         assert_eq!(state.banner_message(), Some("invalid config: unknown key"));
 
         std::fs::remove_dir_all(dir).unwrap();
@@ -2680,7 +2673,6 @@ mod tests {
                     effects_active: true,
                     wipe_active: true,
                     countdown_active: true,
-                    ribbon_animating: true,
                 }
             ),
             Duration::from_secs(1)
@@ -2732,7 +2724,7 @@ mod tests {
     }
 
     #[test]
-    fn tab_toggles_ribbon_and_next_wait_tracks_expiry_when_paused_or_idle() {
+    fn tab_peeks_status_bar_and_next_wait_tracks_expiry_when_paused_or_idle() {
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyEventState, KeyModifiers};
 
         let mut state = UiState::new();
@@ -2749,10 +2741,10 @@ mod tests {
             })
         };
 
-        state.configure_ribbon(crate::config::RibbonMode::Auto);
-        assert_eq!(state.ribbon_placement(), None);
+        state.configure_status_bar(crate::config::StatusBarMode::Off);
+        assert_eq!(state.status_bar_placement(), None);
 
-        // Tab opens ribbon for 3 seconds while Idle (Stopped)
+        // Tab peeks at the hidden status bar for 3 seconds while Idle (Stopped)
         handle_input(
             &mut state,
             &mut coordinator,
@@ -2762,9 +2754,10 @@ mod tests {
             key_event(KeyCode::Tab, KeyModifiers::NONE),
         );
         assert_eq!(
-            state.ribbon_placement(),
-            Some(crate::ui::RibbonPlacement::Top)
+            state.status_bar_placement(),
+            Some(crate::ui::StatusBarPlacement::Bottom)
         );
+        assert_eq!(state.status_bar, crate::config::StatusBarMode::Off);
 
         let wait_near_expiry = next_wait(
             &state,
@@ -2784,8 +2777,8 @@ mod tests {
         );
         assert_eq!(wait_paused, Duration::from_millis(200));
 
-        state.expire_ribbon(t0 + Duration::from_secs(3));
-        assert_eq!(state.ribbon_placement(), None);
+        state.expire_status_bar(t0 + Duration::from_secs(3));
+        assert_eq!(state.status_bar_placement(), None);
     }
 
     #[test]
@@ -2841,7 +2834,8 @@ mod tests {
 
         assert_eq!(state.user_offset_ms, 0);
         assert!(state.show_header);
-        assert!(state.show_status);
+        assert_eq!(state.status_bar, crate::config::StatusBarMode::Bottom);
+        assert!(!state.is_fullscreen());
         assert!(!state.refetching);
 
         let search = match &state.context_menu().unwrap().view {

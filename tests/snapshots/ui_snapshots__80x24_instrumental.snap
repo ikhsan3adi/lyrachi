@@ -25,4 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-limusic | playing | lrclib | +300 ms | 95% | instrumental
+playing · normal · lrclib · +300 ms
