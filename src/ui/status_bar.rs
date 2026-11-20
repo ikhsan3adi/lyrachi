@@ -74,7 +74,14 @@ fn playback_label(state: &UiState, with_player: bool) -> String {
     let playback = state.playback.as_str();
     if with_player {
         match state.player.as_deref() {
-            Some(player) => format!("{playback} {player}"),
+            Some(player) => {
+                if state.backend.is_supported() && state.backend != crate::media::BackendKind::Mpris
+                {
+                    format!("{playback} {player} [{}]", state.backend.as_str())
+                } else {
+                    format!("{playback} {player}")
+                }
+            }
             None => format!("{playback} no player"),
         }
     } else {
@@ -280,5 +287,17 @@ mod tests {
                 render(frame, Rect::new(0, 0, 0, 0), &state);
             })
             .unwrap();
+    }
+
+    #[test]
+    fn playback_label_includes_backend_when_non_mpris() {
+        let mut state = UiState::new();
+        state.set_player(Some("mpd".to_string()));
+        state.playback = PlaybackStatus::Playing;
+        state.backend = crate::media::BackendKind::Mpd;
+        assert_eq!(playback_label(&state, true), "playing mpd [mpd]");
+
+        state.backend = crate::media::BackendKind::Mpris;
+        assert_eq!(playback_label(&state, true), "playing mpd");
     }
 }

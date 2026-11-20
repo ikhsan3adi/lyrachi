@@ -20,6 +20,7 @@ pub struct StatusPlayer {
     pub id: String,
     pub name: String,
     pub kind: String,
+    pub backend: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -72,8 +73,8 @@ pub async fn run(
     json: bool,
     cache: Option<CacheHandle>,
 ) -> Result<()> {
-    let backend = BackendKind::current();
     let (snapshot, backend_available) = probe_live(&config).await;
+    let backend = snapshot.backend;
     let report = collect_report_with_cache(
         snapshot,
         backend,
@@ -104,7 +105,7 @@ pub async fn collect_report(
     config: &RuntimeConfig,
     offsets_file: &Path,
 ) -> StatusReport {
-    let backend = BackendKind::current();
+    let backend = snapshot.backend;
     collect_report_with_cache(
         snapshot,
         backend,
@@ -124,11 +125,18 @@ pub async fn collect_report_with_cache(
     offsets_file: &Path,
     cache: Option<&CacheHandle>,
 ) -> StatusReport {
-    let player = snapshot.player.as_ref().map(|player| StatusPlayer {
-        id: player.id.clone(),
-        name: player_short_name(&player.id).to_string(),
-        kind: player.kind.as_str().to_string(),
-    });
+    let (player, active_backend) = match &snapshot.player {
+        Some(player) => (
+            Some(StatusPlayer {
+                id: player.id.clone(),
+                name: player_short_name(&player.id).to_string(),
+                kind: player.kind.as_str().to_string(),
+                backend: player.backend.as_str().to_string(),
+            }),
+            player.backend,
+        ),
+        None => (None, snapshot.backend),
+    };
     let track = snapshot.track.as_ref().map(|track| StatusTrack {
         title: track.title.clone(),
         artist: track.artist.clone(),
@@ -176,8 +184,12 @@ pub async fn collect_report_with_cache(
     let effective_ms = config.global_offset_ms.saturating_add(track_ms);
 
     StatusReport {
-        backend: backend.as_str().to_string(),
-        backend_available,
+        backend: active_backend.as_str().to_string(),
+        backend_available: if active_backend == backend {
+            backend_available
+        } else {
+            active_backend.is_supported()
+        },
         player,
         playback: snapshot.playback.as_str().to_string(),
         track,

@@ -736,7 +736,8 @@ pub fn handle_media(
 ) {
     state.media_availability = MediaAvailability::Available;
     match event {
-        MediaEvent::PlayerChanged { id, .. } => {
+        MediaEvent::PlayerChanged { id, backend, .. } => {
+            state.backend = backend;
             state.set_player(Some(player_short_name(&id).to_string()));
         }
         MediaEvent::NoPlayer => {
@@ -761,14 +762,20 @@ pub fn handle_media(
         }
         MediaEvent::Rate(rate) => clock.on_rate_changed(rate, now),
         MediaEvent::Seeked { pos_ms } => clock.on_seeked(pos_ms, now),
-        MediaEvent::PositionPoll { pos_ms, rtt } => {
-            clock.on_position_poll(pos_ms, rtt, now);
+        MediaEvent::PositionPoll {
+            pos_ms,
+            rtt,
+            sample_age,
+        } => {
+            clock.on_position_poll_with_sample_age(pos_ms, rtt, sample_age, now);
             let raw_ms = clock.raw_position_at(now);
             let effective_ms = clock.effective_lyric_ms(now, effective_offsets(state));
             let rtt_ms = u64::try_from(rtt.as_millis()).unwrap_or(u64::MAX);
+            let sample_age_ms = sample_age.and_then(|age| u64::try_from(age.as_millis()).ok());
             debug!(
                 polled_pos_ms = pos_ms,
                 rtt_ms,
+                sample_age_ms,
                 clock_raw_ms = raw_ms,
                 effective_lyric_ms = effective_ms,
                 "position poll synchronized"

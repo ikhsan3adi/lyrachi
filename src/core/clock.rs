@@ -189,6 +189,16 @@ impl PlaybackClock {
     }
 
     pub fn on_position_poll(&mut self, polled_ms: u64, ipc_rtt: Duration, now: Instant) {
+        self.on_position_poll_with_sample_age(polled_ms, ipc_rtt, None, now);
+    }
+
+    pub fn on_position_poll_with_sample_age(
+        &mut self,
+        polled_ms: u64,
+        ipc_rtt: Duration,
+        sample_age: Option<Duration>,
+        now: Instant,
+    ) {
         let predicted_ms = self.raw_position_at(now);
         let ClockState::Playing {
             anchor_pos_ms,
@@ -211,8 +221,17 @@ impl PlaybackClock {
             *stale_poll_count = 0;
         }
 
-        let rtt_ms = u64::try_from(ipc_rtt.as_millis()).unwrap_or(u64::MAX);
-        let compensated_ms = polled_ms.saturating_add(rtt_ms / 2);
+        let compensated_ms = match sample_age {
+            Some(age) => {
+                let age_ms = u64::try_from(age.as_millis()).unwrap_or(u64::MAX);
+                polled_ms.saturating_add(age_ms)
+            }
+            None => {
+                let rtt_ms = u64::try_from(ipc_rtt.as_millis()).unwrap_or(u64::MAX);
+                polled_ms.saturating_add(rtt_ms / 2)
+            }
+        };
+
         let drift_ms = to_i64(compensated_ms).saturating_sub(to_i64(predicted_ms));
         let drift_abs = drift_ms.unsigned_abs();
 
@@ -482,5 +501,31 @@ mod tests {
             ),
             0
         );
+    }
+
+    #[test]
+    fn sample_age_compensates_without_double_rtt() {
+        let base = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, base);
+
+        let now = base + Duration::from_millis(1_000);
+        clock.on_position_poll_with_sample_age(
+            1_000,
+            Duration::from_millis(50),
+            Some(Duration::from_millis(200)),
+            now,
+        );
+
+        assert_eq!(clock.raw_position_at(now), 1_100);
+
+        let now2 = now + Duration::from_millis(1_000);
+        clock.on_position_poll_with_sample_age(
+            2_200,
+            Duration::from_millis(100),
+            Some(Duration::from_millis(400)),
+            now2,
+        );
+        assert_eq!(clock.raw_position_at(now2), 2_600);
     }
 }

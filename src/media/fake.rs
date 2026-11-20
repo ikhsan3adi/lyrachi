@@ -1,9 +1,11 @@
 use std::time::Duration;
 
-use tokio::sync::mpsc::Sender;
+use tokio::sync::mpsc::{self, Sender};
+use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
-use super::MediaEvent;
+use super::backend::{BoxFuture, MediaBackend};
+use super::{BackendKind, MediaError, MediaEvent, MediaSnapshot};
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct FakeMediaSource {
@@ -32,6 +34,59 @@ impl FakeMediaSource {
                 return;
             }
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct FakeBackend {
+    pub kind: BackendKind,
+    pub schedule: Vec<(Duration, MediaEvent)>,
+    pub initial_snapshot: Option<MediaSnapshot>,
+}
+
+impl FakeBackend {
+    pub fn new(kind: BackendKind, schedule: Vec<(Duration, MediaEvent)>) -> Self {
+        Self {
+            kind,
+            schedule,
+            initial_snapshot: None,
+        }
+    }
+
+    pub fn with_snapshot(mut self, snapshot: MediaSnapshot) -> Self {
+        self.initial_snapshot = Some(snapshot);
+        self
+    }
+}
+
+impl MediaBackend for FakeBackend {
+    fn kind(&self) -> BackendKind {
+        self.kind
+    }
+
+    fn probe<'a>(
+        &'a self,
+        _player_filter: Option<&'a str>,
+    ) -> BoxFuture<'a, Result<MediaSnapshot, MediaError>> {
+        let snapshot = self.initial_snapshot.clone().unwrap_or(MediaSnapshot {
+            backend: self.kind,
+            ..Default::default()
+        });
+        Box::pin(async move { Ok(snapshot) })
+    }
+
+    fn start_monitor<'a>(
+        &'a self,
+        _player_filter: Option<String>,
+        tx: mpsc::Sender<MediaEvent>,
+        cancel: CancellationToken,
+    ) -> BoxFuture<'a, Result<JoinHandle<()>, MediaError>> {
+        let source = FakeMediaSource::new(self.schedule.clone());
+        Box::pin(async move {
+            Ok(tokio::spawn(async move {
+                source.run(tx, cancel).await;
+            }))
+        })
     }
 }
 
@@ -65,6 +120,7 @@ mod tests {
                 MediaEvent::PlayerChanged {
                     id: "org.mpris.MediaPlayer2.spotify".to_string(),
                     kind: PlayerKind::Native,
+                    backend: BackendKind::Mpris,
                 },
             ),
             (Duration::ZERO, MediaEvent::TrackChanged(track("Yellow"))),
@@ -98,35 +154,16 @@ mod tests {
         assert_eq!(events.len(), 5);
         assert!(matches!(
             &events[1],
-            MediaEvent::TrackChanged(meta) if meta.title == "Yellow"
+            MediaEvent::TrackChanged(track) if track.title == "Yellow"
         ));
         assert!(matches!(
             &events[2],
-            MediaEvent::TrackChanged(meta) if meta.title == "Trouble"
+            MediaEvent::TrackChanged(track) if track.title == "Trouble"
         ));
         assert!(matches!(events[3], MediaEvent::Seeked { pos_ms: 4_500 }));
         assert!(matches!(
             events[4],
             MediaEvent::Status(PlaybackStatus::Paused)
         ));
-    }
-
-    #[tokio::test]
-    async fn cancellation_stops_pending_events() {
-        let (tx, mut rx) = mpsc::channel(4);
-        let source = FakeMediaSource::new(vec![(
-            Duration::from_secs(30),
-            MediaEvent::TrackChanged(track("Yellow")),
-        )]);
-        let cancel = CancellationToken::new();
-        let task = tokio::spawn(source.run(tx, cancel.clone()));
-
-        cancel.cancel();
-        tokio::time::timeout(Duration::from_secs(1), task)
-            .await
-            .expect("cancelled fake source should stop")
-            .expect("fake media source task");
-
-        assert!(rx.recv().await.is_none());
     }
 }

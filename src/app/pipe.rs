@@ -38,6 +38,8 @@ pub struct PipeFrame {
     pub alt: String,
     pub class: String,
     pub progress: f32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub backend: Option<String>,
 }
 
 impl PipeFrame {
@@ -45,7 +47,11 @@ impl PipeFrame {
         self.text == other.text
             && match format {
                 PipeFormat::Plain => true,
-                PipeFormat::Json => self.alt == other.alt && self.class == other.class,
+                PipeFormat::Json => {
+                    self.alt == other.alt
+                        && self.class == other.class
+                        && self.backend == other.backend
+                }
             }
     }
 }
@@ -258,6 +264,10 @@ fn current_frame(
     max_width: Option<u16>,
 ) -> Option<PipeFrame> {
     let alt = clock.state().status().as_str().to_string();
+    let backend = state
+        .player
+        .as_ref()
+        .map(|_| state.backend.as_str().to_string());
 
     match &state.lyrics {
         LyricsView::Loading => None,
@@ -267,13 +277,13 @@ fn current_frame(
             } else {
                 "No player"
             };
-            Some(status_frame(text, alt, max_width))
+            Some(status_frame(text, alt, max_width, backend))
         }
-        LyricsView::NotFound => Some(status_frame("No lyrics found", alt, max_width)),
-        LyricsView::Error(_) => Some(status_frame("Lyrics unavailable", alt, max_width)),
+        LyricsView::NotFound => Some(status_frame("No lyrics found", alt, max_width, backend)),
+        LyricsView::Error(_) => Some(status_frame("Lyrics unavailable", alt, max_width, backend)),
         LyricsView::Loaded { track, timeline } => {
             if track.lines.is_empty() {
-                return Some(status_frame("No lyrics found", alt, max_width));
+                return Some(status_frame("No lyrics found", alt, max_width, backend));
             }
             if track.is_instrumental {
                 return Some(PipeFrame {
@@ -281,6 +291,7 @@ fn current_frame(
                     alt,
                     class: "instrumental".to_string(),
                     progress: 0.0,
+                    backend,
                 });
             }
             if track.granularity == SyncGranularity::Unsynced {
@@ -289,6 +300,7 @@ fn current_frame(
                     alt,
                     class: "unsynced".to_string(),
                     progress: 0.0,
+                    backend,
                 });
             }
 
@@ -306,17 +318,24 @@ fn current_frame(
                 alt,
                 class: track.status_label().to_string(),
                 progress,
+                backend,
             })
         }
     }
 }
 
-fn status_frame(text: &str, alt: String, max_width: Option<u16>) -> PipeFrame {
+fn status_frame(
+    text: &str,
+    alt: String,
+    max_width: Option<u16>,
+    backend: Option<String>,
+) -> PipeFrame {
     PipeFrame {
         text: fit_text(text, max_width),
         alt,
         class: "no-lyrics".to_string(),
         progress: 0.0,
+        backend,
     }
 }
 

@@ -48,6 +48,7 @@ async fn fake_media_source_switches_tracks_seeks_and_pauses() {
             MediaEvent::PlayerChanged {
                 id: "org.mpris.MediaPlayer2.spotify".to_string(),
                 kind: PlayerKind::Native,
+                backend: BackendKind::Mpris,
             },
         ),
         (Duration::ZERO, MediaEvent::TrackChanged(track("Trouble"))),
@@ -111,6 +112,7 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
             MediaEvent::PlayerChanged {
                 id: "org.mpris.MediaPlayer2.spotify".to_string(),
                 kind: PlayerKind::Native,
+                backend: BackendKind::Mpris,
             },
         ),
         (Duration::ZERO, MediaEvent::TrackChanged(track("Trouble"))),
@@ -131,8 +133,8 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     let mut snapshot = MediaSnapshot::default();
     while let Some(event) = rx.recv().await {
         match event {
-            MediaEvent::PlayerChanged { id, kind } => {
-                snapshot.player = Some(PlayerSnapshot { id, kind });
+            MediaEvent::PlayerChanged { id, kind, backend } => {
+                snapshot.player = Some(PlayerSnapshot { id, kind, backend });
             }
             MediaEvent::TrackChanged(track) => snapshot.track = Some(track),
             MediaEvent::Seeked { pos_ms } => snapshot.position_ms = pos_ms,
@@ -219,6 +221,7 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     assert_eq!(json["backend_available"], backend_available);
     assert_eq!(json["player"]["name"], "spotify");
     assert_eq!(json["player"]["kind"], "native");
+    assert_eq!(json["player"]["backend"], "mpris");
     assert_eq!(json["playback"], "paused");
     assert_eq!(json["track"]["title"], "Yellow");
     assert_eq!(json["track"]["duration_ms"], 267_000);

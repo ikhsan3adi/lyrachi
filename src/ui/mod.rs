@@ -16,7 +16,7 @@ use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
 use crate::config::{DEFAULT_GLOBAL_OFFSET_MS, StatusBarMode};
 use crate::core::clock::PlaybackStatus;
 use crate::core::model::{SyncGranularity, SyncedTrack};
-use crate::media::{MediaAvailability, TrackMeta};
+use crate::media::{BackendKind, MediaAvailability, TrackMeta};
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 use crate::style::{HighlightMode, InstrumentalStyle, ResolvedStyle};
 
@@ -86,6 +86,7 @@ pub enum UiModal {
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
     pub media_availability: MediaAvailability,
+    pub backend: BackendKind,
     pub player: Option<String>,
     pub playback: PlaybackStatus,
     pub track: Option<TrackMeta>,
@@ -129,6 +130,7 @@ impl UiState {
     pub fn new() -> Self {
         Self {
             media_availability: MediaAvailability::Available,
+            backend: BackendKind::current(),
             player: None,
             playback: PlaybackStatus::Stopped,
             track: None,

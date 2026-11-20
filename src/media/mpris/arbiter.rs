@@ -13,7 +13,7 @@ use zbus::{Connection, OwnedVariant};
 use super::metadata::extract_track_meta;
 use super::proxy::{DBusProxy, PlayerProxy, micros_to_ms, parse_playback_status};
 use crate::core::clock::PlaybackStatus;
-use crate::media::{MPRIS_BUS_PREFIX, MediaEvent, PlayerKind, TrackMeta};
+use crate::media::{BackendKind, MPRIS_BUS_PREFIX, MediaEvent, PlayerKind, TrackMeta};
 
 const ARBITER_TICK_INTERVAL: Duration = Duration::from_secs(2);
 const POSITION_POLL_INTERVAL: Duration = Duration::from_secs(1);
@@ -187,7 +187,13 @@ async fn reselect(
         handle,
     });
 
-    let _ = tx.send(MediaEvent::PlayerChanged { id: bus, kind }).await;
+    let _ = tx
+        .send(MediaEvent::PlayerChanged {
+            id: bus,
+            kind,
+            backend: BackendKind::Mpris,
+        })
+        .await;
 
     Ok(())
 }
@@ -487,6 +493,7 @@ async fn poll_position(proxy: &PlayerProxy<'_>, tx: &Sender<MediaEvent>) {
                 .send(MediaEvent::PositionPoll {
                     pos_ms: micros_to_ms(position),
                     rtt: started.elapsed(),
+                    sample_age: None,
                 })
                 .await;
         }

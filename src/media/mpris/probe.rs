@@ -5,7 +5,7 @@ use tracing::debug;
 use super::arbiter::{discover_candidates, select_player};
 use super::metadata::extract_track_meta;
 use super::proxy::{PlayerProxy, micros_to_ms};
-use crate::media::{MediaError, MediaSnapshot, PlayerSnapshot, TrackMeta};
+use crate::media::{BackendKind, MediaError, MediaSnapshot, PlayerSnapshot, TrackMeta};
 
 const CALL_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -20,6 +20,7 @@ pub async fn probe(player_filter: Option<&str>) -> Result<MediaSnapshot, MediaEr
     let player = PlayerSnapshot {
         id: selected.bus,
         kind: selected.kind,
+        backend: BackendKind::Mpris,
     };
     let (track, position_ms) = read_player(&connection, &player).await;
 
@@ -28,6 +29,7 @@ pub async fn probe(player_filter: Option<&str>) -> Result<MediaSnapshot, MediaEr
         track,
         playback: selected.status,
         position_ms,
+        backend: BackendKind::Mpris,
     })
 }
 

@@ -6,7 +6,7 @@ use lyrachi::cli::PipeFormat;
 use lyrachi::config::RuntimeConfig;
 use lyrachi::core::clock::PlaybackStatus;
 use lyrachi::media::fake::FakeMediaSource;
-use lyrachi::media::{MediaEvent, PlayerKind, TrackMeta};
+use lyrachi::media::{BackendKind, MediaEvent, PlayerKind, TrackMeta};
 use serde_json::Value;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -42,6 +42,7 @@ fn start_events() -> Vec<(Duration, MediaEvent)> {
             MediaEvent::PlayerChanged {
                 id: "org.mpris.MediaPlayer2.spotify".to_string(),
                 kind: PlayerKind::Native,
+                backend: BackendKind::Mpris,
             },
         ),
         (Duration::ZERO, MediaEvent::TrackChanged(track())),
@@ -59,6 +60,7 @@ fn poll_events(first_at_ms: u64, step_ms: u64, positions: &[u64]) -> Vec<(Durati
                 MediaEvent::PositionPoll {
                     pos_ms: *pos_ms,
                     rtt: Duration::ZERO,
+                    sample_age: None,
                 },
             )
         })
