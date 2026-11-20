@@ -1016,14 +1016,14 @@ fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
     state.terminal_unicode = false;
     let ascii = render_state(&mut state, 80, 24, 14_500);
     assert!(
-        ascii.contains("* * ."),
+        ascii.contains("* . ."),
         "expected ASCII countdown dots, got:\n{ascii}"
     );
 
     let mut paused = word_sync();
     paused.playback = PlaybackStatus::Paused;
     let paused_out = render_state(&mut paused, 80, 24, 14_500);
-    assert!(paused_out.contains("● ● ○"));
+    assert!(paused_out.contains("● ○ ○"));
 
     let mut stopped = word_sync();
     stopped.playback = PlaybackStatus::Stopped;

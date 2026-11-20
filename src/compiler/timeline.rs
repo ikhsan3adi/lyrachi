@@ -435,6 +435,13 @@ impl CompiledTimeline {
             return Some(idx);
         }
 
+        if let Some(next) = self.lines.get(idx + 1)
+            && next.role != LineRole::InstrumentalBreak
+            && next.start_ms.saturating_sub(line.end_ms) < self.context.min_gap_ms
+        {
+            return Some(idx);
+        }
+
         (effective_ms < line_hold_end_ms(line)).then_some(idx)
     }
 
@@ -454,8 +461,7 @@ impl CompiledTimeline {
 }
 
 fn line_hold_end_ms(line: &CompiledLine) -> u64 {
-    line.end_ms
-        .max(line.start_ms.saturating_add(MIN_LINE_HIGHLIGHT_MS))
+    line.end_ms.saturating_add(MIN_LINE_HIGHLIGHT_MS)
 }
 
 fn min_boundary(current: Option<u64>, candidate: Option<u64>, after: u64) -> Option<u64> {
@@ -590,7 +596,8 @@ mod tests {
         assert_eq!(held.active_line_idx, Some(1));
         assert_eq!(held.active_word_idx, None);
 
-        let after = timeline.evaluate(5_500);
+        assert_eq!(timeline.evaluate(6_499).active_line_idx, Some(1));
+        let after = timeline.evaluate(6_500);
         assert_eq!(after.active_line_idx, None);
     }
 
@@ -603,8 +610,8 @@ mod tests {
         assert_eq!(timeline.next_boundary_ms(2_500), Some(3_001));
         assert_eq!(timeline.next_boundary_ms(3_500), Some(4_000));
         assert_eq!(timeline.next_boundary_ms(4_500), Some(5_001));
-        assert_eq!(timeline.next_boundary_ms(5_001), Some(5_500));
-        assert_eq!(timeline.next_boundary_ms(5_500), None);
+        assert_eq!(timeline.next_boundary_ms(5_001), Some(6_500));
+        assert_eq!(timeline.next_boundary_ms(6_500), None);
     }
 
     #[test]
@@ -623,8 +630,10 @@ mod tests {
         let timeline = CompiledTimeline::compile(&intro_outro_track, context);
         // During intro waiting gap (effective_ms 2_000), next boundary is 5_000 (gap.end_ms / line start)
         assert_eq!(timeline.next_boundary_ms(2_000), Some(5_000));
-        // During outro waiting gap (effective_ms 7_000), next boundary is 10_000 (gap.end_ms)
-        assert_eq!(timeline.next_boundary_ms(7_000), Some(10_000));
+        // Outro holds the lyric until 7_500 before the waiting gap starts
+        assert_eq!(timeline.next_boundary_ms(7_000), Some(7_500));
+        // During outro waiting gap (effective_ms 7_600), next boundary is 10_000
+        assert_eq!(timeline.next_boundary_ms(7_600), Some(10_000));
         // Past track duration, no next boundary
         assert_eq!(timeline.next_boundary_ms(10_500), None);
     }
@@ -897,12 +906,12 @@ mod tests {
             inst_break.waiting,
             Some(WaitingGap {
                 start_ms: 10_000,
-                display_start_ms: 10_000,
+                display_start_ms: 11_500,
                 end_ms: 20_000,
                 kind: WaitKind::Instrumental,
             })
         );
-        assert!((inst_break.progress - 0.5).abs() < 0.0001);
+        assert!((inst_break.progress - 0.4118).abs() < 0.0001);
 
         // Silent inter-line gap without InstrumentalBreak: 22_000..27_000
         let inter_gap = timeline.evaluate_for_status(24_500, PlaybackStatus::Playing);
@@ -910,12 +919,12 @@ mod tests {
             inter_gap.waiting,
             Some(WaitingGap {
                 start_ms: 22_000,
-                display_start_ms: 22_000,
+                display_start_ms: 23_500,
                 end_ms: 27_000,
                 kind: WaitKind::Instrumental,
             })
         );
-        assert!((inter_gap.progress - 0.5).abs() < 0.0001);
+        assert!((inter_gap.progress - 0.2857).abs() < 0.0001);
 
         // Outro gap: 29_000..35_000
         let outro = timeline.evaluate_for_status(32_000, PlaybackStatus::Playing);
@@ -923,12 +932,12 @@ mod tests {
             outro.waiting,
             Some(WaitingGap {
                 start_ms: 29_000,
-                display_start_ms: 29_000,
+                display_start_ms: 30_500,
                 end_ms: 35_000,
                 kind: WaitKind::Outro,
             })
         );
-        assert!((outro.progress - 0.5).abs() < 0.0001);
+        assert!((outro.progress - 0.3333).abs() < 0.0001);
 
         // Stopped and Unsynced produce no waiting gap; Paused preserves frozen progress
         assert_eq!(
@@ -985,6 +994,85 @@ mod tests {
     }
 
     #[test]
+    fn holds_long_word_line_until_next_line_without_waiting_gap() {
+        let mut held_track = track();
+        held_track.lines = vec![
+            LyricLine {
+                start_ms: 1_000,
+                end_ms: 5_000,
+                role: LineRole::Primary,
+                text: "long line".to_string(),
+                words: vec![word("long ", 1_000, 3_000), word("line", 3_000, 5_000)],
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 6_000,
+                end_ms: 7_000,
+                role: LineRole::Primary,
+                text: "next".to_string(),
+                words: vec![word("next", 6_000, 7_000)],
+                annotations: Vec::new(),
+            },
+        ];
+        let timeline = CompiledTimeline::compile(&held_track, TimelineContext::new(40));
+
+        for effective_ms in [5_001, 5_500, 5_999] {
+            let cursor = timeline.evaluate(effective_ms);
+            assert_eq!(cursor.active_line_idx, Some(0), "at {effective_ms}");
+            assert_eq!(cursor.active_word_idx, None, "at {effective_ms}");
+            assert_eq!(cursor.waiting, None, "at {effective_ms}");
+        }
+        assert_eq!(timeline.next_boundary_ms(5_500), Some(6_000));
+        assert_eq!(timeline.evaluate(6_000).active_line_idx, Some(1));
+    }
+
+    #[test]
+    fn holds_long_line_before_waiting_gap_then_starts_countdown() {
+        let mut held_track = track();
+        held_track.lines = vec![
+            LyricLine {
+                start_ms: 1_000,
+                end_ms: 5_000,
+                role: LineRole::Primary,
+                text: "long line".to_string(),
+                words: vec![word("long ", 1_000, 3_000), word("line", 3_000, 5_000)],
+                annotations: Vec::new(),
+            },
+            LyricLine {
+                start_ms: 10_000,
+                end_ms: 11_000,
+                role: LineRole::Primary,
+                text: "next".to_string(),
+                words: vec![word("next", 10_000, 11_000)],
+                annotations: Vec::new(),
+            },
+        ];
+        let mut context = TimelineContext::new(40);
+        context.min_gap_ms = 4_000;
+        let timeline = CompiledTimeline::compile(&held_track, context);
+
+        for effective_ms in [5_001, 6_000, 6_499] {
+            let cursor = timeline.evaluate(effective_ms);
+            assert_eq!(cursor.active_line_idx, Some(0), "at {effective_ms}");
+            assert_eq!(cursor.waiting, None, "at {effective_ms}");
+        }
+        assert_eq!(timeline.next_boundary_ms(6_000), Some(6_500));
+
+        let waiting = timeline.evaluate(6_500);
+        assert_eq!(waiting.active_line_idx, None);
+        assert_eq!(
+            waiting.waiting,
+            Some(WaitingGap {
+                start_ms: 5_000,
+                display_start_ms: 6_500,
+                end_ms: 10_000,
+                kind: WaitKind::Instrumental,
+            })
+        );
+        assert_eq!(waiting.progress, 0.0);
+    }
+
+    #[test]
     fn holds_short_line_before_instrumental_gap_then_starts_countdown() {
         let mut held_track = track();
         held_track.lines = vec![
@@ -1009,24 +1097,24 @@ mod tests {
         context.min_gap_ms = 4_000;
         let timeline = CompiledTimeline::compile(&held_track, context);
 
-        let held = timeline.evaluate(2_499);
+        let held = timeline.evaluate(2_699);
         assert_eq!(held.active_line_idx, Some(0));
         assert_eq!(held.waiting, None);
-        assert_eq!(timeline.next_boundary_ms(1_300), Some(2_500));
+        assert_eq!(timeline.next_boundary_ms(1_300), Some(2_700));
 
-        let waiting = timeline.evaluate(2_500);
+        let waiting = timeline.evaluate(2_700);
         assert_eq!(waiting.active_line_idx, None);
         assert_eq!(
             waiting.waiting,
             Some(WaitingGap {
                 start_ms: 1_200,
-                display_start_ms: 2_500,
+                display_start_ms: 2_700,
                 end_ms: 6_000,
                 kind: WaitKind::Instrumental,
             })
         );
         assert_eq!(waiting.progress, 0.0);
-        assert!((timeline.evaluate(4_250).progress - 0.5).abs() < 0.0001);
+        assert!((timeline.evaluate(4_350).progress - 0.5).abs() < 0.0001);
     }
 
     #[test]
@@ -1062,18 +1150,18 @@ mod tests {
         context.min_gap_ms = 4_000;
         let timeline = CompiledTimeline::compile(&held_track, context);
 
-        let held = timeline.evaluate(2_499);
+        let held = timeline.evaluate(2_699);
         assert_eq!(held.active_line_idx, Some(0));
         assert_eq!(held.waiting, None);
-        assert_eq!(timeline.next_boundary_ms(2_000), Some(2_500));
+        assert_eq!(timeline.next_boundary_ms(2_000), Some(2_700));
 
-        let waiting = timeline.evaluate(2_500);
+        let waiting = timeline.evaluate(2_700);
         assert_eq!(waiting.active_line_idx, Some(1));
         assert_eq!(
             waiting.waiting,
             Some(WaitingGap {
                 start_ms: 1_200,
-                display_start_ms: 2_500,
+                display_start_ms: 2_700,
                 end_ms: 6_000,
                 kind: WaitKind::Instrumental,
             })

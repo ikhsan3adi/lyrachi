@@ -935,6 +935,7 @@ fn block_styles(
 
     BlockStyles {
         active,
+        held: style.line_style(compiled.role, 0, true),
         sung: word_state_style(style, compiled.role, WordState::Sung),
         unsung: word_state_style(style, compiled.role, WordState::Unsung),
         inactive: style.line_style(compiled.role, distance, false),
@@ -1115,6 +1116,54 @@ fn push_compiled_line(
     }
 }
 
+fn held_line_spans(
+    compiled: &CompiledLine,
+    subline: &WrappedSubLine,
+    stage: StageRender<'_>,
+) -> Vec<Span<'static>> {
+    let word_held = stage.word_highlight && !compiled.words.is_empty();
+    let held_style = if word_held {
+        word_state_style(stage.style, compiled.role, WordState::Sung)
+    } else {
+        stage.style.line_style(compiled.role, 0, true)
+    };
+    if !word_held {
+        return vec![Span::styled(subline.text.clone(), held_style)];
+    }
+
+    let last_word_idx = compiled.words.len() - 1;
+    let active_style = word_state_style(stage.style, compiled.role, WordState::Active);
+    let (sub_start, sub_end) = subline.source_byte_range;
+    let mut spans = Vec::new();
+    let mut cursor = sub_start;
+
+    for (index, word) in compiled.words.iter().enumerate() {
+        let word_start = word.byte_range.0.max(sub_start).max(cursor);
+        let word_end = word.byte_range.1.min(sub_end);
+        if word_end <= word_start {
+            continue;
+        }
+        if cursor < word_start {
+            push_span(&mut spans, subline, cursor, word_start, held_style);
+        }
+        let style = if index == last_word_idx {
+            active_style
+        } else {
+            held_style
+        };
+        push_span(&mut spans, subline, word_start, word_end, style);
+        cursor = word_end;
+    }
+
+    if cursor < sub_end {
+        push_span(&mut spans, subline, cursor, sub_end, held_style);
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(subline.text.clone(), held_style));
+    }
+    spans
+}
+
 fn spans_for_subline(
     compiled: &CompiledLine,
     subline: &WrappedSubLine,
@@ -1138,10 +1187,7 @@ fn spans_for_subline(
         )];
     }
     if stage.effective_ms > compiled.end_ms {
-        return vec![Span::styled(
-            subline.text.clone(),
-            active_line_style(stage.style, compiled.role),
-        )];
+        return held_line_spans(compiled, subline, stage);
     }
     if !stage.word_highlight {
         return vec![Span::styled(
@@ -1681,14 +1727,19 @@ mod tests {
     }
 
     #[test]
-    fn active_highlight_survives_line_hold() {
+    fn held_line_uses_sung_color_after_line_end() {
         let mut profile = StyleProfile::builtin("builtin:dark", 80).unwrap();
         profile.highlight.mode = HighlightMode::Word;
         let resolved = profile.resolve("dark", ColorCapability::TrueColor, None);
-        let active_fg = resolved
+        let word_active_fg = resolved
             .word_style(LineRole::Primary, true, false)
             .fg
             .unwrap();
+        let held_fg = resolved
+            .word_style(LineRole::Primary, false, true)
+            .fg
+            .unwrap();
+        assert_ne!(word_active_fg, held_fg);
 
         let mut state = UiState::new();
         state.playback = PlaybackStatus::Playing;
@@ -1706,13 +1757,21 @@ mod tests {
                 LyricLine {
                     start_ms: 1_000,
                     end_ms: 2_000,
-                    text: "Held line".to_string(),
-                    words: vec![WordToken {
-                        display_width: 9,
-                        start_ms: 1_000,
-                        end_ms: 1_500,
-                        byte_range: (0, 9),
-                    }],
+                    text: "Held last".to_string(),
+                    words: vec![
+                        WordToken {
+                            display_width: 5,
+                            start_ms: 1_000,
+                            end_ms: 1_500,
+                            byte_range: (0, 5),
+                        },
+                        WordToken {
+                            display_width: 4,
+                            start_ms: 1_500,
+                            end_ms: 2_000,
+                            byte_range: (5, 9),
+                        },
+                    ],
                     annotations: Vec::new(),
                     role: LineRole::Primary,
                 },
@@ -1727,9 +1786,21 @@ mod tests {
             ],
         });
 
+        let buf = render_buffer(&state, 1_200, 80, 14);
+        let (x, y) = position_of(&buf, "Held last");
+        assert_eq!(buf[(x, y)].fg, word_active_fg);
+
         let buf = render_buffer(&state, 2_400, 80, 14);
-        let (x, y) = position_of(&buf, "Held line");
-        assert_eq!(buf[(x, y)].fg, active_fg);
+        let (x, y) = position_of(&buf, "Held last");
+        assert_eq!(buf[(x, y)].fg, held_fg);
+        let (x, y) = position_of(&buf, "last");
+        assert_eq!(buf[(x, y)].fg, word_active_fg);
+
+        let buf = render_buffer(&state, 3_900, 80, 14);
+        let (x, y) = position_of(&buf, "Held last");
+        assert_eq!(buf[(x, y)].fg, held_fg);
+        let (x, y) = position_of(&buf, "last");
+        assert_eq!(buf[(x, y)].fg, word_active_fg);
     }
 
     #[test]

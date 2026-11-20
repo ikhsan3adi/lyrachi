@@ -13,6 +13,7 @@ use super::BlockLayout;
 #[derive(Debug, Clone, Copy, PartialEq)]
 enum BlockCellState {
     Active,
+    Held,
     Sung,
     Unsung,
     Inactive,
@@ -22,6 +23,7 @@ enum BlockCellState {
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct BlockStyles {
     pub active: Style,
+    pub held: Style,
     pub sung: Style,
     pub unsung: Style,
     pub inactive: Style,
@@ -124,6 +126,7 @@ impl BlockCellState {
     fn style(self, styles: BlockStyles, style: &ResolvedStyle, role: LineRole) -> Style {
         match self {
             Self::Active => styles.active,
+            Self::Held => styles.held,
             Self::Sung => styles.sung,
             Self::Unsung => styles.unsung,
             Self::Inactive => styles.inactive,
@@ -154,7 +157,32 @@ fn cell_states(layout: &BlockLayout, context: BlockRenderContext<'_>) -> Vec<Vec
         return states;
     }
 
-    if holding || !word_highlight || words.is_empty() {
+    if holding {
+        let held_state = if word_highlight && !words.is_empty() {
+            BlockCellState::Sung
+        } else {
+            BlockCellState::Held
+        };
+        for line_states in &mut states {
+            line_states.fill(held_state);
+        }
+        if word_highlight && !words.is_empty() {
+            let last_word_idx = words.len() - 1;
+            let mut word_idx = 0usize;
+            for (visual, line_states) in layout.lines.iter().zip(states.iter_mut()) {
+                for (cell, state) in visual.cells.iter().zip(line_states.iter_mut()) {
+                    if token_index(words, &mut word_idx, cell.source_byte_range)
+                        == Some(last_word_idx)
+                    {
+                        *state = BlockCellState::Active;
+                    }
+                }
+            }
+        }
+        return states;
+    }
+
+    if !word_highlight || words.is_empty() {
         for line_states in &mut states {
             line_states.fill(BlockCellState::Active);
         }
@@ -276,6 +304,7 @@ mod tests {
     fn styles() -> BlockStyles {
         BlockStyles {
             active: Style::default().fg(Color::Red),
+            held: Style::default().fg(Color::Magenta),
             sung: Style::default().fg(Color::Green),
             unsung: Style::default().fg(Color::Blue),
             inactive: Style::default().fg(Color::Gray),
@@ -375,7 +404,7 @@ mod tests {
     }
 
     #[test]
-    fn holding_keeps_active_style_after_line_end() {
+    fn holding_uses_sung_style_after_line_end() {
         let layout = layout_text("Hello", 4, 20, 1);
         let lines = render_lines(
             &layout,
@@ -399,8 +428,9 @@ mod tests {
             },
         );
 
-        assert_eq!(text_with_style(&lines, styles().active), "Hello");
-        assert!(text_with_style(&lines, styles().sung).is_empty());
+        assert_eq!(text_with_style(&lines, styles().sung), "Hel");
+        assert_eq!(text_with_style(&lines, styles().active), "lo");
+        assert!(text_with_style(&lines, styles().held).is_empty());
         assert!(text_with_style(&lines, styles().unsung).is_empty());
     }
 
