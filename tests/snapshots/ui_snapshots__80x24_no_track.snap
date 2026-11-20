@@ -25,4 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-playing · normal · - · +300 ms
+playing · normal · - · -300 ms

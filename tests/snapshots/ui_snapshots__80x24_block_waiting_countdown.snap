@@ -9,13 +9,15 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-
                               And everything you do
                            Dan semua yang kau lakukan
+
+
                                 ███    ███    ░░░
                                █████  █████  ░   ░
                                 ███    ███    ░░░
+
+
                            Yeah, they were all yellow
 
 
@@ -23,6 +25,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-
-playing · block · lrclib · +300 ms
+playing · block · lrclib · -300 ms

@@ -283,7 +283,7 @@ fn current_frame(
             }
             if track.is_instrumental {
                 return Some(PipeFrame {
-                    text: fit_text("[Instrumental]", max_width),
+                    text: fit_text(&state.style.instrumental_marker.to_string(), max_width),
                     alt,
                     class: "instrumental".to_string(),
                     progress: 0.0,
@@ -441,6 +441,19 @@ mod tests {
         let frame = current_frame(&state, &PlaybackClock::new(), Instant::now(), Some(5)).unwrap();
 
         assert_eq!(frame.text, "世界a");
+    }
+
+    #[test]
+    fn instrumental_placeholder_uses_style_marker() {
+        let mut state = UiState::new();
+        let mut track = track();
+        track.is_instrumental = true;
+        state.set_lyrics(track);
+        state.style.instrumental_marker = '♪';
+
+        let frame = current_frame(&state, &PlaybackClock::new(), Instant::now(), None).unwrap();
+
+        assert_eq!(frame.text, "♪");
     }
 
     #[tokio::test]

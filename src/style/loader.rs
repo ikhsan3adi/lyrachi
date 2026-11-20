@@ -905,6 +905,46 @@ max_chars_per_phrase = 24
     }
 
     #[test]
+    fn loads_instrumental_marker_and_warns_on_invisible_fallback() {
+        let dir = temp_styles_dir("instrumental-marker");
+        fs::write(
+            dir.join("marker.toml"),
+            r#"
+[instrumental]
+marker = "♪"
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("marker", Some(&dir), 80).unwrap();
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(outcome.profile.instrumental.marker, '♪');
+
+        fs::write(
+            dir.join("marker.toml"),
+            r#"
+[instrumental]
+marker = " "
+"#,
+        )
+        .unwrap();
+
+        let outcome = load_style("marker", Some(&dir), 80).unwrap();
+        assert_eq!(
+            outcome.profile.instrumental.marker,
+            super::super::DEFAULT_INSTRUMENTAL_MARKER
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("instrumental.marker"))
+        );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn all_builtin_presets_load_without_warnings() {
         for name in super::super::BUILTIN_PRESETS {
             let outcome = load_style(name, None, 80).unwrap();

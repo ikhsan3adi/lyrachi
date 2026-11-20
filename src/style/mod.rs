@@ -18,6 +18,7 @@ use self::color::{
 };
 
 pub const DEFAULT_STYLE_NAME: &str = "builtin:default";
+pub const DEFAULT_INSTRUMENTAL_MARKER: char = '♫';
 pub const BUILTIN_PRESETS: &[&str] = &[
     "builtin:default",
     "builtin:dark",
@@ -120,6 +121,7 @@ active_fg = "$accent"
 
 [instrumental]
 style = "dots"
+marker = "♫"
 min_gap_ms = 4000
 
 [annotations]
@@ -194,6 +196,7 @@ unsung_fg = "$unsung"
 
 [instrumental]
 style = "dots"
+marker = "♫"
 min_gap_ms = 4000
 
 [annotations]
@@ -269,6 +272,7 @@ unsung_fg = "$unsung"
 
 [instrumental]
 style = "dots"
+marker = "♫"
 min_gap_ms = 4000
 
 [annotations]
@@ -330,6 +334,7 @@ active_fg = "$accent"
 
 [instrumental]
 style = "dots"
+marker = "♫"
 min_gap_ms = 4000
 
 [annotations]
@@ -440,6 +445,12 @@ impl StyleProfile {
                 self.lines.fade.falloff = clamped;
             }
         }
+        if self.instrumental.marker.is_control() || self.instrumental.marker.is_whitespace() {
+            warnings.push(format!(
+                "style: instrumental.marker must be a visible character; using '{DEFAULT_INSTRUMENTAL_MARKER}'"
+            ));
+            self.instrumental.marker = DEFAULT_INSTRUMENTAL_MARKER;
+        }
         self.instrumental.min_gap_ms = clamp_u64(
             self.instrumental.min_gap_ms,
             0,
@@ -541,6 +552,7 @@ impl StyleProfile {
             backing: self.palette.backing.resolve(capability),
             backing_active: self.palette.backing_active.resolve(capability),
             instrumental_style: self.instrumental.style,
+            instrumental_marker: self.instrumental.marker,
             instrumental_min_gap_ms: self.instrumental.min_gap_ms,
             annotations_show: self.annotations.show,
             annotations_position: self.annotations.position,
@@ -948,6 +960,7 @@ pub enum InstrumentalStyle {
 #[serde(default)]
 pub struct StyleInstrumental {
     pub style: InstrumentalStyle,
+    pub marker: char,
     pub min_gap_ms: u64,
 }
 
@@ -955,6 +968,7 @@ impl Default for StyleInstrumental {
     fn default() -> Self {
         Self {
             style: InstrumentalStyle::Dots,
+            marker: DEFAULT_INSTRUMENTAL_MARKER,
             min_gap_ms: 4_000,
         }
     }
@@ -1084,6 +1098,7 @@ pub struct ResolvedStyle {
     pub backing: Option<Color>,
     pub backing_active: Option<Color>,
     pub instrumental_style: InstrumentalStyle,
+    pub instrumental_marker: char,
     pub instrumental_min_gap_ms: u64,
     pub annotations_show: bool,
     pub annotations_position: AnnotationPosition,
@@ -1394,6 +1409,24 @@ mod tests {
         );
         assert!(json["properties"]["palette"].is_object());
         assert!(json["properties"]["layout"].is_object());
+    }
+
+    #[test]
+    fn instrumental_marker_defaults_and_rejects_invisible_chars() {
+        let profile = StyleProfile::default();
+        assert_eq!(profile.instrumental.marker, DEFAULT_INSTRUMENTAL_MARKER);
+
+        let mut profile = StyleProfile::default();
+        profile.instrumental.marker = ' ';
+        let mut warnings = Vec::new();
+        profile.clamp(&mut warnings);
+
+        assert_eq!(profile.instrumental.marker, DEFAULT_INSTRUMENTAL_MARKER);
+        assert!(
+            warnings
+                .iter()
+                .any(|warning| warning.contains("instrumental.marker"))
+        );
     }
 
     #[test]

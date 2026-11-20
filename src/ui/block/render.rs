@@ -33,6 +33,7 @@ pub(crate) struct BlockRenderContext<'a> {
     pub cursor: ActiveStageCursor,
     pub effective_ms: u64,
     pub active: bool,
+    pub holding: bool,
     pub word_highlight: bool,
     pub wipe: bool,
     pub role: LineRole,
@@ -137,6 +138,7 @@ fn cell_states(layout: &BlockLayout, context: BlockRenderContext<'_>) -> Vec<Vec
         cursor,
         effective_ms,
         active,
+        holding,
         word_highlight,
         wipe,
         style,
@@ -152,7 +154,7 @@ fn cell_states(layout: &BlockLayout, context: BlockRenderContext<'_>) -> Vec<Vec
         return states;
     }
 
-    if !word_highlight || words.is_empty() {
+    if holding || !word_highlight || words.is_empty() {
         for line_states in &mut states {
             line_states.fill(BlockCellState::Active);
         }
@@ -327,6 +329,7 @@ mod tests {
                 },
                 effective_ms: 1_600,
                 active: true,
+                holding: false,
                 word_highlight: true,
                 wipe: false,
                 role: LineRole::Primary,
@@ -356,7 +359,38 @@ mod tests {
                 },
                 effective_ms: 1_600,
                 active: true,
+                holding: false,
                 word_highlight: false,
+                wipe: false,
+                role: LineRole::Primary,
+                style: &ResolvedStyle::default(),
+                styles: styles(),
+                alignment: Alignment::Left,
+            },
+        );
+
+        assert_eq!(text_with_style(&lines, styles().active), "Hello");
+        assert!(text_with_style(&lines, styles().sung).is_empty());
+        assert!(text_with_style(&lines, styles().unsung).is_empty());
+    }
+
+    #[test]
+    fn holding_keeps_active_style_after_line_end() {
+        let layout = layout_text("Hello", 4, 20, 1);
+        let lines = render_lines(
+            &layout,
+            BlockRenderContext {
+                words: &syllables(),
+                cursor: ActiveStageCursor {
+                    active_line_idx: Some(0),
+                    active_word_idx: None,
+                    progress: 0.0,
+                    waiting: None,
+                },
+                effective_ms: 2_000,
+                active: true,
+                holding: true,
+                word_highlight: true,
                 wipe: false,
                 role: LineRole::Primary,
                 style: &ResolvedStyle::default(),
@@ -385,6 +419,7 @@ mod tests {
                 },
                 effective_ms: 1_200,
                 active: false,
+                holding: false,
                 word_highlight: true,
                 wipe: false,
                 role: LineRole::Primary,
@@ -445,6 +480,7 @@ mod tests {
                 },
                 effective_ms: 1_750,
                 active: true,
+                holding: false,
                 word_highlight: true,
                 wipe: false,
                 role: LineRole::Primary,
@@ -472,6 +508,7 @@ mod tests {
                 },
                 effective_ms: 1_750,
                 active: true,
+                holding: false,
                 word_highlight: true,
                 wipe: false,
                 role: LineRole::Primary,

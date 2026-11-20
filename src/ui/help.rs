@@ -7,13 +7,15 @@ use ratatui::{
 };
 
 use crate::app::keys::global_help_rows;
+use crate::style::ResolvedStyle;
 
-const MAX_MODAL_WIDTH: u16 = 56;
+const MIN_MODAL_WIDTH: u16 = 56;
+const MAX_MODAL_WIDTH: u16 = 80;
 const MIN_KEY_COLUMN_WIDTH: usize = 10;
 pub const MIN_AREA_WIDTH: u16 = 20;
 pub const MIN_AREA_HEIGHT: u16 = 8;
 
-pub fn render(frame: &mut Frame, area: Rect) {
+pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
     if available_width < MIN_AREA_WIDTH - 2 || available_height < MIN_AREA_HEIGHT - 2 {
@@ -27,17 +29,8 @@ pub fn render(frame: &mut Frame, area: Rect) {
         .max()
         .unwrap_or(0)
         .max(MIN_KEY_COLUMN_WIDTH);
-    let content_width = rows
-        .iter()
-        .map(|(_, desc)| key_width + 2 + desc.len())
-        .max()
-        .unwrap_or(24);
 
-    // Borders (2) + horizontal padding (2)
-    let desired_width = u16::try_from(content_width + 4)
-        .unwrap_or(MAX_MODAL_WIDTH)
-        .min(MAX_MODAL_WIDTH);
-    let width = desired_width.min(available_width);
+    let width = modal_width(area.width).min(available_width);
 
     // Borders (2) + vertical padding (2)
     let desired_height = u16::try_from(rows.len() + 4).unwrap_or(u16::MAX);
@@ -46,15 +39,20 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let popup = centered_rect(area, width, height);
     frame.render_widget(Clear, popup);
 
+    let accent = style.accent.unwrap_or(Color::Cyan);
+    let content_style = if let Some(surface) = style.surface {
+        Style::default().bg(surface)
+    } else {
+        Style::default()
+    };
+
     let lines: Vec<Line<'static>> = rows
         .into_iter()
         .map(|(keys, description)| {
             Line::from(vec![
                 Span::styled(
                     format!("{keys:<key_width$}"),
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD),
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
                 Span::raw(description),
@@ -65,11 +63,11 @@ pub fn render(frame: &mut Frame, area: Rect) {
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(Color::Cyan))
-        .padding(Padding::symmetric(1, 1))
+        .border_style(Style::default().fg(accent))
+        .padding(Padding::symmetric(2, 1))
         .title(Line::from(Span::styled(
             " Keybindings ",
-            Style::default().add_modifier(Modifier::BOLD),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
         )))
         .title_bottom(
             Line::from(Span::styled(
@@ -81,10 +79,19 @@ pub fn render(frame: &mut Frame, area: Rect) {
 
     frame.render_widget(
         Paragraph::new(lines)
+            .style(content_style)
             .block(block)
             .wrap(Wrap { trim: false }),
         popup,
     );
+}
+
+fn modal_width(area_width: u16) -> u16 {
+    let available = area_width.saturating_sub(2);
+    let preferred = area_width.saturating_mul(3) / 4;
+    preferred
+        .clamp(MIN_MODAL_WIDTH, MAX_MODAL_WIDTH)
+        .min(available)
 }
 
 pub(crate) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
@@ -107,6 +114,7 @@ mod tests {
     use super::*;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
+    use ratatui::style::Color;
 
     #[test]
     fn centered_rect_clamps_within_bounds() {
@@ -125,12 +133,42 @@ mod tests {
     }
 
     #[test]
+    fn help_uses_profile_surface_and_accent() {
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let surface = Color::Rgb(10, 20, 30);
+        let accent = Color::Rgb(0, 200, 200);
+        let style = ResolvedStyle {
+            surface: Some(surface),
+            accent: Some(accent),
+            ..ResolvedStyle::default()
+        };
+
+        terminal
+            .draw(|frame| render(frame, frame.area(), &style))
+            .unwrap();
+
+        let buffer = terminal.backend().buffer();
+        let mut saw_surface = false;
+        let mut saw_accent = false;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let cell = buffer.cell((x, y)).unwrap();
+                saw_surface |= cell.bg == surface;
+                saw_accent |= cell.fg == accent;
+            }
+        }
+        assert!(saw_surface);
+        assert!(saw_accent);
+    }
+
+    #[test]
     fn render_skips_tiny_areas_without_panic() {
         let backend = TestBackend::new(10, 5);
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render(frame, frame.area());
+                render(frame, frame.area(), &ResolvedStyle::default());
             })
             .unwrap();
 

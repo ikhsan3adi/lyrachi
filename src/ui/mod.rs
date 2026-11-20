@@ -441,6 +441,7 @@ impl UiState {
         self.timeline_context.max_width = style.resolved_max_width(self.viewport_width);
         self.timeline_context.synthetic_word_timing = style.synthetic_word_timing;
         self.timeline_context.phrase_max_chars = style.big_text_max_chars_per_phrase;
+        self.timeline_context.instrumental_marker = style.instrumental_marker;
         self.timeline_context.min_gap_ms = style.instrumental_min_gap_ms;
         self.style = style;
         self.recompile_if_context_changed();
@@ -822,6 +823,7 @@ impl UiState {
         self.timeline_context.viewport_width = self.viewport_width;
         self.timeline_context.synthetic_word_timing = self.style.synthetic_word_timing;
         self.timeline_context.phrase_max_chars = self.style.big_text_max_chars_per_phrase;
+        self.timeline_context.instrumental_marker = self.style.instrumental_marker;
         self.timeline_context.track_duration_ms =
             self.track.as_ref().and_then(|track| track.duration_ms);
     }

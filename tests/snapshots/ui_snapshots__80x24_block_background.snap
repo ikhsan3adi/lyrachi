@@ -8,12 +8,10 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-                                       ██  ██        ▀██  ▀██
-                                       ▀█▄▄█▀ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄ ██ ▄ ██
-                                         ██   ██▀▀▀▀  ██   ██  ██  ██ ███████
-                                        ▀▀▀▀   ▀▀▀▀  ▀▀▀▀ ▀▀▀▀  ▀▀▀▀   ▀▀ ▀▀
+                                                                        Yellow
                                                                         Kuning
+
+
       ▄█▀█▄         ▀██                           ▀██  ▀██
      ██   ██ ▄█▀▀█▄  ██▄▀█▄         ██  ██ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄ ██ ▄ ██
      ▀█▄ ▄█▀ ██  ██  ██  ██  ▄▄     ▀█▄▄██ ██▀▀▀▀  ██   ██  ██  ██ ███████
@@ -25,4 +23,6 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-playing · block · lyricsplus · +300 ms
+
+
+playing · block · lyricsplus · -300 ms

@@ -15,13 +15,13 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-
                                                                                ██  ██        ▀██  ▀██
                                                                                ▀█▄▄█▀ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄ ██ ▄ ██
                                                                                  ██   ██▀▀▀▀  ██   ██  ██  ██ ███████
                                                                                 ▀▀▀▀   ▀▀▀▀  ▀▀▀▀ ▀▀▀▀  ▀▀▀▀   ▀▀ ▀▀
                                                                                                                 Kuning
+
+
                           ▄█▀█▄         ▀██                           ▀██  ▀██
                          ██   ██ ▄█▀▀█▄  ██▄▀█▄         ██  ██ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄ ██ ▄ ██
                          ▀█▄ ▄█▀ ██  ██  ██  ██  ▄▄     ▀█▄▄██ ██▀▀▀▀  ██   ██  ██  ██ ███████
@@ -41,4 +41,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-playing limusic · block/default · lyricsplus/word 93% · word-hl on · +300 ms
+playing limusic · block/default · lyricsplus/word 93% · word-hl on · -300 ms

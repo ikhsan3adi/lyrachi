@@ -13,7 +13,7 @@ use crate::style::{
 };
 use crate::ui::DisplayMode;
 
-pub const DEFAULT_GLOBAL_OFFSET_MS: i64 = 300;
+pub const DEFAULT_GLOBAL_OFFSET_MS: i64 = -300;
 const MIN_OFFSET_MS: i64 = -30_000;
 const MAX_OFFSET_MS: i64 = 30_000;
 const MAX_LOOKAHEAD_MS: u64 = 5_000;
@@ -410,7 +410,7 @@ schema_version = 1
 
 [sync]
 # Manual lyric delay in milliseconds (positive values delay lyrics)
-global_offset_ms = 300
+global_offset_ms = -300
 # Lookahead in milliseconds (render transitions earlier)
 lookahead_ms = 0
 

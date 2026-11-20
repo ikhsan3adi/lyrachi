@@ -21,6 +21,7 @@ pub struct TimelineContext {
     pub max_width: Option<u16>,
     pub synthetic_word_timing: bool,
     pub phrase_max_chars: u16,
+    pub instrumental_marker: char,
     pub min_gap_ms: u64,
     pub track_duration_ms: Option<u64>,
 }
@@ -34,6 +35,7 @@ impl Default for TimelineContext {
             max_width: None,
             synthetic_word_timing: false,
             phrase_max_chars: DEFAULT_PHRASE_MAX_CHARS,
+            instrumental_marker: crate::style::DEFAULT_INSTRUMENTAL_MARKER,
             min_gap_ms: DEFAULT_MIN_GAP_MS,
             track_duration_ms: None,
         }
@@ -152,8 +154,13 @@ impl CompiledTimeline {
             .iter()
             .enumerate()
             .map(|(source_line_idx, line)| {
+                let display_text = if line.role == LineRole::InstrumentalBreak {
+                    context.instrumental_marker.to_string()
+                } else {
+                    line.text.clone()
+                };
                 let wrapped_main =
-                    wrap_text_with_ambiguous(&line.text, wrap_width, context.ambiguous_width)
+                    wrap_text_with_ambiguous(&display_text, wrap_width, context.ambiguous_width)
                         .into_iter()
                         .map(|wrapped| WrappedSubLine {
                             text: wrapped.text,
@@ -525,6 +532,27 @@ mod tests {
     }
 
     #[test]
+    fn instrumental_break_uses_context_marker_for_display_text() {
+        let mut track = track();
+        track.lines.push(LyricLine {
+            start_ms: 6_000,
+            end_ms: 8_000,
+            role: LineRole::InstrumentalBreak,
+            text: "[Instrumental]".to_string(),
+            words: Vec::new(),
+            annotations: Vec::new(),
+        });
+        let mut context = TimelineContext::new(40);
+        context.instrumental_marker = '♪';
+
+        let timeline = CompiledTimeline::compile(&track, context);
+
+        assert_eq!(timeline.lines[2].wrapped_main.len(), 1);
+        assert_eq!(timeline.lines[2].wrapped_main[0].text, "♪");
+        assert_eq!(track.lines[2].text, "[Instrumental]");
+    }
+
+    #[test]
     fn wraps_lines_and_annotations_within_viewport() {
         let timeline = CompiledTimeline::compile(&track(), TimelineContext::new(16));
 
@@ -768,6 +796,10 @@ mod tests {
             },
             TimelineContext {
                 phrase_max_chars: 20,
+                ..base
+            },
+            TimelineContext {
+                instrumental_marker: '♪',
                 ..base
             },
             TimelineContext {

@@ -995,7 +995,7 @@ fn waiting_countdown_respects_stopped_paused_and_ascii_fallback() {
     stopped.playback = PlaybackStatus::Stopped;
     let stopped_out = render_state(&mut stopped, 80, 24, 14_500);
     assert!(!stopped_out.contains("●"));
-    assert!(stopped_out.contains("[Instrumental]"));
+    assert!(stopped_out.contains("♫"));
 }
 
 #[test]

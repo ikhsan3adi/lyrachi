@@ -188,15 +188,15 @@ mod tests {
         let state = UiState::new();
         assert_eq!(
             status_bar_line(&state, 120).to_string(),
-            "stopped no player · normal/default · - · word-hl off · +300 ms"
+            "stopped no player · normal/default · - · word-hl off · -300 ms"
         );
         assert_eq!(
             status_bar_line(&state, 80).to_string(),
-            "stopped · normal · - · +300 ms"
+            "stopped · normal · - · -300 ms"
         );
         assert_eq!(
             status_bar_line(&state, 40).to_string(),
-            "stopped · - · +300 ms"
+            "stopped · - · -300 ms"
         );
     }
 
@@ -209,15 +209,15 @@ mod tests {
 
         assert_eq!(
             status_bar_line(&state, 120).to_string(),
-            "playing mpv · normal/default · lrclib/word 90% · word-hl on · +300 ms"
+            "playing mpv · normal/default · lrclib/word 90% · word-hl on · -300 ms"
         );
         assert_eq!(
             status_bar_line(&state, 80).to_string(),
-            "playing · normal · lrclib · +300 ms"
+            "playing · normal · lrclib · -300 ms"
         );
         assert_eq!(
             status_bar_line(&state, 40).to_string(),
-            "playing · lrclib · +300 ms"
+            "playing · lrclib · -300 ms"
         );
     }
 
@@ -230,7 +230,7 @@ mod tests {
         for width in [24, 32, 48, 79, 95] {
             let line = status_bar_line(&state, width).to_string();
             assert!(display_width(&line) <= width, "{width}: {line}");
-            assert!(line.ends_with("+300 ms"), "{width}: {line}");
+            assert!(line.ends_with("-300 ms"), "{width}: {line}");
         }
     }
 
@@ -240,7 +240,7 @@ mod tests {
         state.terminal_unicode = false;
         assert_eq!(
             status_bar_line(&state, 80).to_string(),
-            "stopped | normal | - | +300 ms"
+            "stopped | normal | - | -300 ms"
         );
     }
 
@@ -256,7 +256,7 @@ mod tests {
         assert!(wide.contains("not found"), "{wide}");
         assert!(wide.contains("offline"), "{wide}");
         assert!(wide.contains("invalid config: unknown key"), "{wide}");
-        assert!(wide.ends_with("+300 ms"), "{wide}");
+        assert!(wide.ends_with("-300 ms"), "{wide}");
     }
 
     #[test]

@@ -4,12 +4,12 @@ expression: "render_state(state, width, height, effective_ms)"
 ---
                                 Yellow  Coldplay
 
-                         ██  ██        ▀██  ▀██
-                         ██▄▄██ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄
-                         ██  ██ ██▀▀▀▀  ██   ██  ██  ██
-                         ▀▀  ▀▀  ▀▀▀▀  ▀▀▀▀ ▀▀▀▀  ▀▀▀▀
+
+                                      Hello
                                       Halo
                                       Herro
+
+
                                    ▄█▀▀█▄                                ▀██
                                    ▀██▄   ▄█▀▀█▄ ▄█▀▀█▄ ▄█▀▀█▄ ██▀▀█▄  ▄▄▄██
                                    ▄▄ ▀██ ██▀▀▀▀ ██  ▄▄ ██  ██ ██  ██ ██  ██
@@ -18,11 +18,11 @@ expression: "render_state(state, width, height, effective_ms)"
                                              ██  ██ ▄█▀▀█▄ ▀██  ▄█▀▀█▄ ▄█▀▀█▄
                                              ▀█▄▄█▀ ██  ██  ██  ██  ▄▄ ██▀▀▀▀
                                                ▀▀    ▀▀▀▀  ▀▀▀▀  ▀▀▀▀   ▀▀▀▀
-                          ██▄ ▄██          ▀▀
-                          ███████  ▀▀▀█▄  ▀██  ██▀▀█▄
-                          ██ ▀ ██ ▄█▀▀██   ██  ██  ██
-                          ▀▀   ▀▀  ▀▀▀ ▀▀ ▀▀▀▀ ▀▀  ▀▀
+
+
+                                      Main
                                    background
+                                      Echo
 
 
-playing · block · ttml-fixture · +300 ms
+playing · block · ttml-fixture · -300 ms

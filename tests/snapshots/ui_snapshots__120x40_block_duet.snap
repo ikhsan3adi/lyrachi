@@ -10,18 +10,20 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-
                                              ██  ██        ▀██  ▀██
                                              ██▄▄██ ▄█▀▀█▄  ██   ██  ▄█▀▀█▄
                                              ██  ██ ██▀▀▀▀  ██   ██  ██  ██
                                              ▀▀  ▀▀  ▀▀▀▀  ▀▀▀▀ ▀▀▀▀  ▀▀▀▀
                                                           Halo
                                                           Herro
+
+
                                       ▄█▀▀█▄                                ▀██                     ▀▀
                                       ▀██▄   ▄█▀▀█▄ ▄█▀▀█▄ ▄█▀▀█▄ ██▀▀█▄  ▄▄▄██      ██  ██ ▄█▀▀█▄ ▀██  ▄█▀▀█▄ ▄█▀▀█▄
                                       ▄▄ ▀██ ██▀▀▀▀ ██  ▄▄ ██  ██ ██  ██ ██  ██      ▀█▄▄█▀ ██  ██  ██  ██  ▄▄ ██▀▀▀▀
                                        ▀▀▀▀   ▀▀▀▀   ▀▀▀▀   ▀▀▀▀  ▀▀  ▀▀  ▀▀▀ ▀▀       ▀▀    ▀▀▀▀  ▀▀▀▀  ▀▀▀▀   ▀▀▀▀
+
+
                                               ██▄ ▄██          ▀▀
                                               ███████  ▀▀▀█▄  ▀██  ██▀▀█▄
                                               ██ ▀ ██ ▄█▀▀██   ██  ██  ██
@@ -39,6 +41,4 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
-
-playing limusic · block/default · ttml-fixture/syllable 100% · word-hl on · +300 ms
+playing limusic · block/default · ttml-fixture/syllable 100% · word-hl on · -300 ms

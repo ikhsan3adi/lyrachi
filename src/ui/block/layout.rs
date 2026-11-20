@@ -588,6 +588,16 @@ mod tests {
     }
 
     #[test]
+    fn music_markers_lay_out_as_block() {
+        for marker in ['♪', '♫'] {
+            let layout = BlockLayout::new(&marker.to_string(), 20, 4, 1);
+            assert_eq!(layout.font_size, BlockFontSize::Block);
+            assert_eq!(layout.height, 4);
+            assert!(layout.unsupported_clusters == 0);
+        }
+    }
+
+    #[test]
     fn non_latin_and_emoji_layouts_stay_valid_at_supported_widths() {
         let text = "مرحبا สวัสดี 你好 👩🏽‍💻";
         for width in [20, 45, 80, 120] {
