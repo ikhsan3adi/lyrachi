@@ -13,12 +13,14 @@ use crate::compiler::timeline::{
     ActiveStageCursor, CompiledLine, CompiledTimeline, WaitKind, WaitingGap, WrappedSubLine,
 };
 use crate::core::model::{LineRole, SyncedTrack, WordToken};
-use crate::style::{AnnotationPosition, HighlightMode, InstrumentalStyle, ResolvedStyle};
+use crate::style::{
+    AnnotationPosition, BigTextMaxSize, HighlightMode, InstrumentalStyle, ResolvedStyle,
+};
 
 use super::{
     LyricsView, RibbonPlacement, UiModal, UiState,
     block::{
-        BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockStageCache,
+        BLOCK_WINDOW_AFTER, BLOCK_WINDOW_BEFORE, BlockFontSize, BlockStageCache,
         render::{
             BlockRenderContext, BlockStyles, render_lines as render_block_lines,
             render_phrase_lines,
@@ -29,7 +31,7 @@ use super::{
     status::footer_line,
 };
 
-const BLOCK_CONTEXT_MAX_ROWS: u16 = 2;
+const BLOCK_CONTEXT_MAX_ROWS: u16 = 4;
 const BLOCK_VOICE_PLAIN_MIN_WIDTH: u16 = 40;
 const BLOCK_COUNTDOWN_ROWS: usize = 3;
 
@@ -442,6 +444,7 @@ struct BlockLineMeta {
     focus: bool,
     countdown_slot: bool,
     max_height: u16,
+    layout_max_size: BigTextMaxSize,
     rows: usize,
 }
 
@@ -486,7 +489,46 @@ fn render_block_synced(
         .min(timeline.lines.len());
     let has_break_slot = has_waiting_break_slot(&timeline.lines[start..end], cursor.waiting);
     let mut metas = Vec::new();
+    let mut context_needs_plain = false;
+
+    for (index, compiled) in timeline.lines.iter().enumerate().take(end).skip(start) {
+        let countdown_slot = cursor
+            .waiting
+            .is_some_and(|waiting| compiled_is_waiting_break(compiled, waiting));
+        let active = cursor.active_line_idx == Some(index);
+        let focus = index == anchor && cursor.waiting.is_none();
+        let annotation_rows = if state.style.annotations_show {
+            compiled.wrapped_annotations.len()
+        } else {
+            0
+        };
+        let max_height = block_line_height(area, compiled.role, focus, annotation_rows);
+        let is_context = !countdown_slot && !active && !focus;
+        if is_context {
+            let layout = cache.layout_for_with_options(
+                index,
+                block_source_text(track, compiled),
+                wrap_width,
+                max_height,
+                timeline.context.ambiguous_width,
+                state.style.big_text_max_size,
+                state.style.big_text_overflow,
+            );
+            context_needs_plain |= layout.font_size == BlockFontSize::Plain;
+        }
+        metas.push(BlockLineMeta {
+            index,
+            active,
+            focus,
+            countdown_slot,
+            max_height,
+            layout_max_size: state.style.big_text_max_size,
+            rows: 0,
+        });
+    }
+
     let mut total_rows = if let Some(waiting) = cursor.waiting
+        && waiting.kind == WaitKind::Intro
         && !has_break_slot
     {
         waiting_countdown_lines(
@@ -501,42 +543,31 @@ fn render_block_synced(
         0
     };
 
-    for (index, compiled) in timeline.lines.iter().enumerate().take(end).skip(start) {
-        let countdown_slot = cursor
-            .waiting
-            .is_some_and(|waiting| compiled_is_waiting_break(compiled, waiting));
-        let active = cursor.active_line_idx == Some(index);
-        let focus = index == anchor && cursor.waiting.is_none();
-        let annotation_rows = if state.style.annotations_show {
-            compiled.wrapped_annotations.len()
-        } else {
-            0
-        };
-        let max_height = block_line_height(area, compiled.role, focus, annotation_rows);
-        let rows = if countdown_slot {
+    for meta in &mut metas {
+        if context_needs_plain && !meta.active && !meta.focus && !meta.countdown_slot {
+            meta.layout_max_size = BigTextMaxSize::Plain;
+        }
+        meta.rows = if meta.countdown_slot {
             usize::from(state.instrumental_countdown_enabled()) * BLOCK_COUNTDOWN_ROWS
         } else {
-            let text = block_source_text(track, compiled);
+            let compiled = &timeline.lines[meta.index];
+            let annotation_rows = if state.style.annotations_show {
+                compiled.wrapped_annotations.len()
+            } else {
+                0
+            };
             let layout = cache.layout_for_with_options(
-                index,
-                text,
+                meta.index,
+                block_source_text(track, compiled),
                 wrap_width,
-                max_height,
+                meta.max_height,
                 timeline.context.ambiguous_width,
-                state.style.big_text_max_size,
+                meta.layout_max_size,
                 state.style.big_text_overflow,
             );
             usize::from(layout.height).saturating_add(annotation_rows)
         };
-        total_rows = total_rows.saturating_add(rows);
-        metas.push(BlockLineMeta {
-            index,
-            active,
-            focus,
-            countdown_slot,
-            max_height,
-            rows,
-        });
+        total_rows = total_rows.saturating_add(meta.rows);
     }
 
     while total_rows > usize::from(area.height) && metas.len() > 1 {
@@ -604,7 +635,7 @@ fn render_block_synced(
             wrap_width,
             meta.max_height,
             timeline.context.ambiguous_width,
-            style.big_text_max_size,
+            meta.layout_max_size,
             style.big_text_overflow,
         );
         let distance = meta.index.abs_diff(anchor);

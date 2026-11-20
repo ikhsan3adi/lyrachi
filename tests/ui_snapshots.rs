@@ -690,6 +690,38 @@ fn block_mode_word_highlight_off_styles_the_whole_active_line() {
 }
 
 #[test]
+fn block_context_uses_one_font_when_one_line_falls_back() {
+    let mut state = base_state();
+    state.display_mode = DisplayMode::Block;
+    state.set_lyrics(SyncedTrack {
+        source_provider: "test".to_string(),
+        source_track_id: None,
+        parser_version: 2,
+        is_instrumental: false,
+        granularity: SyncGranularity::Line,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 1.0,
+        lines: vec![
+            line(0, 1_000, "Before context", Vec::new(), Vec::new()),
+            line(1_000, 3_000, "Active line", Vec::new(), Vec::new()),
+            line(3_000, 5_000, "你好世界", Vec::new(), Vec::new()),
+        ],
+    });
+
+    let buffer = render_buffer(&mut state, 120, 40, 1_500);
+    assert!(
+        find_text(&buffer, "Before context").is_some(),
+        "all context lines must use plain text when one cannot render as block"
+    );
+    assert!(find_text(&buffer, "你").is_some());
+    assert!(
+        find_text(&buffer, "Active line").is_none(),
+        "the active line should keep block typography"
+    );
+}
+
+#[test]
 fn block_mode_handles_nfd_eszett_and_emoji_without_panicking() {
     let mut state = base_state();
     state.display_mode = DisplayMode::Block;

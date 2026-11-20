@@ -9,19 +9,15 @@ const SOURCE_WIDTH: usize = 8;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockFontSize {
     Block,
-    Compact,
-    Mini,
     Plain,
 }
 
 impl BlockFontSize {
-    pub const FALLBACKS: [Self; 3] = [Self::Block, Self::Compact, Self::Mini];
+    pub const FALLBACKS: [Self; 1] = [Self::Block];
 
     pub const fn rows(self) -> u16 {
         match self {
             Self::Block => 4,
-            Self::Compact => 3,
-            Self::Mini => 2,
             Self::Plain => 1,
         }
     }
@@ -29,8 +25,6 @@ impl BlockFontSize {
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Block => "block",
-            Self::Compact => "compact",
-            Self::Mini => "mini",
             Self::Plain => "plain",
         }
     }
@@ -62,8 +56,6 @@ pub fn glyph_bitmap(ch: char, size: BlockFontSize) -> Option<GlyphBitmap> {
     let raw = source_glyph(ch)?;
     match size {
         BlockFontSize::Block => block_bitmap(raw),
-        BlockFontSize::Compact => compact_bitmap(raw, 4, 3),
-        BlockFontSize::Mini => compact_bitmap(raw, 3, 2),
         BlockFontSize::Plain => None,
     }
 }
@@ -87,8 +79,6 @@ pub fn placeholder_bitmap(size: BlockFontSize) -> GlyphBitmap {
 pub fn space_bitmap(size: BlockFontSize) -> GlyphBitmap {
     let width = match size {
         BlockFontSize::Block => 4,
-        BlockFontSize::Compact => 2,
-        BlockFontSize::Mini => 1,
         BlockFontSize::Plain => 1,
     };
     let rows = vec![" ".repeat(usize::from(width)); usize::from(size.rows())];
@@ -142,44 +132,6 @@ fn block_bitmap(raw: [u8; 8]) -> Option<GlyphBitmap> {
     Some(GlyphBitmap::new(width, rows))
 }
 
-fn compact_bitmap(raw: [u8; 8], max_width: u16, height: u16) -> Option<GlyphBitmap> {
-    let (min, max) = ink_bounds(raw)?;
-    let ink_width = max - min + 1;
-    let out_width = u16::try_from(ink_width).ok()?.min(max_width);
-    if out_width == 0 {
-        return None;
-    }
-
-    let width = out_width + GLYPH_GAP;
-    let mut rows = Vec::with_capacity(usize::from(height));
-    for y in 0..usize::from(height) {
-        let row_start = y * SOURCE_HEIGHT / usize::from(height);
-        let row_end = ((y + 1) * SOURCE_HEIGHT / usize::from(height)).max(row_start + 1);
-        let mut row = String::with_capacity(usize::from(width));
-        for x in 0..usize::from(out_width) {
-            let col_start = x * ink_width / usize::from(out_width);
-            let col_end = ((x + 1) * ink_width / usize::from(out_width)).max(col_start + 1);
-            let mut set = false;
-            for source_row in &raw[row_start..row_end.min(SOURCE_HEIGHT)] {
-                for source_x in col_start..col_end.min(ink_width) {
-                    if source_row & (1u8 << (min + source_x)) != 0 {
-                        set = true;
-                        break;
-                    }
-                }
-                if set {
-                    break;
-                }
-            }
-            row.push(if set { '█' } else { ' ' });
-        }
-        row.push(' ');
-        rows.push(row);
-    }
-
-    Some(GlyphBitmap::new(width, rows))
-}
-
 fn solid_bitmap(size: BlockFontSize) -> GlyphBitmap {
     let width = 2;
     let rows = vec!["█".repeat(usize::from(width)); usize::from(size.rows())];
@@ -203,30 +155,10 @@ mod tests {
     }
 
     #[test]
-    fn trims_horizontally_and_keeps_compact_sizes_monochrome() {
+    fn trims_horizontally() {
         let narrow = glyph_bitmap('I', BlockFontSize::Block).unwrap();
         let wide = glyph_bitmap('W', BlockFontSize::Block).unwrap();
         assert!(narrow.width < wide.width);
-
-        for size in [BlockFontSize::Compact, BlockFontSize::Mini] {
-            let glyph = glyph_bitmap('A', size).unwrap();
-            assert!(
-                glyph
-                    .rows
-                    .iter()
-                    .all(|row| { row.chars().all(|ch| ch == '█' || ch == ' ') })
-            );
-        }
-    }
-
-    #[test]
-    fn compact_and_mini_have_the_expected_row_counts() {
-        let compact = glyph_bitmap('A', BlockFontSize::Compact).unwrap();
-        let mini = glyph_bitmap('A', BlockFontSize::Mini).unwrap();
-        assert_eq!(compact.rows.len(), 3);
-        assert_eq!(mini.rows.len(), 2);
-        assert!(compact.rows.iter().all(|row| row.contains('█')));
-        assert!(mini.rows.iter().all(|row| row.contains('█')));
     }
 
     #[test]
@@ -258,8 +190,6 @@ mod tests {
     #[test]
     fn space_bitmaps_match_each_size() {
         assert_eq!(space_bitmap(BlockFontSize::Block).height(), 4);
-        assert_eq!(space_bitmap(BlockFontSize::Compact).height(), 3);
-        assert_eq!(space_bitmap(BlockFontSize::Mini).height(), 2);
         assert_eq!(space_bitmap(BlockFontSize::Plain).height(), 1);
         assert!(space_bitmap(BlockFontSize::Block).is_blank());
     }

@@ -70,8 +70,6 @@ impl BlockLayout {
 
         let candidates: &[BlockFontSize] = match max_size {
             BigTextMaxSize::Auto | BigTextMaxSize::Block => BlockFontSize::FALLBACKS.as_slice(),
-            BigTextMaxSize::Compact => &[BlockFontSize::Compact, BlockFontSize::Mini],
-            BigTextMaxSize::Mini => &[BlockFontSize::Mini],
             BigTextMaxSize::Plain => &[],
         };
 
@@ -548,15 +546,25 @@ mod tests {
 
     #[test]
     fn big_text_max_size_and_overflow_modes_are_enforced() {
-        let compact_only = layout_text_with_options(
+        let block_only = layout_text_with_options(
             "Hi",
             80,
             24,
             1,
-            BigTextMaxSize::Compact,
+            BigTextMaxSize::Block,
             BigTextOverflow::Shrink,
         );
-        assert_eq!(compact_only.font_size, BlockFontSize::Compact);
+        assert_eq!(block_only.font_size, BlockFontSize::Block);
+
+        let plain_only = layout_text_with_options(
+            "Hi",
+            80,
+            24,
+            1,
+            BigTextMaxSize::Plain,
+            BigTextOverflow::Shrink,
+        );
+        assert_eq!(plain_only.font_size, BlockFontSize::Plain);
 
         let fallback_plain = layout_text_with_options(
             "Hello World",
@@ -601,11 +609,7 @@ mod tests {
 
         assert_eq!(
             BlockLayout::new(text, 20, 24, 1).font_size,
-            BlockFontSize::Mini
-        );
-        assert_eq!(
-            BlockLayout::new(text, 45, 24, 1).font_size,
-            BlockFontSize::Compact
+            BlockFontSize::Plain
         );
         assert_eq!(
             BlockLayout::new(text, 120, 24, 1).font_size,
@@ -614,19 +618,13 @@ mod tests {
     }
 
     #[test]
-    fn falls_back_by_height_before_using_plain_text() {
-        assert_eq!(
-            BlockLayout::new("HELLO", 120, 3, 1).font_size,
-            BlockFontSize::Compact
-        );
-        assert_eq!(
-            BlockLayout::new("HELLO", 120, 2, 1).font_size,
-            BlockFontSize::Mini
-        );
-        assert_eq!(
-            BlockLayout::new("HELLO", 120, 1, 1).font_size,
-            BlockFontSize::Plain
-        );
+    fn falls_back_to_plain_when_block_does_not_fit() {
+        for height in [1, 2, 3] {
+            assert_eq!(
+                BlockLayout::new("HELLO", 120, height, 1).font_size,
+                BlockFontSize::Plain
+            );
+        }
     }
 
     #[test]

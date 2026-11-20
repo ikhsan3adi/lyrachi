@@ -340,8 +340,8 @@ modifiers = ["dim", "italic"]
 show = false
 
 [big_text]
-max_size = "compact"
-overflow = "fallback_normal"
+max_size = "block"
+overflow = "shrink"
 "##;
 
 /// Return the raw TOML definition for a `builtin:<name>` preset.
@@ -1005,8 +1005,6 @@ pub enum BigTextMaxSize {
     #[default]
     Auto,
     Block,
-    Compact,
-    Mini,
     Plain,
 }
 
