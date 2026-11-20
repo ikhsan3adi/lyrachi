@@ -61,6 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
         .collect();
 
     let block = Block::default()
+        .style(content_style)
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent))

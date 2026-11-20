@@ -435,6 +435,10 @@ impl ProviderResolver {
             .collect()
     }
 
+    pub fn invalidate_local_index(&self) {
+        self.local.invalidate_index();
+    }
+
     pub async fn resolve(
         &self,
         meta: &TrackMeta,

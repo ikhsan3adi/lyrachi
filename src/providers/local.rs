@@ -63,6 +63,12 @@ impl LocalProvider {
         &self.dirs
     }
 
+    pub fn invalidate_index(&self) {
+        if let Ok(mut slot) = self.index.lock() {
+            *slot = None;
+        }
+    }
+
     pub async fn find(&self, query: &TrackQuery) -> Result<Option<ProviderAnswer>, ProviderError> {
         self.find_with_cancel(query, &CancellationToken::new())
             .await
@@ -946,6 +952,31 @@ mod tests {
             .unwrap();
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].title, "Artist - Song");
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn invalidate_index_rescans_newly_added_files() {
+        let dir = temp_dir("local-invalidate-test");
+        std::fs::write(dir.join("one.lrc"), "[00:01.00] One\n").unwrap();
+
+        let provider = LocalProvider::with_dirs(vec![dir.clone()]);
+        let cancel = CancellationToken::new();
+
+        let initial = provider.get_index(&cancel).await.unwrap();
+        assert_eq!(initial.len(), 1);
+
+        // Add a second file while index is cached
+        std::fs::write(dir.join("two.lrc"), "[00:01.00] Two\n").unwrap();
+
+        let cached = provider.get_index(&cancel).await.unwrap();
+        assert_eq!(cached.len(), 1);
+
+        // Invalidate and rescan
+        provider.invalidate_index();
+        let refreshed = provider.get_index(&cancel).await.unwrap();
+        assert_eq!(refreshed.len(), 2);
 
         std::fs::remove_dir_all(dir).unwrap();
     }

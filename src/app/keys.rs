@@ -240,7 +240,7 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
         trigger: KeyTrigger::Char('m'),
         action: KeyAction::ToggleDisplayMode,
         key_label: "m",
-        description: "Toggle display mode (normal/block)",
+        description: "Toggle display mode (normal/block/kinetic)",
     },
     KeyBinding {
         scope: KeyScope::Global,

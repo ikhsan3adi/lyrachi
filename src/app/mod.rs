@@ -648,11 +648,13 @@ fn start_fetch(
         {
             warn!(%error, "failed to clear pinned lyrics before refetch");
         }
-        if bypass_cache
-            && let Some(cache) = cache.as_ref()
-            && let Err(error) = cache.invalidate_track(&query.canonical).await
-        {
-            warn!(%error, "failed to invalidate cached lyrics for refetch");
+        if bypass_cache {
+            resolver.invalidate_local_index();
+            if let Some(cache) = cache.as_ref()
+                && let Err(error) = cache.invalidate_track(&query.canonical).await
+            {
+                warn!(%error, "failed to invalidate cached lyrics for refetch");
+            }
         }
 
         let (updates_tx, mut updates_rx) = mpsc::unbounded_channel::<EngineUpdate>();

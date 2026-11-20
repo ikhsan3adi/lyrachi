@@ -339,6 +339,7 @@ fn render_actions(
 
     let border_style = Style::default().fg(accent(style));
     let block = Block::default()
+        .style(content_style(style))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(border_style)
@@ -486,6 +487,7 @@ fn render_candidates(
     };
 
     let block = Block::default()
+        .style(content_style(style))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent(style)))
@@ -527,6 +529,7 @@ fn render_search_input(
     frame.render_widget(Clear, popup);
 
     let block = Block::default()
+        .style(content_style(style))
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent(style)))
