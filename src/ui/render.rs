@@ -804,6 +804,7 @@ fn render_kinetic_synced(
         .unwrap_or(0);
     let compiled = &timeline.lines[anchor];
     let active = cursor.active_line_idx == Some(anchor);
+    let holding = active && effective_ms > compiled.end_ms;
     let word_highlight = state.effective_word_highlight();
     let viewport_width = timeline.context.viewport_width;
     let alignment = style.alignment(compiled.role, viewport_width);
@@ -840,12 +841,12 @@ fn render_kinetic_synced(
     let (chunk_text, chunk_range) = if compiled.phrases.is_empty() {
         (source_text, (0, source_text.len()))
     } else {
-        let phrase_idx = if active {
-            compiled.active_phrase_index(effective_ms).unwrap_or(0)
-        } else if effective_ms < compiled.start_ms {
-            0
-        } else {
+        let phrase_idx = if holding || (!active && effective_ms >= compiled.start_ms) {
             compiled.phrases.len() - 1
+        } else if active {
+            compiled.active_phrase_index(effective_ms).unwrap_or(0)
+        } else {
+            0
         };
         let (trimmed, range) = compiled.phrases[phrase_idx].trimmed_slice(source_text);
         if trimmed.is_empty() {
@@ -878,7 +879,7 @@ fn render_kinetic_synced(
             cursor,
             effective_ms,
             active,
-            holding: active && effective_ms > compiled.end_ms,
+            holding,
             word_highlight: word_highlight && compiled.role != LineRole::InstrumentalBreak,
             wipe: word_highlight
                 && style.highlight_mode == HighlightMode::Wipe
@@ -1801,6 +1802,50 @@ mod tests {
         assert_eq!(buf[(x, y)].fg, held_fg);
         let (x, y) = position_of(&buf, "last");
         assert_eq!(buf[(x, y)].fg, word_active_fg);
+    }
+
+    #[test]
+    fn kinetic_hold_keeps_last_phrase() {
+        let mut profile = StyleProfile::builtin("builtin:dark", 80).unwrap();
+        profile.big_text.max_chars_per_phrase = 8;
+        profile.big_text.max_size = BigTextMaxSize::Plain;
+
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        state.display_mode = crate::ui::DisplayMode::Kinetic;
+        state.set_resolved_style(profile.resolve("dark", ColorCapability::TrueColor, None));
+        state.set_lyrics(SyncedTrack {
+            source_provider: "local".to_string(),
+            source_track_id: None,
+            parser_version: crate::core::model::PARSER_VERSION,
+            granularity: SyncGranularity::Line,
+            is_instrumental: false,
+            intrinsic_offset_ms: 0,
+            user_offset_ms: 0,
+            match_confidence: 1.0,
+            lines: vec![
+                LyricLine {
+                    start_ms: 1_000,
+                    end_ms: 3_000,
+                    text: "alpha beta gamma delta".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                    role: LineRole::Primary,
+                },
+                LyricLine {
+                    start_ms: 7_000,
+                    end_ms: 8_000,
+                    text: "next line".to_string(),
+                    words: Vec::new(),
+                    annotations: Vec::new(),
+                    role: LineRole::Primary,
+                },
+            ],
+        });
+
+        let output = render_buffer_text(&state, 3_500, 80, 14);
+        assert!(output.contains("delta"), "{output}");
+        assert!(!output.contains("alpha"), "{output}");
     }
 
     #[test]
