@@ -60,7 +60,7 @@ async fn main() -> Result<()> {
     }
 
     if args.dump_events {
-        return app::run_dump_events(outcome.config.player_filter).await;
+        return app::run_dump_events(&outcome.config.media, outcome.config.player_filter).await;
     }
 
     let mut terminal = ratatui::init();

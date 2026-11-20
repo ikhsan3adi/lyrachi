@@ -7,7 +7,9 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::composite::CompositeBackend;
-use crate::media::{BackendKind, MediaError, MediaEvent, MediaSnapshot};
+use crate::media::mpd::MpdBackend;
+use crate::media::webnowplaying::WebNowPlayingBackend;
+use crate::media::{BackendKind, MediaConfig, MediaError, MediaEvent, MediaSnapshot};
 
 pub type BoxFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 
@@ -100,7 +102,10 @@ impl MediaBackend for UnsupportedBackend {
     }
 }
 
-pub fn default_backend() -> Arc<dyn MediaBackend> {
+pub fn default_backend(media: &MediaConfig) -> Arc<dyn MediaBackend> {
+    let mut backends: Vec<Arc<dyn MediaBackend>> = Vec::new();
+    let selected = |kind: BackendKind| media.backends.is_empty() || media.backends.contains(&kind);
+
     #[cfg(any(
         target_os = "linux",
         target_os = "freebsd",
@@ -108,31 +113,39 @@ pub fn default_backend() -> Arc<dyn MediaBackend> {
         target_os = "netbsd",
         target_os = "dragonfly"
     ))]
-    {
-        Arc::new(CompositeBackend::new(vec![Arc::new(MprisBackend)]))
+    if selected(BackendKind::Mpris) {
+        backends.push(Arc::new(MprisBackend));
     }
-    #[cfg(not(any(
-        target_os = "linux",
-        target_os = "freebsd",
-        target_os = "openbsd",
-        target_os = "netbsd",
-        target_os = "dragonfly"
-    )))]
-    {
-        Arc::new(CompositeBackend::new(vec![Arc::new(UnsupportedBackend)]))
+
+    if selected(BackendKind::Mpd) && media.mpd.enabled {
+        backends.push(Arc::new(MpdBackend::new(media.mpd.clone())));
     }
+    if selected(BackendKind::WebNowPlaying) && media.webnowplaying.enabled {
+        backends.push(Arc::new(WebNowPlayingBackend::new(
+            media.webnowplaying.clone(),
+        )));
+    }
+    if backends.is_empty() {
+        backends.push(Arc::new(UnsupportedBackend));
+    }
+
+    Arc::new(CompositeBackend::new(backends))
 }
 
 pub async fn start_monitor(
+    media: &MediaConfig,
     player_filter: Option<String>,
     tx: mpsc::Sender<MediaEvent>,
     cancel: CancellationToken,
 ) -> Result<JoinHandle<()>, MediaError> {
-    default_backend()
+    default_backend(media)
         .start_monitor(player_filter, tx, cancel)
         .await
 }
 
-pub async fn probe(player_filter: Option<&str>) -> Result<MediaSnapshot, MediaError> {
-    default_backend().probe(player_filter).await
+pub async fn probe(
+    media: &MediaConfig,
+    player_filter: Option<&str>,
+) -> Result<MediaSnapshot, MediaError> {
+    default_backend(media).probe(player_filter).await
 }

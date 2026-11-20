@@ -250,7 +250,14 @@ pub async fn run(
     let player_filter = config.player_filter.clone();
     let monitor_cancel = cancel.clone();
     let monitor_tx = media_tx.clone();
-    let monitor = match backend::start_monitor(player_filter, monitor_tx, monitor_cancel).await {
+    let monitor = match backend::start_monitor(
+        &config.media,
+        player_filter,
+        monitor_tx,
+        monitor_cancel,
+    )
+    .await
+    {
         Ok(handle) => Some(handle),
         Err(error) => {
             warn!(%error, "media backend unavailable");
@@ -398,11 +405,14 @@ pub async fn run(
     Ok(())
 }
 
-pub async fn run_dump_events(player_filter: Option<String>) -> color_eyre::Result<()> {
+pub async fn run_dump_events(
+    media: &crate::media::MediaConfig,
+    player_filter: Option<String>,
+) -> color_eyre::Result<()> {
     let (tx, mut rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
-    let mut monitor = backend::start_monitor(player_filter, tx, monitor_cancel).await?;
+    let mut monitor = backend::start_monitor(media, player_filter, tx, monitor_cancel).await?;
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 

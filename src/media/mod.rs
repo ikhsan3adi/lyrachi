@@ -4,7 +4,9 @@ use crate::core::clock::PlaybackStatus;
 
 pub mod backend;
 pub mod composite;
+pub mod config;
 pub mod fake;
+pub mod mpd;
 #[cfg(any(
     target_os = "linux",
     target_os = "freebsd",
@@ -13,9 +15,11 @@ pub mod fake;
     target_os = "dragonfly"
 ))]
 pub mod mpris;
+pub mod webnowplaying;
 
 pub use backend::{BoxFuture, MediaBackend};
 pub use composite::{CompositeBackend, ExponentialBackoff};
+pub use config::{MediaConfig, MpdConfig, WebNowPlayingConfig};
 
 pub const MPRIS_BUS_PREFIX: &str = "org.mpris.MediaPlayer2.";
 

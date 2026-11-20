@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use futures_util::future::join_all;
 use tokio::sync::mpsc;
@@ -21,6 +22,14 @@ pub struct ExponentialBackoff {
     current: Duration,
 }
 
+pub(crate) fn jitter_seed() -> u64 {
+    static COUNTER: AtomicU64 = AtomicU64::new(1);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+    nanos ^ COUNTER.fetch_add(1, Ordering::Relaxed)
+}
+
 impl ExponentialBackoff {
     pub fn new(initial: Duration, max: Duration) -> Self {
         Self {
@@ -34,6 +43,17 @@ impl ExponentialBackoff {
         let delay = self.current;
         self.current = (self.current.saturating_mul(2)).min(self.max);
         delay
+    }
+
+    pub fn next_delay_with_jitter(&mut self, seed: u64) -> Duration {
+        let delay = self.next_delay();
+        let jitter_cap = (delay.as_millis() / 4) as u64;
+        let jitter = if jitter_cap == 0 {
+            0
+        } else {
+            seed % (jitter_cap + 1)
+        };
+        (delay + Duration::from_millis(jitter)).min(self.max)
     }
 
     pub fn reset(&mut self) {
@@ -399,6 +419,10 @@ fn playback_rank(status: PlaybackStatus) -> u8 {
         PlaybackStatus::Paused => 1,
         PlaybackStatus::Stopped => 0,
     }
+}
+
+pub(crate) fn player_matches(player_id: &str, filter: Option<&str>) -> bool {
+    matches_filter(player_id, filter)
 }
 
 fn matches_filter(player_id: &str, filter: Option<&str>) -> bool {

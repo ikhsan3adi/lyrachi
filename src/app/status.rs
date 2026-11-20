@@ -228,7 +228,7 @@ async fn resolve_lyrics(
 }
 
 async fn probe_live(config: &RuntimeConfig) -> (MediaSnapshot, bool) {
-    match backend::probe(config.player_filter.as_deref()).await {
+    match backend::probe(&config.media, config.player_filter.as_deref()).await {
         Ok(snapshot) => (snapshot, true),
         Err(error) => {
             debug!(%error, "media backend unavailable");

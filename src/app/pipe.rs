@@ -66,7 +66,7 @@ pub async fn run(
     let (tx, rx) = mpsc::channel(256);
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
-    let monitor = backend::start_monitor(player_filter, tx, monitor_cancel).await?;
+    let monitor = backend::start_monitor(&config.media, player_filter, tx, monitor_cancel).await?;
     let stdout = io::stdout();
     let mut output = stdout.lock();
     let result = tokio::select! {

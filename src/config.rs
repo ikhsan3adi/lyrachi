@@ -6,6 +6,8 @@ use serde::Deserialize;
 
 use crate::app::resolve::L1_CACHE_CAPACITY;
 use crate::cli::Args;
+use crate::media::config::is_valid_extension_origin;
+use crate::media::{BackendKind, MediaConfig};
 use crate::providers::Provider;
 use crate::style::{
     DEFAULT_STYLE_NAME,
@@ -19,6 +21,8 @@ const MAX_OFFSET_MS: i64 = 30_000;
 const MAX_LOOKAHEAD_MS: u64 = 5_000;
 const MIN_L1_ENTRIES: usize = 1;
 const MAX_L1_ENTRIES: usize = 1_024;
+const MIN_MEDIA_TIMEOUT_MS: u64 = 100;
+const MAX_MEDIA_TIMEOUT_MS: u64 = 30_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RuntimeConfig {
@@ -28,6 +32,7 @@ pub struct RuntimeConfig {
     pub provider_order: Vec<Provider>,
     pub network: bool,
     pub local_dirs: Vec<PathBuf>,
+    pub media: MediaConfig,
     pub l1_entries: usize,
     pub fullscreen: bool,
     pub show_header: bool,
@@ -52,6 +57,7 @@ impl Default for RuntimeConfig {
             provider_order: Provider::all().to_vec(),
             network: true,
             local_dirs: Vec::new(),
+            media: MediaConfig::default(),
             l1_entries: L1_CACHE_CAPACITY,
             fullscreen: false,
             show_header: true,
@@ -156,6 +162,7 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     if let Some(local_dirs) = file.providers.local_dirs {
         config.local_dirs = local_dirs;
     }
+    apply_media(&mut config.media, file.media, warnings);
     if let Some(l1_entries) = file.cache.l1_entries {
         config.l1_entries = clamp_l1_entries(l1_entries, "cache.l1_entries", warnings);
     }
@@ -208,6 +215,133 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
     if let Some(unicode) = file.terminal.unicode {
         config.unicode = unicode;
     }
+}
+
+fn apply_media(config: &mut MediaConfig, section: MediaSection, warnings: &mut Vec<String>) {
+    if let Some(backends) = section.backends {
+        let mut parsed = Vec::new();
+        for name in backends {
+            let Some(kind) = BackendKind::from_name(name.trim()) else {
+                warnings.push(format!(
+                    "config: unknown media backend `{name}`; valid values: mpris, mpd, webnowplaying, smtc, applescript"
+                ));
+                continue;
+            };
+            if kind == BackendKind::Unsupported {
+                warnings.push("config: media backend `unsupported` cannot be selected".to_string());
+                continue;
+            }
+            if !kind.is_supported() {
+                warnings.push(format!(
+                    "config: media backend `{}` is not available on this platform",
+                    kind.as_str()
+                ));
+                continue;
+            }
+            if !parsed.contains(&kind) {
+                parsed.push(kind);
+            }
+        }
+        config.backends = parsed;
+    }
+
+    if let Some(enabled) = section.mpd.enabled {
+        config.mpd.enabled = enabled;
+    }
+    if let Some(host) = section.mpd.host {
+        let host = host.trim();
+        if host.is_empty() {
+            warnings.push("config: media.mpd.host cannot be empty; using 127.0.0.1".to_string());
+        } else {
+            config.mpd.host = host.to_string();
+        }
+    }
+    if let Some(port) = section.mpd.port {
+        config.mpd.port = clamp_media_port(port, "media.mpd.port", warnings);
+    }
+    if let Some(timeout_ms) = section.mpd.timeout_ms {
+        config.mpd.timeout = clamp_media_timeout(timeout_ms, "media.mpd.timeout_ms", warnings);
+    }
+
+    if let Some(enabled) = section.webnowplaying.enabled {
+        config.webnowplaying.enabled = enabled;
+    }
+    if let Some(bind_address) = section.webnowplaying.bind_address {
+        match bind_address.trim().parse::<std::net::IpAddr>() {
+            Ok(address) if address.is_loopback() => config.webnowplaying.bind_address = address,
+            Ok(_) => warnings.push(
+                "config: media.webnowplaying.bind_address must be loopback; using 127.0.0.1"
+                    .to_string(),
+            ),
+            Err(error) => warnings.push(format!(
+                "config: media.webnowplaying.bind_address invalid ({error}); using 127.0.0.1"
+            )),
+        }
+    }
+    if let Some(port) = section.webnowplaying.port {
+        config.webnowplaying.port = clamp_media_port(port, "media.webnowplaying.port", warnings);
+    }
+    if let Some(origins) = section.webnowplaying.allowed_origins {
+        let mut allowed = Vec::new();
+        for origin in origins {
+            let origin = origin.trim();
+            if is_valid_extension_origin(origin) {
+                if !allowed.iter().any(|value: &String| value == origin) {
+                    allowed.push(origin.to_string());
+                }
+            } else {
+                warnings.push(format!(
+                    "config: media.webnowplaying.allowed_origins entry `{origin}` must be a chrome-extension:// or moz-extension:// origin"
+                ));
+            }
+        }
+        config.webnowplaying.allowed_origins = allowed;
+    }
+    if let Some(token) = section.webnowplaying.token {
+        config.webnowplaying.token = non_empty(token);
+    }
+
+    if !config.backends.is_empty() {
+        for (kind, enabled, section_name) in [
+            (BackendKind::Mpd, config.mpd.enabled, "mpd"),
+            (
+                BackendKind::WebNowPlaying,
+                config.webnowplaying.enabled,
+                "webnowplaying",
+            ),
+        ] {
+            let selected = config.backends.contains(&kind);
+            if selected && !enabled {
+                warnings.push(format!(
+                    "config: media.backends includes `{section_name}` but media.{section_name}.enabled is false"
+                ));
+            } else if !selected && enabled {
+                warnings.push(format!(
+                    "config: media.{section_name}.enabled is true but `{section_name}` is not listed in media.backends"
+                ));
+            }
+        }
+    }
+}
+
+fn clamp_media_port(value: u32, field: &str, warnings: &mut Vec<String>) -> u16 {
+    let clamped = value.clamp(1, u32::from(u16::MAX)) as u16;
+    if u32::from(clamped) != value {
+        warnings.push(format!(
+            "config: {field} must be 1..=65535; using {clamped}"
+        ));
+    }
+    clamped
+}
+
+fn clamp_media_timeout(value: u64, field: &str, warnings: &mut Vec<String>) -> std::time::Duration {
+    let clamped = value.clamp(MIN_MEDIA_TIMEOUT_MS, MAX_MEDIA_TIMEOUT_MS);
+    if clamped != value {
+        warnings.push(format!(
+            "config: {field} {value} is outside {MIN_MEDIA_TIMEOUT_MS}..={MAX_MEDIA_TIMEOUT_MS}; using {clamped}"
+        ));
+    }
+    std::time::Duration::from_millis(clamped)
 }
 
 fn apply_args(config: &mut RuntimeConfig, args: &Args, warnings: &mut Vec<String>) {
@@ -313,6 +447,7 @@ pub struct FileConfig {
     pub player: PlayerSection,
     pub sync: SyncSection,
     pub providers: ProvidersSection,
+    pub media: MediaSection,
     pub cache: CacheSection,
     pub ui: UiSection,
     pub terminal: TerminalSection,
@@ -337,6 +472,33 @@ pub struct ProvidersSection {
     pub order: Option<Vec<String>>,
     pub network: Option<bool>,
     pub local_dirs: Option<Vec<PathBuf>>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MediaSection {
+    pub backends: Option<Vec<String>>,
+    pub mpd: MpdSection,
+    pub webnowplaying: WebNowPlayingSection,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct MpdSection {
+    pub enabled: Option<bool>,
+    pub host: Option<String>,
+    pub port: Option<u32>,
+    pub timeout_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct WebNowPlayingSection {
+    pub enabled: Option<bool>,
+    pub bind_address: Option<String>,
+    pub port: Option<u32>,
+    pub allowed_origins: Option<Vec<String>>,
+    pub token: Option<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
@@ -413,6 +575,27 @@ schema_version = 1
 global_offset_ms = -300
 # Lookahead in milliseconds (render transitions earlier)
 lookahead_ms = 0
+
+[media]
+# Optional backend allowlist. Empty uses the platform native backend plus any
+# enabled network backend below.
+backends = []
+
+[media.mpd]
+# Connect to a local Music Player Daemon.
+enabled = false
+host = "127.0.0.1"
+port = 6600
+timeout_ms = 2000
+
+[media.webnowplaying]
+# Local WebSocket bridge for the WebNowPlaying browser extension.
+enabled = false
+bind_address = "127.0.0.1"
+port = 8974
+# Exact extension origins. Wildcards and http(s) origins are rejected.
+allowed_origins = []
+# token = ""
 
 [providers]
 # Provider resolution order
@@ -626,6 +809,127 @@ l1_entries = 8
         assert_eq!(cli.config.lookahead_ms, 40);
         assert_eq!(cli.config.local_dirs, vec![PathBuf::from("/from-cli")]);
         assert!(!cli.config.network);
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_media_backend_configuration() {
+        let path = temp_file(
+            "media-backends",
+            r#"
+[media]
+backends = ["mpd", "webnowplaying"]
+
+[media.mpd]
+enabled = true
+host = "127.0.0.1"
+port = 6601
+timeout_ms = 1500
+
+[media.webnowplaying]
+enabled = true
+bind_address = "::1"
+port = 9000
+allowed_origins = ["chrome-extension://abcdefghijklmnop", "moz-extension://1234-abcd"]
+token = "secret"
+"#,
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+        assert_eq!(
+            outcome.config.media.backends,
+            vec![BackendKind::Mpd, BackendKind::WebNowPlaying]
+        );
+        assert!(outcome.config.media.mpd.enabled);
+        assert_eq!(outcome.config.media.mpd.port, 6601);
+        assert_eq!(
+            outcome.config.media.mpd.timeout,
+            std::time::Duration::from_millis(1500)
+        );
+        assert!(outcome.config.media.webnowplaying.enabled);
+        assert!(
+            outcome
+                .config
+                .media
+                .webnowplaying
+                .bind_address
+                .is_loopback()
+        );
+        assert_eq!(outcome.config.media.webnowplaying.port, 9000);
+        assert_eq!(
+            outcome.config.media.webnowplaying.allowed_origins,
+            vec![
+                "chrome-extension://abcdefghijklmnop".to_string(),
+                "moz-extension://1234-abcd".to_string()
+            ]
+        );
+        assert_eq!(
+            outcome.config.media.webnowplaying.token.as_deref(),
+            Some("secret")
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn rejects_unsafe_media_network_configuration() {
+        let path = temp_file(
+            "media-unsafe",
+            r#"
+[media]
+backends = ["mpd", "webnowplaying", "bogus"]
+
+[media.mpd]
+enabled = true
+port = 0
+timeout_ms = 10
+
+[media.webnowplaying]
+enabled = true
+bind_address = "0.0.0.0"
+port = 70000
+allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://valid-id"]
+"#,
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(outcome.config.media.mpd.port, 1);
+        assert_eq!(
+            outcome.config.media.mpd.timeout,
+            std::time::Duration::from_millis(MIN_MEDIA_TIMEOUT_MS)
+        );
+        assert!(
+            outcome
+                .config
+                .media
+                .webnowplaying
+                .bind_address
+                .is_loopback()
+        );
+        assert_eq!(
+            outcome.config.media.webnowplaying.allowed_origins,
+            vec!["moz-extension://valid-id".to_string()]
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("bogus"))
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("http://localhost"))
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("must be loopback"))
+        );
 
         fs::remove_file(path).unwrap();
     }
