@@ -734,8 +734,8 @@ pub fn handle_media(
 ) {
     state.media_availability = MediaAvailability::Available;
     match event {
-        MediaEvent::PlayerChanged { bus, .. } => {
-            state.set_player(Some(player_short_name(&bus).to_string()));
+        MediaEvent::PlayerChanged { id, .. } => {
+            state.set_player(Some(player_short_name(&id).to_string()));
         }
         MediaEvent::NoPlayer => {
             coordinator.cancel_active();

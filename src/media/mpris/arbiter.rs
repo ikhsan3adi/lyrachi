@@ -187,7 +187,7 @@ async fn reselect(
         handle,
     });
 
-    let _ = tx.send(MediaEvent::PlayerChanged { bus, kind }).await;
+    let _ = tx.send(MediaEvent::PlayerChanged { id: bus, kind }).await;
 
     Ok(())
 }
@@ -233,7 +233,7 @@ pub async fn discover_candidates(
             _ => {}
         }
 
-        let kind = PlayerKind::from_bus(bus);
+        let kind = PlayerKind::from_id(bus);
         let status = match PlayerProxy::builder(conn)
             .destination(bus)
             .cache_properties(CacheProperties::No)
@@ -605,23 +605,23 @@ mod tests {
     #[test]
     fn identifies_player_kinds() {
         assert_eq!(
-            PlayerKind::from_bus("org.mpris.MediaPlayer2.firefox.instance1"),
+            PlayerKind::from_id("org.mpris.MediaPlayer2.firefox.instance1"),
             PlayerKind::Browser
         );
         assert_eq!(
-            PlayerKind::from_bus("org.mpris.MediaPlayer2.spotify"),
+            PlayerKind::from_id("org.mpris.MediaPlayer2.spotify"),
             PlayerKind::Native
         );
         assert_eq!(
-            PlayerKind::from_bus("org.mpris.MediaPlayer2.limusic"),
+            PlayerKind::from_id("org.mpris.MediaPlayer2.limusic"),
             PlayerKind::Native
         );
         assert_eq!(
-            PlayerKind::from_bus("org.mpris.MediaPlayer2.mpv.instance42"),
+            PlayerKind::from_id("org.mpris.MediaPlayer2.mpv.instance42"),
             PlayerKind::Native
         );
         assert_eq!(
-            PlayerKind::from_bus("org.mpris.MediaPlayer2.mystery"),
+            PlayerKind::from_id("org.mpris.MediaPlayer2.mystery"),
             PlayerKind::Unknown
         );
     }

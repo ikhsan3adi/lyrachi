@@ -3,6 +3,7 @@ use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
+use directories::BaseDirs;
 use tokio::fs;
 use tokio::io::AsyncReadExt;
 use tokio::sync::watch;
@@ -511,29 +512,7 @@ pub fn resolve_local_dirs(dirs: Vec<PathBuf>) -> Vec<PathBuf> {
 }
 
 pub fn default_local_dirs() -> Vec<PathBuf> {
-    let home = home_dir();
-
-    if let Some(xdg_music) = std::env::var_os("XDG_MUSIC_DIR")
-        && let Some(path) = expand_user_dir_value(&xdg_music.to_string_lossy(), home.as_deref())
-    {
-        return vec![path];
-    }
-
-    let user_dirs_path = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| home.as_ref().map(|path| path.join(".config")))
-        .map(|dir| dir.join("user-dirs.dirs"));
-
-    if let Some(path) = user_dirs_path
-        && let Ok(contents) = std::fs::read_to_string(path)
-        && let Some(music_dir) = parse_xdg_music_dir(&contents, home.as_deref())
-    {
-        return vec![music_dir];
-    }
-
-    home.map(|path| vec![path.join("Music")])
-        .unwrap_or_default()
+    crate::paths::default_music_dirs()
 }
 
 fn scan_dirs(dirs: &[PathBuf]) -> Vec<IndexedLyricFile> {
@@ -619,9 +598,7 @@ fn is_lyric_file(path: &Path) -> bool {
 }
 
 fn home_dir() -> Option<PathBuf> {
-    std::env::var_os("HOME")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from)
+    BaseDirs::new().map(|base| base.home_dir().to_path_buf())
 }
 
 fn expand_tilde_path(path: PathBuf, home: Option<&Path>) -> PathBuf {
@@ -637,55 +614,6 @@ fn expand_tilde_path(path: PathBuf, home: Option<&Path>) -> PathBuf {
         return home.join(rest);
     }
     path
-}
-
-fn parse_xdg_music_dir(contents: &str, home: Option<&Path>) -> Option<PathBuf> {
-    for raw_line in contents.lines() {
-        let line = raw_line.trim();
-        if line.is_empty() || line.starts_with('#') {
-            continue;
-        }
-        let Some(value) = line.strip_prefix("XDG_MUSIC_DIR=") else {
-            continue;
-        };
-        let value = value.trim();
-        let unquoted = value
-            .strip_prefix('"')
-            .and_then(|inner| inner.strip_suffix('"'))
-            .or_else(|| {
-                value
-                    .strip_prefix('\'')
-                    .and_then(|inner| inner.strip_suffix('\''))
-            })
-            .unwrap_or(value)
-            .trim();
-        if let Some(path) = expand_user_dir_value(unquoted, home) {
-            return Some(path);
-        }
-    }
-
-    None
-}
-
-fn expand_user_dir_value(raw: &str, home: Option<&Path>) -> Option<PathBuf> {
-    let trimmed = raw.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if trimmed == "$HOME" || trimmed == "~" {
-        return home.map(Path::to_path_buf);
-    }
-    if let Some(rest) = trimmed
-        .strip_prefix("$HOME/")
-        .or_else(|| trimmed.strip_prefix("~/"))
-    {
-        if rest.is_empty() {
-            return None;
-        }
-        return home.map(|path| path.join(rest));
-    }
-
-    Some(PathBuf::from(trimmed))
 }
 
 #[cfg(test)]
@@ -949,17 +877,6 @@ mod tests {
         std::fs::remove_dir_all(empty_dir).unwrap();
         std::fs::remove_dir_all(audio_dir).unwrap();
         std::fs::remove_dir_all(outside_dir).unwrap();
-    }
-
-    #[test]
-    fn parses_xdg_user_dirs_music_path() {
-        let home = Path::new("/home/tester");
-        let parsed = parse_xdg_music_dir(
-            "# comment\nXDG_DOWNLOAD_DIR=\"$HOME/Downloads\"\nXDG_MUSIC_DIR=\"$HOME/Musik\"\n",
-            Some(home),
-        );
-
-        assert_eq!(parsed, Some(PathBuf::from("/home/tester/Musik")));
     }
 
     #[tokio::test]

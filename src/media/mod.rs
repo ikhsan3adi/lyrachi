@@ -73,8 +73,8 @@ impl MediaError {
     }
 }
 
-pub fn player_short_name(bus: &str) -> &str {
-    let short = bus.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(bus);
+pub fn player_short_name(id: &str) -> &str {
+    let short = id.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(id);
     short.split('.').next().unwrap_or(short)
 }
 
@@ -86,8 +86,8 @@ pub enum PlayerKind {
 }
 
 impl PlayerKind {
-    pub fn from_bus(bus: &str) -> Self {
-        let raw_name = player_short_name(bus).to_ascii_lowercase();
+    pub fn from_id(id: &str) -> Self {
+        let raw_name = player_short_name(id).to_ascii_lowercase();
         let name = raw_name
             .strip_suffix("-app")
             .or_else(|| raw_name.strip_suffix("-bin"))
@@ -179,7 +179,7 @@ pub struct TrackMeta {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum MediaEvent {
-    PlayerChanged { bus: String, kind: PlayerKind },
+    PlayerChanged { id: String, kind: PlayerKind },
     NoPlayer,
     TrackChanged(TrackMeta),
     NoTrack,
@@ -191,7 +191,7 @@ pub enum MediaEvent {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PlayerSnapshot {
-    pub bus: String,
+    pub id: String,
     pub kind: PlayerKind,
 }
 

@@ -17,7 +17,7 @@ use super::resolve::resolve_with_cache;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct StatusPlayer {
-    pub bus: String,
+    pub id: String,
     pub name: String,
     pub kind: String,
 }
@@ -125,8 +125,8 @@ pub async fn collect_report_with_cache(
     cache: Option<&CacheHandle>,
 ) -> StatusReport {
     let player = snapshot.player.as_ref().map(|player| StatusPlayer {
-        bus: player.bus.clone(),
-        name: player_short_name(&player.bus).to_string(),
+        id: player.id.clone(),
+        name: player_short_name(&player.id).to_string(),
         kind: player.kind.as_str().to_string(),
     });
     let track = snapshot.track.as_ref().map(|track| StatusTrack {
@@ -231,7 +231,7 @@ pub fn render_text(report: &StatusReport) -> String {
         Some(player) => push_line(
             &mut output,
             "player",
-            format!("{} ({})", player.name, player.bus),
+            format!("{} ({})", player.name, player.id),
         ),
         None => push_line(&mut output, "player", "none"),
     }

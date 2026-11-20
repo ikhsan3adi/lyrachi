@@ -46,7 +46,7 @@ async fn fake_media_source_switches_tracks_seeks_and_pauses() {
         (
             Duration::ZERO,
             MediaEvent::PlayerChanged {
-                bus: "org.mpris.MediaPlayer2.spotify".to_string(),
+                id: "org.mpris.MediaPlayer2.spotify".to_string(),
                 kind: PlayerKind::Native,
             },
         ),
@@ -109,7 +109,7 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
         (
             Duration::ZERO,
             MediaEvent::PlayerChanged {
-                bus: "org.mpris.MediaPlayer2.spotify".to_string(),
+                id: "org.mpris.MediaPlayer2.spotify".to_string(),
                 kind: PlayerKind::Native,
             },
         ),
@@ -131,8 +131,8 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     let mut snapshot = MediaSnapshot::default();
     while let Some(event) = rx.recv().await {
         match event {
-            MediaEvent::PlayerChanged { bus, kind } => {
-                snapshot.player = Some(PlayerSnapshot { bus, kind });
+            MediaEvent::PlayerChanged { id, kind } => {
+                snapshot.player = Some(PlayerSnapshot { id, kind });
             }
             MediaEvent::TrackChanged(track) => snapshot.track = Some(track),
             MediaEvent::Seeked { pos_ms } => snapshot.position_ms = pos_ms,
@@ -162,7 +162,7 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     let report = collect_report(snapshot, &config, &offsets_file).await;
 
     assert_eq!(
-        report.player.as_ref().unwrap().bus,
+        report.player.as_ref().unwrap().id,
         "org.mpris.MediaPlayer2.spotify"
     );
     assert_eq!(report.playback, "paused");

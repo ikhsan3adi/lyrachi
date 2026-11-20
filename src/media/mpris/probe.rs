@@ -18,7 +18,7 @@ pub async fn probe(player_filter: Option<&str>) -> Result<MediaSnapshot, MediaEr
         return Ok(MediaSnapshot::default());
     };
     let player = PlayerSnapshot {
-        bus: selected.bus,
+        id: selected.bus,
         kind: selected.kind,
     };
     let (track, position_ms) = read_player(&connection, &player).await;
@@ -38,18 +38,18 @@ async fn read_player(
     let proxy = match tokio::time::timeout(
         CALL_TIMEOUT,
         PlayerProxy::builder(connection)
-            .destination(player.bus.as_str())
+            .destination(player.id.as_str())
             .build(),
     )
     .await
     {
         Ok(Ok(proxy)) => proxy,
         Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to build MPRIS proxy");
+            debug!(%error, id = %player.id, "failed to build MPRIS proxy");
             return (None, 0);
         }
         Err(_) => {
-            debug!(bus = %player.bus, "building MPRIS proxy timed out");
+            debug!(id = %player.id, "building MPRIS proxy timed out");
             return (None, 0);
         }
     };
@@ -57,22 +57,22 @@ async fn read_player(
     let track = match tokio::time::timeout(CALL_TIMEOUT, proxy.metadata()).await {
         Ok(Ok(metadata)) => extract_track_meta(&metadata, player.kind),
         Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to read metadata");
+            debug!(%error, id = %player.id, "failed to read metadata");
             None
         }
         Err(_) => {
-            debug!(bus = %player.bus, "reading metadata timed out");
+            debug!(id = %player.id, "reading metadata timed out");
             None
         }
     };
     let position_ms = match tokio::time::timeout(CALL_TIMEOUT, proxy.position()).await {
         Ok(Ok(position)) => micros_to_ms(position),
         Ok(Err(error)) => {
-            debug!(%error, bus = %player.bus, "failed to read position");
+            debug!(%error, id = %player.id, "failed to read position");
             0
         }
         Err(_) => {
-            debug!(bus = %player.bus, "reading position timed out");
+            debug!(id = %player.id, "reading position timed out");
             0
         }
     };

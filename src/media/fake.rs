@@ -63,7 +63,7 @@ mod tests {
             (
                 Duration::ZERO,
                 MediaEvent::PlayerChanged {
-                    bus: "org.mpris.MediaPlayer2.spotify".to_string(),
+                    id: "org.mpris.MediaPlayer2.spotify".to_string(),
                     kind: PlayerKind::Native,
                 },
             ),

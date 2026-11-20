@@ -32,7 +32,6 @@ impl AppPaths {
             .as_ref()
             .map(|base| base.home_dir().to_path_buf())
             .or_else(home_dir);
-        let user_dirs = UserDirs::new();
 
         let config_file = project
             .as_ref()
@@ -63,7 +62,7 @@ impl AppPaths {
             offsets_file,
             cache_db_file,
             log_file: overrides.log_file.unwrap_or(log_file),
-            default_music_dirs: music_dirs(user_dirs.as_ref(), home.as_deref()),
+            default_music_dirs: default_music_dirs(),
         }
     }
 
@@ -94,6 +93,12 @@ fn fallback_path(home: Option<&Path>, relative: &str, file: &str) -> PathBuf {
         || PathBuf::from(relative).join(APP_NAME).join(file),
         |home| home.join(relative).join(APP_NAME).join(file),
     )
+}
+
+pub fn default_music_dirs() -> Vec<PathBuf> {
+    let user_dirs = UserDirs::new();
+    let home = BaseDirs::new().map(|base| base.home_dir().to_path_buf());
+    music_dirs(user_dirs.as_ref(), home.as_deref())
 }
 
 fn music_dirs(user_dirs: Option<&UserDirs>, home: Option<&Path>) -> Vec<PathBuf> {
