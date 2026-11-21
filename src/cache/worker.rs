@@ -13,7 +13,7 @@ use super::{
     CacheHandle, CacheLookup, TrackPreference, now_secs, schema,
 };
 use crate::core::model::{PARSER_VERSION, SyncedTrack};
-use crate::providers::{Provider, ProviderAnswer, Tier};
+use crate::providers::{Provider, ProviderAnswer, ProviderId, Tier};
 
 type TrackKey = [u8; 32];
 
@@ -252,7 +252,7 @@ impl Worker {
                         continue;
                     }
                 };
-                if let Some(provider) = Provider::from_config_name(&provider_name) {
+                if let Some(provider) = ProviderId::from_cache_name(&provider_name) {
                     providers.insert(provider);
                 }
             }
@@ -268,8 +268,8 @@ impl Worker {
                     track.user_offset_ms = 0;
                     let provider = pref
                         .provider()
-                        .or_else(|| Provider::from_config_name(&track.source_provider))
-                        .unwrap_or(Provider::Lrclib);
+                        .or_else(|| ProviderId::from_cache_name(&track.source_provider))
+                        .unwrap_or(ProviderId::Lrclib);
                     let tier = Tier::from_track(&track);
                     let confidence = finite_confidence(track.match_confidence);
                     let answer = ProviderAnswer {
@@ -335,8 +335,8 @@ impl Worker {
                     continue;
                 }
 
-                let Some(provider) = Provider::from_config_name(&provider_name) else {
-                    warn!(%provider_name, "ignoring cached lyric with unknown provider");
+                let Some(provider) = ProviderId::from_cache_name(&provider_name) else {
+                    warn!(%provider_name, "ignoring cached lyric with empty provider");
                     continue;
                 };
                 let mut track: SyncedTrack = match serde_json::from_slice(&payload) {
@@ -362,12 +362,12 @@ impl Worker {
                 let should_replace = match best.as_ref() {
                     None => true,
                     Some((current_best, _, _)) => {
-                        if preferred_provider == Some(answer.provider)
-                            && preferred_provider != Some(current_best.provider)
+                        if preferred_provider.as_ref() == Some(&answer.provider)
+                            && preferred_provider.as_ref() != Some(&current_best.provider)
                         {
                             true
-                        } else if preferred_provider == Some(current_best.provider)
-                            && preferred_provider != Some(answer.provider)
+                        } else if preferred_provider.as_ref() == Some(&current_best.provider)
+                            && preferred_provider.as_ref() != Some(&answer.provider)
                         {
                             false
                         } else {
@@ -392,7 +392,7 @@ impl Worker {
                 preference,
             });
         };
-        self.touch(track_key, answer.provider, now, last_accessed_at)?;
+        self.touch(track_key, answer.provider.clone(), now, last_accessed_at)?;
         let needs_upgrade =
             answer.tier == Tier::Line && upgrade_after.is_some_and(|stamp| now >= stamp);
         Ok(CacheLookup {
@@ -414,7 +414,7 @@ impl Worker {
         let mut track = answer.track.clone();
         track.user_offset_ms = 0;
         let payload = serde_json::to_vec(&track)?;
-        let provider = answer.provider;
+        let provider = answer.provider.clone();
         let upgrade_after =
             (answer.tier == Tier::Line).then(|| now.saturating_add(CACHE_UPGRADE_INTERVAL_SECS));
 
@@ -453,7 +453,7 @@ impl Worker {
         transaction.commit()?;
 
         let id = (*track_key, provider);
-        self.last_touch.insert(id, now);
+        self.last_touch.insert(id.clone(), now);
         self.pending_touch.remove(&id);
         Ok(())
     }
@@ -465,7 +465,7 @@ impl Worker {
         now: i64,
         row_last_accessed_at: i64,
     ) -> Result<(), CacheError> {
-        let id = (*track_key, provider);
+        let id = (*track_key, provider.clone());
         let last_written = self
             .last_touch
             .get(&id)
@@ -479,7 +479,7 @@ impl Worker {
                  WHERE track_key = ?2 AND provider = ?3",
                 params![now, track_key.as_slice(), provider.as_str()],
             )?;
-            self.last_touch.insert(id, now);
+            self.last_touch.insert(id.clone(), now);
             self.pending_touch.remove(&id);
         } else {
             self.pending_touch.insert(id, now);
@@ -593,8 +593,11 @@ impl Worker {
         )?;
         let row = statement
             .query_row(params![track_key.as_slice()], |row| {
+                let preferred_provider: Option<String> = row.get(0)?;
                 Ok(TrackPreference {
-                    preferred_provider: row.get(0)?,
+                    preferred_provider: preferred_provider
+                        .as_deref()
+                        .and_then(ProviderId::from_cache_name),
                     preferred_track_id: row.get(1)?,
                     pinned_payload_json: row.get(2)?,
                     preferred_style: row.get(3)?,
@@ -623,7 +626,10 @@ impl Worker {
                 updated_at = excluded.updated_at",
             params![
                 track_key.as_slice(),
-                preference.preferred_provider.as_deref(),
+                preference
+                    .preferred_provider
+                    .as_ref()
+                    .map(ProviderId::as_str),
                 preference.preferred_track_id.as_deref(),
                 preference.pinned_payload_json.as_deref(),
                 preference.preferred_style.as_deref(),
@@ -830,7 +836,7 @@ mod tests {
         granularity: SyncGranularity,
     ) -> ProviderAnswer {
         ProviderAnswer::new(
-            provider,
+            provider.clone(),
             SyncedTrack {
                 source_provider: provider.as_str().to_string(),
                 source_track_id: Some(text.to_string()),
@@ -1342,7 +1348,7 @@ mod tests {
         let old_key = sample_key("old", "artist");
         let old_track_key = crate::providers::sanitize::blake3_track_key(&old_key);
         let old_pref = TrackPreference {
-            preferred_provider: Some("lrclib".to_string()),
+            preferred_provider: Some(ProviderId::Lrclib),
             preferred_track_id: None,
             pinned_payload_json: None,
             preferred_style: None,
@@ -1355,7 +1361,7 @@ mod tests {
         let fresh_key = sample_key("fresh", "artist");
         let fresh_track_key = crate::providers::sanitize::blake3_track_key(&fresh_key);
         let fresh_pref = TrackPreference {
-            preferred_provider: Some("lyricsplus".to_string()),
+            preferred_provider: Some(ProviderId::LyricsPlus),
             preferred_track_id: None,
             pinned_payload_json: None,
             preferred_style: None,
@@ -1448,7 +1454,7 @@ mod tests {
             let key = sample_key(&format!("artist-{idx}"), "song");
             let track_key = crate::providers::sanitize::blake3_track_key(&key);
             let pref = TrackPreference {
-                preferred_provider: Some("lrclib".to_string()),
+                preferred_provider: Some(ProviderId::Lrclib),
                 preferred_track_id: None,
                 pinned_payload_json: None,
                 preferred_style: None,
@@ -1482,6 +1488,38 @@ mod tests {
     }
 
     #[test]
+    fn dynamic_provider_ids_round_trip_through_preferences_and_negative_cache() {
+        let path = temp_path("dynamic-provider-ids");
+        let conn = schema::open(&path).unwrap();
+        let mut worker = Worker::new(conn);
+        let now = now_secs();
+
+        let key = sample_key("dynamic", "song");
+        let track_key = crate::providers::sanitize::blake3_track_key(&key);
+        let preferred = ProviderId::new("unison");
+        let negative = ProviderId::new("simpmusic");
+
+        worker
+            .set_track_preference(
+                &track_key,
+                &TrackPreference::with_preferred_provider(preferred.clone()),
+            )
+            .unwrap();
+        worker
+            .record_negative(&track_key, negative.clone(), now)
+            .unwrap();
+
+        let stored = worker.get_track_preference(&track_key).unwrap().unwrap();
+        assert_eq!(stored.provider(), Some(preferred));
+        let lookup = worker.lookup(&track_key, now).unwrap();
+        assert!(lookup.negative_providers.contains(&negative));
+        assert!(!lookup.negative_providers.contains(&ProviderId::Lrclib));
+
+        drop(worker);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn preference_preserves_unavailable_provider_string_without_losing_pinned_payload() {
         let path = temp_path("preserve-unavailable-provider");
         let conn = schema::open(&path).unwrap();
@@ -1500,7 +1538,7 @@ mod tests {
         let payload = serde_json::to_vec(&track).unwrap();
 
         let pref = TrackPreference {
-            preferred_provider: Some("ytmusic_future_or_disabled".to_string()),
+            preferred_provider: Some(ProviderId::new("ytmusic_future_or_disabled")),
             preferred_track_id: Some("yt-1".to_string()),
             pinned_payload_json: Some(payload),
             preferred_style: None,
@@ -1510,7 +1548,7 @@ mod tests {
 
         let stored = worker.get_track_preference(&track_key).unwrap().unwrap();
         assert_eq!(
-            stored.preferred_provider.as_deref(),
+            stored.preferred_provider.as_ref().map(ProviderId::as_str),
             Some("ytmusic_future_or_disabled")
         );
 

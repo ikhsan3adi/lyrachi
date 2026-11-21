@@ -6,7 +6,7 @@ use tokio::sync::{mpsc, oneshot};
 
 use crate::core::model::{CanonicalTrackKey, PARSER_VERSION, SyncedTrack};
 use crate::providers::sanitize::blake3_track_key;
-use crate::providers::{Provider, ProviderAnswer};
+use crate::providers::{Provider, ProviderAnswer, ProviderId};
 
 mod schema;
 mod worker;
@@ -37,7 +37,7 @@ pub enum CacheError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct TrackPreference {
-    pub preferred_provider: Option<String>,
+    pub preferred_provider: Option<ProviderId>,
     pub preferred_track_id: Option<String>,
     pub pinned_payload_json: Option<Vec<u8>>,
     pub preferred_style: Option<String>,
@@ -63,7 +63,7 @@ impl TrackPreference {
 
     pub fn with_preferred_provider(provider: Provider) -> Self {
         Self {
-            preferred_provider: Some(provider.as_str().to_string()),
+            preferred_provider: Some(provider),
             ..Self::default()
         }
     }
@@ -78,7 +78,7 @@ impl TrackPreference {
         clean_track.user_offset_ms = 0;
         let payload = serde_json::to_vec(&clean_track)?;
         Ok(Self {
-            preferred_provider: Some(provider.as_str().to_string()),
+            preferred_provider: Some(provider),
             preferred_track_id: track_id,
             pinned_payload_json: Some(payload),
             preferred_style: style,
@@ -87,9 +87,7 @@ impl TrackPreference {
     }
 
     pub fn provider(&self) -> Option<Provider> {
-        self.preferred_provider
-            .as_deref()
-            .and_then(Provider::from_config_name)
+        self.preferred_provider.clone()
     }
 
     pub fn pinned_track(&self) -> Option<SyncedTrack> {
@@ -682,7 +680,10 @@ mod tests {
         let lookup = handle.lookup(&key).await.unwrap();
         assert!(lookup.is_pinned);
         let pref = lookup.preference.expect("preference must exist");
-        assert_eq!(pref.preferred_provider.as_deref(), Some("lrclib"));
+        assert_eq!(
+            pref.preferred_provider.as_ref().map(ProviderId::as_str),
+            Some("lrclib")
+        );
         assert_eq!(pref.preferred_track_id.as_deref(), Some("999"));
         assert_eq!(pref.preferred_style.as_deref(), Some("builtin:dark"));
 
@@ -690,7 +691,10 @@ mod tests {
         let lookup_after_unpin_style = handle.lookup(&key).await.unwrap();
         assert!(lookup_after_unpin_style.is_pinned);
         let pref2 = lookup_after_unpin_style.preference.unwrap();
-        assert_eq!(pref2.preferred_provider.as_deref(), Some("lrclib"));
+        assert_eq!(
+            pref2.preferred_provider.as_ref().map(ProviderId::as_str),
+            Some("lrclib")
+        );
         assert_eq!(pref2.preferred_style, None);
 
         handle.shutdown().await.unwrap();

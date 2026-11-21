@@ -13,7 +13,10 @@ use tracing::{info, warn};
 use super::sanitize::{
     clean_artist, clean_title, normalize_for_match, split_artist_title, strip_dash_qualifier,
 };
-use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, Tier, TrackQuery};
+use super::{
+    CandidateSummary, LyricProvider, Provider, ProviderAnswer, ProviderCapabilities, ProviderError,
+    Tier, TrackQuery,
+};
 use crate::core::normalize::normalize_track;
 use crate::core::parse::lrc::parse_lrc;
 
@@ -250,6 +253,45 @@ impl LocalProvider {
         }
 
         Ok(None)
+    }
+}
+
+impl LyricProvider for LocalProvider {
+    fn id(&self) -> Provider {
+        Provider::Local
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_search: true,
+            needs_hydration: true,
+            max_candidates: usize::MAX,
+        }
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.find_with_cancel(query, cancel))
+    }
+
+    fn search_candidates<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+        Box::pin(self.search_candidates(query, cancel))
+    }
+
+    fn hydrate_candidate<'a>(
+        &'a self,
+        summary: &'a CandidateSummary,
+        _limiter: Option<&'a crate::providers::engine::TokenBucketRateLimiter>,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.hydrate_candidate(summary, cancel))
     }
 }
 

@@ -1,6 +1,4 @@
 use std::collections::HashMap;
-use std::future::Future;
-use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
@@ -11,11 +9,9 @@ use tokio::time::{Instant, sleep_until};
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, warn};
 
-use super::lrclib::LrclibClient;
-use super::lyricsplus::LyricsPlusProvider;
-#[cfg(feature = "ytmusic")]
-use super::ytmusic::YtMusicProvider;
-use super::{Provider, ProviderAnswer, ProviderError, ProviderResolver, Tier, TrackQuery};
+use super::{
+    LyricProvider, ProviderAnswer, ProviderError, ProviderId, ProviderRegistry, Tier, TrackQuery,
+};
 use crate::cache::{CacheHandle, CacheLookup, TrackPreference};
 
 pub const SYNC_GRACE: Duration = Duration::from_secs(2);
@@ -171,28 +167,28 @@ impl CircuitBreaker {
 
 #[derive(Debug, Default)]
 pub struct CircuitBreakers {
-    breakers: Mutex<HashMap<Provider, CircuitBreaker>>,
+    breakers: Mutex<HashMap<ProviderId, CircuitBreaker>>,
 }
 
 impl CircuitBreakers {
-    pub fn can_attempt(&self, provider: Provider, now: Instant) -> bool {
+    pub fn can_attempt(&self, provider: ProviderId, now: Instant) -> bool {
         let mut map = self.breakers.lock().unwrap();
         map.entry(provider).or_default().can_attempt(now)
     }
 
-    pub fn record_success(&self, provider: Provider) {
+    pub fn record_success(&self, provider: ProviderId) {
         let mut map = self.breakers.lock().unwrap();
         map.entry(provider).or_default().record_success();
     }
 
-    pub fn record_error(&self, provider: Provider, error: &ProviderError, now: Instant) {
+    pub fn record_error(&self, provider: ProviderId, error: &ProviderError, now: Instant) {
         let mut map = self.breakers.lock().unwrap();
         map.entry(provider).or_default().record_error(error, now);
     }
 
     pub fn record_result(
         &self,
-        provider: Provider,
+        provider: ProviderId,
         result: &Result<Option<ProviderAnswer>, ProviderError>,
         now: Instant,
     ) {
@@ -202,7 +198,7 @@ impl CircuitBreakers {
         }
     }
 
-    pub fn status(&self, provider: Provider, now: Instant) -> &'static str {
+    pub fn status(&self, provider: ProviderId, now: Instant) -> &'static str {
         let map = self.breakers.lock().unwrap();
         map.get(&provider)
             .map(|breaker| breaker.state_at(now).as_str())
@@ -277,57 +273,15 @@ impl TokenBucketRateLimiter {
 
 #[derive(Debug, Default)]
 pub struct RateLimiters {
-    limiters: Mutex<HashMap<Provider, Arc<TokenBucketRateLimiter>>>,
+    limiters: Mutex<HashMap<ProviderId, Arc<TokenBucketRateLimiter>>>,
 }
 
 impl RateLimiters {
-    pub fn get_or_create(&self, provider: Provider) -> Arc<TokenBucketRateLimiter> {
+    pub fn get_or_create(&self, provider: ProviderId) -> Arc<TokenBucketRateLimiter> {
         let mut map = self.limiters.lock().unwrap();
         map.entry(provider)
             .or_insert_with(|| Arc::new(TokenBucketRateLimiter::tier2_default()))
             .clone()
-    }
-}
-
-type ProviderFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<Option<ProviderAnswer>, ProviderError>> + Send + 'a>>;
-
-pub(crate) trait NetworkProvider: Send + Sync {
-    fn lookup<'a>(
-        &'a self,
-        query: &'a TrackQuery,
-        cancel: &'a CancellationToken,
-    ) -> ProviderFuture<'a>;
-}
-
-impl NetworkProvider for LrclibClient {
-    fn lookup<'a>(
-        &'a self,
-        query: &'a TrackQuery,
-        cancel: &'a CancellationToken,
-    ) -> ProviderFuture<'a> {
-        Box::pin(self.resolve_with_cancel(query, cancel))
-    }
-}
-
-impl NetworkProvider for LyricsPlusProvider {
-    fn lookup<'a>(
-        &'a self,
-        query: &'a TrackQuery,
-        cancel: &'a CancellationToken,
-    ) -> ProviderFuture<'a> {
-        Box::pin(self.resolve_with_cancel(query, cancel))
-    }
-}
-
-#[cfg(feature = "ytmusic")]
-impl NetworkProvider for YtMusicProvider {
-    fn lookup<'a>(
-        &'a self,
-        query: &'a TrackQuery,
-        cancel: &'a CancellationToken,
-    ) -> ProviderFuture<'a> {
-        Box::pin(self.resolve_with_cancel(query, cancel))
     }
 }
 
@@ -338,9 +292,9 @@ pub struct EngineUpdate {
 }
 
 pub(crate) struct NetworkSpec {
-    pub provider: Provider,
+    pub provider: ProviderId,
     pub priority: usize,
-    pub source: Arc<dyn NetworkProvider>,
+    pub source: Arc<dyn LyricProvider>,
     pub limiter: Option<Arc<TokenBucketRateLimiter>>,
 }
 
@@ -359,7 +313,7 @@ impl Candidate {
 #[derive(Debug)]
 struct RaceOutcome {
     answer: Option<ProviderAnswer>,
-    negative_providers: Vec<Provider>,
+    negative_providers: Vec<ProviderId>,
     error: Option<ProviderError>,
     had_error: bool,
 }
@@ -377,7 +331,7 @@ impl RaceOutcome {
 }
 
 pub async fn resolve(
-    resolver: &ProviderResolver,
+    resolver: &ProviderRegistry,
     cache: Option<&CacheHandle>,
     query: &TrackQuery,
     cancel: &CancellationToken,
@@ -473,7 +427,7 @@ async fn resolve_with_specs(
     let mut available: Vec<NetworkSpec> = specs
         .into_iter()
         .filter(|spec| !lookup.negative_providers.contains(&spec.provider))
-        .filter(|spec| breakers.is_none_or(|b| b.can_attempt(spec.provider, now)))
+        .filter(|spec| breakers.is_none_or(|b| b.can_attempt(spec.provider.clone(), now)))
         .collect();
 
     let mut pref_error = None;
@@ -545,7 +499,7 @@ async fn resolve_with_specs(
         if !outcome.had_error
             && let Some(cache) = cache
             && let Err(error) = cache
-                .mark_upgrade_attempted(&query.canonical, cached.provider)
+                .mark_upgrade_attempted(&query.canonical, cached.provider.clone())
                 .await
         {
             warn!(%error, "failed to mark lyric upgrade as attempted");
@@ -586,20 +540,20 @@ async fn store_answer(cache: Option<&CacheHandle>, query: &TrackQuery, answer: &
 async fn record_negatives(
     cache: Option<&CacheHandle>,
     key: &crate::core::model::CanonicalTrackKey,
-    providers: &[Provider],
+    providers: &[ProviderId],
 ) {
     let Some(cache) = cache else {
         return;
     };
     for provider in providers {
-        if let Err(error) = cache.record_negative(key, *provider).await {
+        if let Err(error) = cache.record_negative(key, provider.clone()).await {
             warn!(%error, provider = provider.as_str(), "failed to record negative cache entry");
         }
     }
 }
 
 pub async fn resolve_final(
-    resolver: &ProviderResolver,
+    resolver: &ProviderRegistry,
     cache: Option<&CacheHandle>,
     query: &TrackQuery,
     cancel: &CancellationToken,
@@ -648,7 +602,7 @@ async fn race_network(
             {
                 return (provider, priority, Err(error));
             }
-            let result = source.lookup(&query, &cancel).await;
+            let result = source.resolve(&query, &cancel).await;
             (provider, priority, result)
         });
     }
@@ -689,8 +643,8 @@ async fn race_network(
                 if let Some(breakers) = breakers {
                     let now = Instant::now();
                     match &result {
-                        Ok(_) => breakers.record_success(provider),
-                        Err(error) => breakers.record_error(provider, error, now),
+                        Ok(_) => breakers.record_success(provider.clone()),
+                        Err(error) => breakers.record_error(provider.clone(), error, now),
                     }
                 }
 
@@ -803,6 +757,7 @@ mod tests {
     use crate::cache::{CACHE_UPGRADE_INTERVAL_SECS, CacheHandle, now_secs};
     use crate::core::model::{LineRole, LyricLine, SyncGranularity, SyncedTrack};
     use crate::media::TrackMeta;
+    use crate::providers::{CandidateSummary, Provider};
 
     struct FakeProvider {
         provider: Provider,
@@ -814,12 +769,24 @@ mod tests {
         fails: bool,
     }
 
-    impl NetworkProvider for FakeProvider {
-        fn lookup<'a>(
+    impl LyricProvider for FakeProvider {
+        fn id(&self) -> ProviderId {
+            self.provider.clone()
+        }
+
+        fn capabilities(&self) -> super::super::ProviderCapabilities {
+            super::super::ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: false,
+                max_candidates: 1,
+            }
+        }
+
+        fn resolve<'a>(
             &'a self,
             _query: &'a TrackQuery,
             cancel: &'a CancellationToken,
-        ) -> ProviderFuture<'a> {
+        ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
             Box::pin(async move {
                 if let Some(calls) = &self.calls {
                     calls.fetch_add(1, Ordering::SeqCst);
@@ -835,11 +802,28 @@ mod tests {
                             return Err(ProviderError::Unavailable("mock failure".to_string()));
                         }
                         Ok(self.tier.map(|tier| {
-                            ProviderAnswer::new(self.provider, track(tier, self.id))
+                            ProviderAnswer::new(self.provider.clone(), track(tier, self.id))
                         }))
                     }
                 }
             })
+        }
+
+        fn search_candidates<'a>(
+            &'a self,
+            _query: &'a TrackQuery,
+            _cancel: &'a CancellationToken,
+        ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+            Box::pin(async { Ok(Vec::new()) })
+        }
+
+        fn hydrate_candidate<'a>(
+            &'a self,
+            _summary: &'a CandidateSummary,
+            _limiter: Option<&'a TokenBucketRateLimiter>,
+            _cancel: &'a CancellationToken,
+        ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+            Box::pin(async { Ok(None) })
         }
     }
 
@@ -907,7 +891,7 @@ mod tests {
         fails: bool,
     ) -> NetworkSpec {
         NetworkSpec {
-            provider,
+            provider: provider.clone(),
             priority,
             source: Arc::new(FakeProvider {
                 provider,

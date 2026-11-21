@@ -9,8 +9,8 @@ use super::http;
 use super::sanitize::{clean_artist, clean_title, normalize_for_match, split_artist_title};
 use super::score;
 use super::{
-    CandidateSummary, Provider, ProviderAnswer, ProviderError, Tier, TokenBucketRateLimiter,
-    TrackQuery,
+    CandidateSummary, LyricProvider, Provider, ProviderAnswer, ProviderCapabilities, ProviderError,
+    Tier, TokenBucketRateLimiter, TrackQuery,
 };
 use crate::core::model::LineRole;
 use crate::core::normalize::{normalize_plain, normalize_track_checked};
@@ -922,6 +922,49 @@ fn is_known_empty_lyrics(val: &Value) -> bool {
         return true;
     }
     find_object_with_key(val, "messageRenderer").is_some()
+}
+
+impl LyricProvider for YtMusicProvider {
+    fn id(&self) -> Provider {
+        Provider::YtMusic
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_search: true,
+            needs_hydration: true,
+            max_candidates: MAX_SEARCH_CANDIDATES,
+        }
+    }
+
+    fn rate_limited(&self) -> bool {
+        true
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.resolve_with_cancel(query, cancel))
+    }
+
+    fn search_candidates<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+        Box::pin(self.search_candidates(query, cancel))
+    }
+
+    fn hydrate_candidate<'a>(
+        &'a self,
+        summary: &'a CandidateSummary,
+        limiter: Option<&'a crate::providers::engine::TokenBucketRateLimiter>,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.hydrate_candidate(summary, limiter, cancel))
+    }
 }
 
 #[cfg(test)]

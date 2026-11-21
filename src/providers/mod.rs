@@ -12,7 +12,9 @@ pub use engine::{
     CircuitBreaker, CircuitBreakers, CircuitState, RateLimiters, TokenBucketRateLimiter,
 };
 
-use std::collections::HashSet;
+use std::borrow::Cow;
+use std::collections::{HashMap, HashSet};
+use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
@@ -43,54 +45,30 @@ pub struct ProviderCapabilities {
     pub max_candidates: usize,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum Provider {
-    Local,
-    Lrclib,
-    LyricsPlus,
+#[derive(Debug, Clone, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct ProviderId(Cow<'static, str>);
+
+impl ProviderId {
+    #[allow(non_upper_case_globals)]
+    pub const Local: Self = Self(Cow::Borrowed("local"));
+    #[allow(non_upper_case_globals)]
+    pub const Lrclib: Self = Self(Cow::Borrowed("lrclib"));
+    #[allow(non_upper_case_globals)]
+    pub const LyricsPlus: Self = Self(Cow::Borrowed("lyricsplus"));
     #[cfg(feature = "ytmusic")]
-    YtMusic,
-}
+    #[allow(non_upper_case_globals)]
+    pub const YtMusic: Self = Self(Cow::Borrowed("ytmusic"));
 
-impl Provider {
-    pub const fn all() -> [Self; 3] {
-        [Self::Local, Self::Lrclib, Self::LyricsPlus]
+    pub fn new(name: impl Into<Cow<'static, str>>) -> Self {
+        Self(name.into())
     }
 
-    pub const fn capabilities(self) -> ProviderCapabilities {
-        match self {
-            Self::Local => ProviderCapabilities {
-                supports_search: true,
-                needs_hydration: true,
-                max_candidates: usize::MAX,
-            },
-            Self::Lrclib => ProviderCapabilities {
-                supports_search: true,
-                needs_hydration: false,
-                max_candidates: 20,
-            },
-            Self::LyricsPlus => ProviderCapabilities {
-                supports_search: false,
-                needs_hydration: false,
-                max_candidates: 1,
-            },
-            #[cfg(feature = "ytmusic")]
-            Self::YtMusic => ProviderCapabilities {
-                supports_search: true,
-                needs_hydration: true,
-                max_candidates: 5,
-            },
-        }
+    pub fn all() -> Vec<Self> {
+        vec![Self::Local, Self::Lrclib, Self::LyricsPlus]
     }
 
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Local => "local",
-            Self::Lrclib => "lrclib",
-            Self::LyricsPlus => "lyricsplus",
-            #[cfg(feature = "ytmusic")]
-            Self::YtMusic => "ytmusic",
-        }
+    pub fn as_str(&self) -> &str {
+        self.0.as_ref()
     }
 
     pub fn from_config_name(name: &str) -> Option<Self> {
@@ -104,7 +82,11 @@ impl Provider {
         }
     }
 
-    pub const fn valid_config_names() -> &'static str {
+    pub fn from_cache_name(name: &str) -> Option<Self> {
+        (!name.trim().is_empty()).then(|| Self::new(name.to_string()))
+    }
+
+    pub fn valid_config_names() -> &'static str {
         #[cfg(feature = "ytmusic")]
         {
             "local, lrclib, lyricsplus, ytmusic"
@@ -115,14 +97,83 @@ impl Provider {
         }
     }
 
-    pub const fn is_tier2(self) -> bool {
-        match self {
-            Self::LyricsPlus => true,
-            #[cfg(feature = "ytmusic")]
-            Self::YtMusic => true,
-            _ => false,
+    pub fn is_local(&self) -> bool {
+        *self == Self::Local
+    }
+
+    pub fn capabilities(&self) -> ProviderCapabilities {
+        match self.as_str() {
+            "local" => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: usize::MAX,
+            },
+            "lrclib" => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: false,
+                max_candidates: 20,
+            },
+            "lyricsplus" => ProviderCapabilities {
+                supports_search: false,
+                needs_hydration: false,
+                max_candidates: 1,
+            },
+            "ytmusic" => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: 5,
+            },
+            _ => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: 20,
+            },
         }
     }
+}
+
+impl fmt::Display for ProviderId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl From<String> for ProviderId {
+    fn from(value: String) -> Self {
+        Self::new(value)
+    }
+}
+
+impl From<&'static str> for ProviderId {
+    fn from(value: &'static str) -> Self {
+        Self::new(value)
+    }
+}
+
+pub type Provider = ProviderId;
+
+pub trait LyricProvider: Send + Sync {
+    fn id(&self) -> ProviderId;
+    fn capabilities(&self) -> ProviderCapabilities;
+    fn rate_limited(&self) -> bool {
+        false
+    }
+    fn resolve<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>>;
+    fn search_candidates<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>>;
+    fn hydrate_candidate<'a>(
+        &'a self,
+        summary: &'a CandidateSummary,
+        limiter: Option<&'a engine::TokenBucketRateLimiter>,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
@@ -294,88 +345,121 @@ impl TrackQuery {
     }
 }
 
-pub struct ProviderResolver {
-    local: LocalProvider,
-    lrclib: Arc<LrclibClient>,
-    lyricsplus: Arc<LyricsPlusProvider>,
-    #[cfg(feature = "ytmusic")]
-    ytmusic: Arc<YtMusicProvider>,
-    order: Vec<Provider>,
+pub struct ProviderRegistry {
+    providers: HashMap<ProviderId, Arc<dyn LyricProvider>>,
+    local: Arc<LocalProvider>,
+    order: Vec<ProviderId>,
     network: bool,
     breakers: Arc<engine::CircuitBreakers>,
     limiters: Arc<engine::RateLimiters>,
 }
 
-impl ProviderResolver {
+pub type ProviderResolver = ProviderRegistry;
+
+impl ProviderRegistry {
     pub fn new(local_dirs: Vec<PathBuf>) -> Result<Self, ProviderError> {
-        Self::with_config(local_dirs, Provider::all().to_vec(), true)
+        Self::with_config(local_dirs, ProviderId::all(), true)
     }
 
     pub fn with_config(
         local_dirs: Vec<PathBuf>,
-        order: Vec<Provider>,
+        order: Vec<ProviderId>,
         network: bool,
     ) -> Result<Self, ProviderError> {
-        let lrclib = LrclibClient::new()?;
-        let lyricsplus = LyricsPlusProvider::new()?;
-        #[cfg(feature = "ytmusic")]
-        let ytmusic = YtMusicProvider::new()?;
-        Ok(Self {
-            local: LocalProvider::new(local_dirs),
-            lrclib: Arc::new(lrclib),
-            lyricsplus: Arc::new(lyricsplus),
+        Ok(Self::assemble(
+            LocalProvider::new(local_dirs),
+            LrclibClient::new()?,
+            LyricsPlusProvider::new()?,
             #[cfg(feature = "ytmusic")]
-            ytmusic: Arc::new(ytmusic),
+            Some(YtMusicProvider::new()?),
+            #[cfg(not(feature = "ytmusic"))]
+            None,
             order,
             network,
-            breakers: Arc::new(engine::CircuitBreakers::default()),
-            limiters: Arc::new(engine::RateLimiters::default()),
-        })
+            Arc::new(engine::CircuitBreakers::default()),
+            Arc::new(engine::RateLimiters::default()),
+        ))
     }
 
     #[cfg(test)]
     fn with_config_and_base_url(
         local_dirs: Vec<PathBuf>,
-        order: Vec<Provider>,
+        order: Vec<ProviderId>,
         network: bool,
         base_url: impl Into<String>,
     ) -> Result<Self, ProviderError> {
         let base_url = base_url.into();
-        Ok(Self {
-            local: LocalProvider::new(local_dirs),
-            lrclib: Arc::new(LrclibClient::with_base_url(base_url.clone())?),
-            lyricsplus: Arc::new(LyricsPlusProvider::with_base_url(base_url.clone())?),
+        Ok(Self::assemble(
+            LocalProvider::new(local_dirs),
+            LrclibClient::with_base_url(base_url.clone())?,
+            LyricsPlusProvider::with_base_url(base_url.clone())?,
             #[cfg(feature = "ytmusic")]
-            ytmusic: Arc::new(YtMusicProvider::with_base_url(base_url)?),
+            Some(YtMusicProvider::with_base_url(base_url)?),
+            #[cfg(not(feature = "ytmusic"))]
+            None,
             order,
             network,
-            breakers: Arc::new(engine::CircuitBreakers::default()),
-            limiters: Arc::new(engine::RateLimiters::default()),
-        })
+            Arc::new(engine::CircuitBreakers::default()),
+            Arc::new(engine::RateLimiters::default()),
+        ))
     }
 
     #[cfg(test)]
     pub fn with_config_and_breakers(
         local_dirs: Vec<PathBuf>,
-        order: Vec<Provider>,
+        order: Vec<ProviderId>,
         network: bool,
         breakers: Arc<engine::CircuitBreakers>,
     ) -> Result<Self, ProviderError> {
-        let lrclib = LrclibClient::new()?;
-        let lyricsplus = LyricsPlusProvider::new()?;
-        #[cfg(feature = "ytmusic")]
-        let ytmusic = YtMusicProvider::new()?;
-        Ok(Self {
-            local: LocalProvider::new(local_dirs),
-            lrclib: Arc::new(lrclib),
-            lyricsplus: Arc::new(lyricsplus),
+        Ok(Self::assemble(
+            LocalProvider::new(local_dirs),
+            LrclibClient::new()?,
+            LyricsPlusProvider::new()?,
             #[cfg(feature = "ytmusic")]
-            ytmusic: Arc::new(ytmusic),
+            Some(YtMusicProvider::new()?),
+            #[cfg(not(feature = "ytmusic"))]
+            None,
             order,
             network,
             breakers,
-            limiters: Arc::new(engine::RateLimiters::default()),
-        })
+            Arc::new(engine::RateLimiters::default()),
+        ))
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
+        local: LocalProvider,
+        lrclib: LrclibClient,
+        lyricsplus: LyricsPlusProvider,
+        #[cfg(feature = "ytmusic")] ytmusic: Option<YtMusicProvider>,
+        #[cfg(not(feature = "ytmusic"))] _ytmusic: Option<()>,
+        order: Vec<ProviderId>,
+        network: bool,
+        breakers: Arc<engine::CircuitBreakers>,
+        limiters: Arc<engine::RateLimiters>,
+    ) -> Self {
+        let local = Arc::new(local);
+        let mut providers: HashMap<ProviderId, Arc<dyn LyricProvider>> = HashMap::new();
+        providers.insert(ProviderId::Local, local.clone());
+        providers.insert(ProviderId::Lrclib, Arc::new(lrclib));
+        providers.insert(ProviderId::LyricsPlus, Arc::new(lyricsplus));
+        #[cfg(feature = "ytmusic")]
+        if let Some(ytmusic) = ytmusic {
+            providers.insert(ProviderId::YtMusic, Arc::new(ytmusic));
+        }
+
+        Self {
+            providers,
+            local,
+            order,
+            network,
+            breakers,
+            limiters,
+        }
+    }
+
+    pub fn register(&mut self, provider: Arc<dyn LyricProvider>) {
+        self.providers.insert(provider.id(), provider);
     }
 
     pub fn network_enabled(&self) -> bool {
@@ -390,14 +474,13 @@ impl ProviderResolver {
         &self.limiters
     }
 
-    pub fn circuit_breaker_statuses(&self) -> Vec<(Provider, &'static str)> {
+    pub fn circuit_breaker_statuses(&self) -> Vec<(ProviderId, &'static str)> {
         let mut seen = HashSet::new();
         let now = tokio::time::Instant::now();
         self.order
             .iter()
-            .copied()
-            .filter(|p| *p != Provider::Local && seen.insert(*p))
-            .map(|p| (p, self.breakers.status(p, now)))
+            .filter(|id| !id.is_local() && seen.insert((*id).clone()))
+            .map(|id| (id.clone(), self.breakers.status(id.clone(), now)))
             .collect()
     }
 
@@ -409,24 +492,16 @@ impl ProviderResolver {
         self.order
             .iter()
             .enumerate()
-            .filter_map(|(priority, provider)| {
-                if !seen.insert(*provider) {
+            .filter_map(|(priority, id)| {
+                if id.is_local() || !seen.insert(id.clone()) {
                     return None;
                 }
-                let source: Arc<dyn engine::NetworkProvider> = match provider {
-                    Provider::Local => return None,
-                    Provider::Lrclib => self.lrclib.clone(),
-                    Provider::LyricsPlus => self.lyricsplus.clone(),
-                    #[cfg(feature = "ytmusic")]
-                    Provider::YtMusic => self.ytmusic.clone(),
-                };
-                let limiter = if provider.is_tier2() {
-                    Some(self.limiters.get_or_create(*provider))
-                } else {
-                    None
-                };
+                let source = self.providers.get(id)?.clone();
+                let limiter = source
+                    .rate_limited()
+                    .then(|| self.limiters.get_or_create(id.clone()));
                 Some(engine::NetworkSpec {
-                    provider: *provider,
+                    provider: id.clone(),
                     priority,
                     source,
                     limiter,
@@ -456,10 +531,10 @@ impl ProviderResolver {
         if cancel.is_cancelled() {
             return Err(ProviderError::Cancelled);
         }
-        if !query.is_usable() || !self.order.contains(&Provider::Local) {
+        if !query.is_usable() || !self.order.iter().any(ProviderId::is_local) {
             return Ok(None);
         }
-        self.local.find_with_cancel(query, cancel).await
+        LyricProvider::resolve(self.local.as_ref(), query, cancel).await
     }
 
     pub async fn resolve_network(
@@ -474,19 +549,18 @@ impl ProviderResolver {
             return Ok(None);
         }
 
-        for provider in &self.order {
+        for id in &self.order {
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }
-            let answer = match provider {
-                Provider::Local => None,
-                Provider::Lrclib => self.lrclib.resolve_with_cancel(query, cancel).await?,
-                Provider::LyricsPlus => self.lyricsplus.resolve_with_cancel(query, cancel).await?,
-                #[cfg(feature = "ytmusic")]
-                Provider::YtMusic => self.ytmusic.resolve_with_cancel(query, cancel).await?,
+            if id.is_local() {
+                continue;
+            }
+            let Some(provider) = self.providers.get(id) else {
+                continue;
             };
-            if answer.is_some() {
-                return Ok(answer);
+            if let Some(answer) = provider.resolve(query, cancel).await? {
+                return Ok(Some(answer));
             }
         }
 
@@ -505,29 +579,18 @@ impl ProviderResolver {
             return Ok(None);
         }
 
-        for provider in &self.order {
+        for id in &self.order {
             if cancel.is_cancelled() {
                 return Err(ProviderError::Cancelled);
             }
-            let answer = match provider {
-                Provider::Local => self.local.find_with_cancel(query, cancel).await?,
-                Provider::Lrclib if self.network => {
-                    self.lrclib.resolve_with_cancel(query, cancel).await?
-                }
-                Provider::Lrclib => None,
-                Provider::LyricsPlus if self.network => {
-                    self.lyricsplus.resolve_with_cancel(query, cancel).await?
-                }
-                Provider::LyricsPlus => None,
-                #[cfg(feature = "ytmusic")]
-                Provider::YtMusic if self.network => {
-                    self.ytmusic.resolve_with_cancel(query, cancel).await?
-                }
-                #[cfg(feature = "ytmusic")]
-                Provider::YtMusic => None,
+            if !id.is_local() && !self.network {
+                continue;
+            }
+            let Some(provider) = self.providers.get(id) else {
+                continue;
             };
-            if answer.is_some() {
-                return Ok(answer);
+            if let Some(answer) = provider.resolve(query, cancel).await? {
+                return Ok(Some(answer));
             }
         }
 
@@ -551,71 +614,36 @@ impl ProviderResolver {
         let mut in_flight_network = HashSet::new();
         let mut tasks = JoinSet::new();
 
-        for (priority, &provider) in self.order.iter().enumerate() {
-            if !seen.insert(provider) {
+        for (priority, id) in self.order.iter().enumerate() {
+            let id = id.clone();
+            if !seen.insert(id.clone()) {
                 continue;
             }
-            if provider != Provider::Local
-                && (!self.network || !self.breakers.can_attempt(provider, now))
-            {
+            let Some(provider) = self.providers.get(&id).cloned() else {
+                continue;
+            };
+            if !id.is_local() && (!self.network || !self.breakers.can_attempt(id.clone(), now)) {
                 continue;
             }
-            if provider != Provider::Local {
-                in_flight_network.insert(provider);
+            if !id.is_local() {
+                in_flight_network.insert(id.clone());
             }
 
             let query = query.clone();
             let cancel = cancel.clone();
             let limiter = provider
-                .is_tier2()
-                .then(|| self.limiters.get_or_create(provider));
+                .rate_limited()
+                .then(|| self.limiters.get_or_create(id.clone()));
 
-            match provider {
-                Provider::Local => {
-                    let local = self.local.clone();
-                    tasks.spawn(async move {
-                        let result = local.search_candidates(&query, &cancel).await;
-                        (provider, priority, result)
-                    });
+            tasks.spawn(async move {
+                if let Some(limiter) = limiter
+                    && let Err(error) = limiter.acquire(&cancel).await
+                {
+                    return (id, priority, Err(error));
                 }
-                Provider::Lrclib => {
-                    let lrclib = self.lrclib.clone();
-                    tasks.spawn(async move {
-                        if let Some(limiter) = limiter
-                            && let Err(error) = limiter.acquire(&cancel).await
-                        {
-                            return (provider, priority, Err(error));
-                        }
-                        let result = lrclib.search_candidates(&query, &cancel).await;
-                        (provider, priority, result)
-                    });
-                }
-                Provider::LyricsPlus => {
-                    let lyricsplus = self.lyricsplus.clone();
-                    tasks.spawn(async move {
-                        if let Some(limiter) = limiter
-                            && let Err(error) = limiter.acquire(&cancel).await
-                        {
-                            return (provider, priority, Err(error));
-                        }
-                        let result = lyricsplus.search_candidates(&query, &cancel).await;
-                        (provider, priority, result)
-                    });
-                }
-                #[cfg(feature = "ytmusic")]
-                Provider::YtMusic => {
-                    let ytmusic = self.ytmusic.clone();
-                    tasks.spawn(async move {
-                        if let Some(limiter) = limiter
-                            && let Err(error) = limiter.acquire(&cancel).await
-                        {
-                            return (provider, priority, Err(error));
-                        }
-                        let result = ytmusic.search_candidates(&query, &cancel).await;
-                        (provider, priority, result)
-                    });
-                }
-            }
+                let result = provider.search_candidates(&query, &cancel).await;
+                (id, priority, result)
+            });
         }
 
         let deadline = now + CANDIDATE_SEARCH_TIMEOUT;
@@ -643,18 +671,18 @@ impl ProviderResolver {
                         }
                     };
 
-                    if provider != Provider::Local {
+                    if !provider.is_local() {
                         in_flight_network.remove(&provider);
                         let now = tokio::time::Instant::now();
                         match &result {
-                            Ok(_) => self.breakers.record_success(provider),
-                            Err(error) => self.breakers.record_error(provider, error, now),
+                            Ok(_) => self.breakers.record_success(provider.clone()),
+                            Err(error) => self.breakers.record_error(provider.clone(), error, now),
                         }
                     }
 
                     match result {
                         Ok(list) => {
-                            if provider != Provider::Local {
+                            if !provider.is_local() {
                                 network_succeeded += 1;
                             }
                             for item in list {
@@ -712,36 +740,36 @@ impl ProviderResolver {
         if let Some(answer) = &summary.hydrated {
             return Ok(Some(answer.clone()));
         }
-
-        match summary.provider {
-            Provider::Local => self.local.hydrate_candidate(summary, cancel).await,
-            Provider::Lrclib | Provider::LyricsPlus => Ok(None),
-            #[cfg(feature = "ytmusic")]
-            Provider::YtMusic => {
-                if !self.network {
-                    return Ok(None);
-                }
-                if !self
-                    .breakers
-                    .can_attempt(Provider::YtMusic, tokio::time::Instant::now())
-                {
-                    return Err(ProviderError::Unavailable(
-                        "ytmusic circuit breaker open".to_string(),
-                    ));
-                }
-                let limiter = self.limiters.get_or_create(Provider::YtMusic);
-                let result = self
-                    .ytmusic
-                    .hydrate_candidate(summary, Some(limiter.as_ref()), cancel)
-                    .await;
-                self.breakers.record_result(
-                    Provider::YtMusic,
-                    &result,
-                    tokio::time::Instant::now(),
-                );
-                result
-            }
+        let Some(provider) = self.providers.get(&summary.provider).cloned() else {
+            return Ok(None);
+        };
+        if provider.id().is_local() {
+            return provider.hydrate_candidate(summary, None, cancel).await;
         }
+        if !self.network {
+            return Ok(None);
+        }
+        if !self
+            .breakers
+            .can_attempt(summary.provider.clone(), tokio::time::Instant::now())
+        {
+            return Err(ProviderError::Unavailable(format!(
+                "{} circuit breaker open",
+                summary.provider
+            )));
+        }
+        let limiter = provider
+            .rate_limited()
+            .then(|| self.limiters.get_or_create(summary.provider.clone()));
+        let result = provider
+            .hydrate_candidate(summary, limiter.as_deref(), cancel)
+            .await;
+        self.breakers.record_result(
+            summary.provider.clone(),
+            &result,
+            tokio::time::Instant::now(),
+        );
+        result
     }
 }
 
@@ -918,6 +946,89 @@ mod tests {
         assert!(specs[0].limiter.is_some());
     }
 
+    struct DynamicProvider {
+        id: ProviderId,
+    }
+
+    impl LyricProvider for DynamicProvider {
+        fn id(&self) -> ProviderId {
+            self.id.clone()
+        }
+
+        fn capabilities(&self) -> ProviderCapabilities {
+            ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: false,
+                max_candidates: 1,
+            }
+        }
+
+        fn rate_limited(&self) -> bool {
+            true
+        }
+
+        fn resolve<'a>(
+            &'a self,
+            _query: &'a TrackQuery,
+            _cancel: &'a CancellationToken,
+        ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+            Box::pin(async { Ok(None) })
+        }
+
+        fn search_candidates<'a>(
+            &'a self,
+            query: &'a TrackQuery,
+            _cancel: &'a CancellationToken,
+        ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+            let candidate = CandidateSummary {
+                provider: self.id.clone(),
+                source_track_id: Some("dynamic-1".to_string()),
+                title: query.title.clone(),
+                artist: Some(query.artist.clone()),
+                album: query.album.clone(),
+                duration_ms: query.duration_ms,
+                tier: Tier::Line,
+                confidence: 0.9,
+                local_path: None,
+                browse_hint: None,
+                query_duration_ms: query.duration_ms,
+                query_user_offset_ms: query.user_offset_ms,
+                hydrated: None,
+            };
+            Box::pin(async move { Ok(vec![candidate]) })
+        }
+
+        fn hydrate_candidate<'a>(
+            &'a self,
+            _summary: &'a CandidateSummary,
+            _limiter: Option<&'a engine::TokenBucketRateLimiter>,
+            _cancel: &'a CancellationToken,
+        ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+            Box::pin(async { Ok(None) })
+        }
+    }
+
+    #[tokio::test]
+    async fn registered_dynamic_provider_uses_the_shared_search_and_limiter_path() {
+        let id = ProviderId::new("unison");
+        let mut resolver =
+            ProviderResolver::with_config(Vec::new(), vec![id.clone()], true).unwrap();
+        resolver.register(Arc::new(DynamicProvider { id: id.clone() }));
+
+        let specs = resolver.network_specs();
+        assert_eq!(specs.len(), 1);
+        assert_eq!(specs[0].provider, id);
+        assert!(specs[0].limiter.is_some());
+
+        let query = TrackQuery::from_meta(&meta("Yellow", "Coldplay", None, None), 0);
+        let candidates = resolver
+            .search_candidates(&query, &CancellationToken::new())
+            .await
+            .unwrap();
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].provider, id);
+    }
+
     #[tokio::test]
     async fn honors_configured_provider_order() {
         let dir = temp_dir("resolver-order");
@@ -993,6 +1104,30 @@ mod tests {
         assert_eq!(specs.len(), 1);
         assert_eq!(specs[0].provider, Provider::YtMusic);
         assert!(specs[0].limiter.is_some());
+    }
+
+    #[test]
+    fn provider_ids_are_distinct_and_round_trip_from_config_and_cache_names() {
+        assert_eq!(
+            ProviderId::from_config_name("lrclib"),
+            Some(ProviderId::Lrclib)
+        );
+        assert_eq!(
+            ProviderId::from_config_name("lyricsplus"),
+            Some(ProviderId::LyricsPlus)
+        );
+        #[cfg(feature = "ytmusic")]
+        assert_eq!(
+            ProviderId::from_config_name("ytmusic"),
+            Some(ProviderId::YtMusic)
+        );
+        assert_eq!(ProviderId::from_config_name("unison"), None);
+
+        let unison = ProviderId::from_cache_name("unison").unwrap();
+        let simpmusic = ProviderId::from_cache_name("simpmusic").unwrap();
+        assert_eq!(unison.as_str(), "unison");
+        assert_ne!(unison, simpmusic);
+        assert_ne!(unison, ProviderId::Lrclib);
     }
 
     #[test]

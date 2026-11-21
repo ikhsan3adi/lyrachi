@@ -15,7 +15,9 @@ use lyrachi::{
         text::display_width,
     },
     media::TrackMeta,
-    providers::{Provider, ProviderAnswer, ProviderError, TrackQuery, lrclib::LrclibRecord, score},
+    providers::{
+        ProviderAnswer, ProviderError, ProviderId, TrackQuery, lrclib::LrclibRecord, score,
+    },
     style::{HighlightMode, LineChangeEffect, LineChangeEffectKind},
     ui::{DisplayMode, UiState, block::BlockStageCache, effects::UiEffects},
 };
@@ -130,7 +132,7 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
                             let _ = tx
                                 .send(AppEvent::Lyrics {
                                     epoch,
-                                    result: Ok(Some(ProviderAnswer::new(Provider::Local, track))),
+                                    result: Ok(Some(ProviderAnswer::new(ProviderId::Local, track))),
                                     is_final: true,
                                 })
                                 .await;
@@ -178,7 +180,7 @@ async fn dod_3_five_rapid_track_changes_in_two_seconds_never_show_stale_lyrics()
         &mut state,
         &mut coordinator,
         2,
-        Ok(Some(ProviderAnswer::new(Provider::Local, late_stale))),
+        Ok(Some(ProviderAnswer::new(ProviderId::Local, late_stale))),
         true,
     );
 

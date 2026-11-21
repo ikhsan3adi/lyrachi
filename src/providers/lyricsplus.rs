@@ -8,7 +8,10 @@ use tracing::warn;
 
 use super::http;
 use super::score;
-use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{
+    CandidateSummary, LyricProvider, Provider, ProviderAnswer, ProviderCapabilities, ProviderError,
+    TrackQuery,
+};
 use crate::core::model::{Annotation, AnnotationKind, LineRole};
 use crate::core::normalize::normalize_track_checked;
 use crate::core::parse::ttml::parse_ttml;
@@ -705,6 +708,49 @@ fn invalid_json(error: serde_json::Error) -> ProviderError {
 fn non_empty(value: &str) -> Option<&str> {
     let value = value.trim();
     (!value.is_empty()).then_some(value)
+}
+
+impl LyricProvider for LyricsPlusProvider {
+    fn id(&self) -> Provider {
+        Provider::LyricsPlus
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_search: false,
+            needs_hydration: false,
+            max_candidates: 1,
+        }
+    }
+
+    fn rate_limited(&self) -> bool {
+        true
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.resolve_with_cancel(query, cancel))
+    }
+
+    fn search_candidates<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+        Box::pin(self.search_candidates(query, cancel))
+    }
+
+    fn hydrate_candidate<'a>(
+        &'a self,
+        _summary: &'a CandidateSummary,
+        _limiter: Option<&'a crate::providers::engine::TokenBucketRateLimiter>,
+        _cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]

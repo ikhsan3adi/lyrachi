@@ -608,7 +608,9 @@ fn spawn_load_track_preference(
             return;
         };
         let pinned_source_label = if pref.pinned_payload_json.is_some() {
-            pref.preferred_provider.clone()
+            pref.preferred_provider
+                .as_ref()
+                .map(|provider| provider.as_str().to_string())
         } else {
             None
         };
@@ -1155,7 +1157,7 @@ pub fn handle_candidate_hydrated(
                     if let Err(error) = cache
                         .set_pinned_lyrics(
                             &key,
-                            answer_to_store.provider,
+                            answer_to_store.provider.clone(),
                             source_track_id,
                             &answer_to_store.track,
                         )

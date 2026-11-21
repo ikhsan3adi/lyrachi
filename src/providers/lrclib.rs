@@ -7,7 +7,10 @@ use tracing::warn;
 
 use super::http;
 use super::score;
-use super::{CandidateSummary, Provider, ProviderAnswer, ProviderError, TrackQuery};
+use super::{
+    CandidateSummary, LyricProvider, Provider, ProviderAnswer, ProviderCapabilities, ProviderError,
+    TrackQuery,
+};
 use crate::core::model::SyncGranularity;
 use crate::core::normalize::{normalize_instrumental, normalize_plain, normalize_track_checked};
 use crate::core::parse::lrc::parse_lrc;
@@ -422,6 +425,45 @@ fn get_params(query: &TrackQuery) -> Vec<(&'static str, String)> {
     }
 
     params
+}
+
+impl LyricProvider for LrclibClient {
+    fn id(&self) -> Provider {
+        Provider::Lrclib
+    }
+
+    fn capabilities(&self) -> ProviderCapabilities {
+        ProviderCapabilities {
+            supports_search: true,
+            needs_hydration: false,
+            max_candidates: MAX_CANDIDATES,
+        }
+    }
+
+    fn resolve<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(self.resolve_with_cancel(query, cancel))
+    }
+
+    fn search_candidates<'a>(
+        &'a self,
+        query: &'a TrackQuery,
+        cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Vec<CandidateSummary>, ProviderError>> {
+        Box::pin(self.search_candidates(query, cancel))
+    }
+
+    fn hydrate_candidate<'a>(
+        &'a self,
+        _summary: &'a CandidateSummary,
+        _limiter: Option<&'a crate::providers::engine::TokenBucketRateLimiter>,
+        _cancel: &'a CancellationToken,
+    ) -> crate::media::BoxFuture<'a, Result<Option<ProviderAnswer>, ProviderError>> {
+        Box::pin(async { Ok(None) })
+    }
 }
 
 #[cfg(test)]
