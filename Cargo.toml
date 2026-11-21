@@ -38,6 +38,8 @@ tachyonfx = { version = "0.25.2", default-features = false, features = ["std", "
 blake3 = "1.8.7"
 rusqlite = { version = "0.43.0", default-features = false, features = ["bundled"] }
 roxmltree = "0.21.2"
+base64 = { version = "0.23.1", optional = true }
+flate2 = { version = "1.1.11", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd", target_os = "openbsd", target_os = "netbsd", target_os = "dragonfly"))'.dependencies]
 zbus = { version = "6.3.0", default-features = false, features = ["tokio", "proxy"] }
@@ -50,6 +52,7 @@ insta = "1.49.0"
 [features]
 default = ["ytmusic"]
 ytmusic = []
+experimental-providers = ["dep:base64", "dep:flate2"]
 
 [profile.dev]
 debug = 1

@@ -1,6 +1,9 @@
+pub mod krc;
 pub mod lrc;
 pub mod lyricsfile;
+pub mod qrc;
 pub mod ttml;
+pub mod yrc;
 
 use crate::core::model::{Annotation, LineRole};
 
@@ -45,6 +48,111 @@ pub enum ParseError {
     Empty,
     #[error("invalid lyricsfile: {0}")]
     InvalidLyricsFile(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WordTimeMode {
+    Absolute,
+    Relative,
+}
+
+pub(crate) fn parse_line_header(line: &str) -> Option<(u64, u64, &str)> {
+    let rest = line.strip_prefix('[')?;
+    let end = rest.find(']')?;
+    let (start, duration) = rest[..end].split_once(',')?;
+    let start = start.trim().parse::<u64>().ok()?;
+    let duration = duration.trim().parse::<u64>().ok()?;
+    Some((start, duration, &rest[end + 1..]))
+}
+
+pub(crate) fn parse_tagged_words(
+    text: &str,
+    line_start: u64,
+    open: char,
+    close: char,
+    mode: WordTimeMode,
+) -> (String, Vec<ParsedWord>, Option<u64>) {
+    parse_tagged_words_with(text, line_start, open, close, mode, |segment| {
+        segment.to_string()
+    })
+}
+
+pub(crate) fn parse_tagged_words_decoded<F>(
+    text: &str,
+    line_start: u64,
+    open: char,
+    close: char,
+    mode: WordTimeMode,
+    decode: F,
+) -> (String, Vec<ParsedWord>, Option<u64>)
+where
+    F: Fn(&str) -> String,
+{
+    parse_tagged_words_with(text, line_start, open, close, mode, decode)
+}
+
+fn parse_tagged_words_with<F>(
+    text: &str,
+    line_start: u64,
+    open: char,
+    close: char,
+    mode: WordTimeMode,
+    decode: F,
+) -> (String, Vec<ParsedWord>, Option<u64>)
+where
+    F: Fn(&str) -> String,
+{
+    let mut output = String::new();
+    let mut words = Vec::new();
+    let mut cursor = 0;
+
+    while let Some(relative_open) = text[cursor..].find(open) {
+        let open_index = cursor + relative_open;
+        output.push_str(&decode(&text[cursor..open_index]));
+        let Some(relative_close) = text[open_index + open.len_utf8()..].find(close) else {
+            cursor = open_index;
+            break;
+        };
+        let close_index = open_index + open.len_utf8() + relative_close;
+        let tag = &text[open_index + open.len_utf8()..close_index];
+        let next_open = text[close_index + close.len_utf8()..]
+            .find(open)
+            .map_or(text.len(), |offset| close_index + close.len_utf8() + offset);
+        let word_text = &text[close_index + close.len_utf8()..next_open];
+
+        if let Some((timestamp, duration)) = tag.split_once(',').and_then(|(start, rest)| {
+            let duration = rest.split(',').next()?;
+            Some((
+                start.trim().parse::<u64>().ok()?,
+                duration.trim().parse::<u64>().ok()?,
+            ))
+        }) {
+            let start_ms = match mode {
+                WordTimeMode::Absolute if timestamp >= line_start => timestamp,
+                WordTimeMode::Absolute => line_start.saturating_add(timestamp),
+                WordTimeMode::Relative => line_start.saturating_add(timestamp),
+            };
+            let end_ms = start_ms.saturating_add(duration);
+            let start_byte = output.len();
+            output.push_str(&decode(word_text));
+            let end_byte = output.len();
+            if start_byte < end_byte {
+                words.push(ParsedWord {
+                    byte_range: (start_byte, end_byte),
+                    start_ms,
+                    end_ms: Some(end_ms),
+                });
+            }
+        } else {
+            output.push_str(&decode(&text[open_index..next_open]));
+        }
+
+        cursor = next_open;
+    }
+
+    output.push_str(&decode(&text[cursor..]));
+    let explicit_last_word_end_ms = words.last().and_then(|word| word.end_ms);
+    (output, words, explicit_last_word_end_ms)
 }
 
 pub(crate) fn trim_line_with_words(

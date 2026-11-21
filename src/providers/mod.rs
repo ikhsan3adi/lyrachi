@@ -1,5 +1,7 @@
 pub mod betterlyrics;
 pub mod engine;
+#[cfg(feature = "experimental-providers")]
+pub mod experimental;
 mod http;
 pub mod local;
 pub mod lrclib;
@@ -63,6 +65,15 @@ impl ProviderId {
     pub const Unison: Self = Self(Cow::Borrowed("unison"));
     #[allow(non_upper_case_globals)]
     pub const BetterLyrics: Self = Self(Cow::Borrowed("betterlyrics"));
+    #[cfg(feature = "experimental-providers")]
+    #[allow(non_upper_case_globals)]
+    pub const Netease: Self = Self(Cow::Borrowed("netease"));
+    #[cfg(feature = "experimental-providers")]
+    #[allow(non_upper_case_globals)]
+    pub const QqMusic: Self = Self(Cow::Borrowed("qqmusic"));
+    #[cfg(feature = "experimental-providers")]
+    #[allow(non_upper_case_globals)]
+    pub const Kugou: Self = Self(Cow::Borrowed("kugou"));
     #[cfg(feature = "ytmusic")]
     #[allow(non_upper_case_globals)]
     pub const YtMusic: Self = Self(Cow::Borrowed("ytmusic"));
@@ -92,6 +103,12 @@ impl ProviderId {
             "lyricsplus" => Some(Self::LyricsPlus),
             "unison" => Some(Self::Unison),
             "betterlyrics" => Some(Self::BetterLyrics),
+            #[cfg(feature = "experimental-providers")]
+            "netease" => Some(Self::Netease),
+            #[cfg(feature = "experimental-providers")]
+            "qqmusic" => Some(Self::QqMusic),
+            #[cfg(feature = "experimental-providers")]
+            "kugou" => Some(Self::Kugou),
             #[cfg(feature = "ytmusic")]
             "ytmusic" => Some(Self::YtMusic),
             _ => None,
@@ -104,11 +121,19 @@ impl ProviderId {
     }
 
     pub fn valid_config_names() -> &'static str {
-        #[cfg(feature = "ytmusic")]
+        #[cfg(all(feature = "ytmusic", feature = "experimental-providers"))]
+        {
+            "local, betterlyrics, unison, lrclib, lyricsplus, netease, qqmusic, kugou, ytmusic"
+        }
+        #[cfg(all(feature = "ytmusic", not(feature = "experimental-providers")))]
         {
             "local, betterlyrics, unison, lrclib, lyricsplus, ytmusic"
         }
-        #[cfg(not(feature = "ytmusic"))]
+        #[cfg(all(not(feature = "ytmusic"), feature = "experimental-providers"))]
+        {
+            "local, betterlyrics, unison, lrclib, lyricsplus, netease, qqmusic, kugou"
+        }
+        #[cfg(all(not(feature = "ytmusic"), not(feature = "experimental-providers")))]
         {
             "local, betterlyrics, unison, lrclib, lyricsplus"
         }
@@ -144,6 +169,11 @@ impl ProviderId {
                 supports_search: false,
                 needs_hydration: false,
                 max_candidates: 1,
+            },
+            "netease" | "qqmusic" | "kugou" => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: 10,
             },
             "ytmusic" => ProviderCapabilities {
                 supports_search: true,
@@ -292,6 +322,8 @@ impl CandidateSummary {
 pub enum ProviderError {
     #[error("provider unavailable: {0}")]
     Unavailable(String),
+    #[error("provider payload exceeds {0} bytes")]
+    PayloadTooLarge(usize),
     #[error("provider rate limited (retry after {retry_after_ms:?} ms)")]
     RateLimited { retry_after_ms: Option<u64> },
     #[error("provider request timed out")]
@@ -393,7 +425,8 @@ impl ProviderRegistry {
         order: Vec<ProviderId>,
         network: bool,
     ) -> Result<Self, ProviderError> {
-        Ok(Self::assemble(
+        #[allow(unused_mut)]
+        let mut registry = Self::assemble(
             LocalProvider::new(local_dirs),
             LrclibClient::new()?,
             LyricsPlusProvider::new()?,
@@ -407,7 +440,10 @@ impl ProviderRegistry {
             network,
             Arc::new(engine::CircuitBreakers::default()),
             Arc::new(engine::RateLimiters::default()),
-        ))
+        );
+        #[cfg(feature = "experimental-providers")]
+        registry.install_experimental(None)?;
+        Ok(registry)
     }
 
     #[cfg(test)]
@@ -418,21 +454,25 @@ impl ProviderRegistry {
         base_url: impl Into<String>,
     ) -> Result<Self, ProviderError> {
         let base_url = base_url.into();
-        Ok(Self::assemble(
+        #[allow(unused_mut)]
+        let mut registry = Self::assemble(
             LocalProvider::new(local_dirs),
             LrclibClient::with_base_url(base_url.clone())?,
             LyricsPlusProvider::with_base_url(base_url.clone())?,
             UnisonProvider::with_base_url(base_url.clone())?,
             BetterLyricsProvider::with_base_url(base_url.clone())?,
             #[cfg(feature = "ytmusic")]
-            Some(YtMusicProvider::with_base_url(base_url)?),
+            Some(YtMusicProvider::with_base_url(base_url.clone())?),
             #[cfg(not(feature = "ytmusic"))]
             None,
             order,
             network,
             Arc::new(engine::CircuitBreakers::default()),
             Arc::new(engine::RateLimiters::default()),
-        ))
+        );
+        #[cfg(feature = "experimental-providers")]
+        registry.install_experimental(Some(&base_url))?;
+        Ok(registry)
     }
 
     #[cfg(test)]
@@ -442,7 +482,8 @@ impl ProviderRegistry {
         network: bool,
         breakers: Arc<engine::CircuitBreakers>,
     ) -> Result<Self, ProviderError> {
-        Ok(Self::assemble(
+        #[allow(unused_mut)]
+        let mut registry = Self::assemble(
             LocalProvider::new(local_dirs),
             LrclibClient::new()?,
             LyricsPlusProvider::new()?,
@@ -456,7 +497,10 @@ impl ProviderRegistry {
             network,
             breakers,
             Arc::new(engine::RateLimiters::default()),
-        ))
+        );
+        #[cfg(feature = "experimental-providers")]
+        registry.install_experimental(None)?;
+        Ok(registry)
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -493,6 +537,31 @@ impl ProviderRegistry {
             breakers,
             limiters,
         }
+    }
+
+    #[cfg(feature = "experimental-providers")]
+    fn install_experimental(&mut self, base_url: Option<&str>) -> Result<(), ProviderError> {
+        use experimental::{KugouProvider, NeteaseProvider, QqMusicProvider};
+
+        let netease = match base_url {
+            Some(base_url) => NeteaseProvider::with_base_url(base_url)?,
+            None => NeteaseProvider::new()?,
+        };
+        let qqmusic = match base_url {
+            Some(base_url) => QqMusicProvider::with_base_url(base_url)?,
+            None => QqMusicProvider::new()?,
+        };
+        let kugou = match base_url {
+            Some(base_url) => KugouProvider::with_base_url(base_url)?,
+            None => KugouProvider::new()?,
+        };
+
+        self.providers
+            .insert(ProviderId::Netease, Arc::new(netease));
+        self.providers
+            .insert(ProviderId::QqMusic, Arc::new(qqmusic));
+        self.providers.insert(ProviderId::Kugou, Arc::new(kugou));
+        Ok(())
     }
 
     pub fn register(&mut self, provider: Arc<dyn LyricProvider>) {
@@ -1591,6 +1660,36 @@ mod tests {
 
         server.abort();
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(feature = "experimental-providers")]
+    #[test]
+    fn experimental_providers_are_available_but_not_default() {
+        assert_eq!(
+            ProviderId::from_config_name("netease"),
+            Some(ProviderId::Netease)
+        );
+        assert_eq!(
+            ProviderId::from_config_name("qqmusic"),
+            Some(ProviderId::QqMusic)
+        );
+        assert_eq!(
+            ProviderId::from_config_name("kugou"),
+            Some(ProviderId::Kugou)
+        );
+        assert!(!ProviderId::all().contains(&ProviderId::Netease));
+        assert!(!ProviderId::all().contains(&ProviderId::QqMusic));
+        assert!(!ProviderId::all().contains(&ProviderId::Kugou));
+
+        let resolver = ProviderResolver::with_config(
+            Vec::new(),
+            vec![ProviderId::Netease, ProviderId::QqMusic, ProviderId::Kugou],
+            false,
+        )
+        .unwrap();
+        assert!(resolver.providers.contains_key(&ProviderId::Netease));
+        assert!(resolver.providers.contains_key(&ProviderId::QqMusic));
+        assert!(resolver.providers.contains_key(&ProviderId::Kugou));
     }
 
     #[cfg(feature = "ytmusic")]
