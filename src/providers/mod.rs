@@ -83,7 +83,8 @@ impl ProviderId {
     }
 
     pub fn from_cache_name(name: &str) -> Option<Self> {
-        (!name.trim().is_empty()).then(|| Self::new(name.to_string()))
+        let trimmed = name.trim();
+        (!trimmed.is_empty()).then(|| Self::new(trimmed.to_string()))
     }
 
     pub fn valid_config_names() -> &'static str {
@@ -459,7 +460,15 @@ impl ProviderRegistry {
     }
 
     pub fn register(&mut self, provider: Arc<dyn LyricProvider>) {
-        self.providers.insert(provider.id(), provider);
+        let id = provider.id();
+        if id.is_local() {
+            debug!("ignoring attempt to replace the local provider");
+            return;
+        }
+        if !self.order.contains(&id) {
+            self.order.push(id.clone());
+        }
+        self.providers.insert(id, provider);
     }
 
     pub fn network_enabled(&self) -> bool {
@@ -1012,8 +1021,10 @@ mod tests {
     async fn registered_dynamic_provider_uses_the_shared_search_and_limiter_path() {
         let id = ProviderId::new("unison");
         let mut resolver =
-            ProviderResolver::with_config(Vec::new(), vec![id.clone()], true).unwrap();
+            ProviderResolver::with_config(Vec::new(), vec![ProviderId::Local], true).unwrap();
         resolver.register(Arc::new(DynamicProvider { id: id.clone() }));
+
+        assert!(resolver.order.contains(&id));
 
         let specs = resolver.network_specs();
         assert_eq!(specs.len(), 1);
@@ -1128,6 +1139,12 @@ mod tests {
         assert_eq!(unison.as_str(), "unison");
         assert_ne!(unison, simpmusic);
         assert_ne!(unison, ProviderId::Lrclib);
+
+        assert_eq!(
+            ProviderId::from_cache_name("  lrclib "),
+            Some(ProviderId::Lrclib)
+        );
+        assert_eq!(ProviderId::from_cache_name("   "), None);
     }
 
     #[test]
