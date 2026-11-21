@@ -1,3 +1,4 @@
+pub mod betterlyrics;
 pub mod engine;
 mod http;
 pub mod local;
@@ -5,6 +6,7 @@ pub mod lrclib;
 pub mod lyricsplus;
 pub mod sanitize;
 pub mod score;
+pub mod unison;
 #[cfg(feature = "ytmusic")]
 pub mod ytmusic;
 
@@ -28,6 +30,7 @@ const CANDIDATE_SEARCH_TIMEOUT: Duration = Duration::from_secs(12);
 
 use crate::core::model::{CanonicalTrackKey, SyncGranularity, SyncedTrack};
 use crate::media::TrackMeta;
+use betterlyrics::BetterLyricsProvider;
 use local::LocalProvider;
 use lrclib::LrclibClient;
 use lyricsplus::LyricsPlusProvider;
@@ -35,6 +38,7 @@ use sanitize::{
     canonical_key, clean_artist, clean_text, clean_title, normalize_for_match, split_artist_title,
     strip_dash_qualifier,
 };
+use unison::UnisonProvider;
 #[cfg(feature = "ytmusic")]
 use ytmusic::YtMusicProvider;
 
@@ -55,6 +59,10 @@ impl ProviderId {
     pub const Lrclib: Self = Self(Cow::Borrowed("lrclib"));
     #[allow(non_upper_case_globals)]
     pub const LyricsPlus: Self = Self(Cow::Borrowed("lyricsplus"));
+    #[allow(non_upper_case_globals)]
+    pub const Unison: Self = Self(Cow::Borrowed("unison"));
+    #[allow(non_upper_case_globals)]
+    pub const BetterLyrics: Self = Self(Cow::Borrowed("betterlyrics"));
     #[cfg(feature = "ytmusic")]
     #[allow(non_upper_case_globals)]
     pub const YtMusic: Self = Self(Cow::Borrowed("ytmusic"));
@@ -64,7 +72,13 @@ impl ProviderId {
     }
 
     pub fn all() -> Vec<Self> {
-        vec![Self::Local, Self::Lrclib, Self::LyricsPlus]
+        vec![
+            Self::Local,
+            Self::BetterLyrics,
+            Self::Unison,
+            Self::Lrclib,
+            Self::LyricsPlus,
+        ]
     }
 
     pub fn as_str(&self) -> &str {
@@ -76,6 +90,8 @@ impl ProviderId {
             "local" => Some(Self::Local),
             "lrclib" => Some(Self::Lrclib),
             "lyricsplus" => Some(Self::LyricsPlus),
+            "unison" => Some(Self::Unison),
+            "betterlyrics" => Some(Self::BetterLyrics),
             #[cfg(feature = "ytmusic")]
             "ytmusic" => Some(Self::YtMusic),
             _ => None,
@@ -90,11 +106,11 @@ impl ProviderId {
     pub fn valid_config_names() -> &'static str {
         #[cfg(feature = "ytmusic")]
         {
-            "local, lrclib, lyricsplus, ytmusic"
+            "local, betterlyrics, unison, lrclib, lyricsplus, ytmusic"
         }
         #[cfg(not(feature = "ytmusic"))]
         {
-            "local, lrclib, lyricsplus"
+            "local, betterlyrics, unison, lrclib, lyricsplus"
         }
     }
 
@@ -115,6 +131,16 @@ impl ProviderId {
                 max_candidates: 20,
             },
             "lyricsplus" => ProviderCapabilities {
+                supports_search: false,
+                needs_hydration: false,
+                max_candidates: 1,
+            },
+            "unison" => ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: 20,
+            },
+            "betterlyrics" => ProviderCapabilities {
                 supports_search: false,
                 needs_hydration: false,
                 max_candidates: 1,
@@ -371,6 +397,8 @@ impl ProviderRegistry {
             LocalProvider::new(local_dirs),
             LrclibClient::new()?,
             LyricsPlusProvider::new()?,
+            UnisonProvider::new()?,
+            BetterLyricsProvider::new()?,
             #[cfg(feature = "ytmusic")]
             Some(YtMusicProvider::new()?),
             #[cfg(not(feature = "ytmusic"))]
@@ -394,6 +422,8 @@ impl ProviderRegistry {
             LocalProvider::new(local_dirs),
             LrclibClient::with_base_url(base_url.clone())?,
             LyricsPlusProvider::with_base_url(base_url.clone())?,
+            UnisonProvider::with_base_url(base_url.clone())?,
+            BetterLyricsProvider::with_base_url(base_url.clone())?,
             #[cfg(feature = "ytmusic")]
             Some(YtMusicProvider::with_base_url(base_url)?),
             #[cfg(not(feature = "ytmusic"))]
@@ -416,6 +446,8 @@ impl ProviderRegistry {
             LocalProvider::new(local_dirs),
             LrclibClient::new()?,
             LyricsPlusProvider::new()?,
+            UnisonProvider::new()?,
+            BetterLyricsProvider::new()?,
             #[cfg(feature = "ytmusic")]
             Some(YtMusicProvider::new()?),
             #[cfg(not(feature = "ytmusic"))]
@@ -432,6 +464,8 @@ impl ProviderRegistry {
         local: LocalProvider,
         lrclib: LrclibClient,
         lyricsplus: LyricsPlusProvider,
+        unison: UnisonProvider,
+        betterlyrics: BetterLyricsProvider,
         #[cfg(feature = "ytmusic")] ytmusic: Option<YtMusicProvider>,
         #[cfg(not(feature = "ytmusic"))] _ytmusic: Option<()>,
         order: Vec<ProviderId>,
@@ -444,6 +478,8 @@ impl ProviderRegistry {
         providers.insert(ProviderId::Local, local.clone());
         providers.insert(ProviderId::Lrclib, Arc::new(lrclib));
         providers.insert(ProviderId::LyricsPlus, Arc::new(lyricsplus));
+        providers.insert(ProviderId::Unison, Arc::new(unison));
+        providers.insert(ProviderId::BetterLyrics, Arc::new(betterlyrics));
         #[cfg(feature = "ytmusic")]
         if let Some(ytmusic) = ytmusic {
             providers.insert(ProviderId::YtMusic, Arc::new(ytmusic));
@@ -1018,8 +1054,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn open_providers_are_registered_with_shared_limiters() {
+        let resolver = ProviderResolver::with_config(
+            Vec::new(),
+            vec![
+                Provider::Local,
+                Provider::BetterLyrics,
+                Provider::Unison,
+                Provider::Lrclib,
+            ],
+            true,
+        )
+        .unwrap();
+
+        let specs = resolver.network_specs();
+        assert_eq!(specs.len(), 3);
+        for id in [Provider::BetterLyrics, Provider::Unison] {
+            let spec = specs
+                .iter()
+                .find(|spec| spec.provider == id)
+                .expect("open provider should have a network spec");
+            assert!(spec.limiter.is_some());
+        }
+    }
+
+    #[tokio::test]
     async fn registered_dynamic_provider_uses_the_shared_search_and_limiter_path() {
-        let id = ProviderId::new("unison");
+        let id = ProviderId::new("dynamic-test");
         let mut resolver =
             ProviderResolver::with_config(Vec::new(), vec![ProviderId::Local], true).unwrap();
         resolver.register(Arc::new(DynamicProvider { id: id.clone() }));
@@ -1132,12 +1193,19 @@ mod tests {
             ProviderId::from_config_name("ytmusic"),
             Some(ProviderId::YtMusic)
         );
-        assert_eq!(ProviderId::from_config_name("unison"), None);
+        assert_eq!(
+            ProviderId::from_config_name("unison"),
+            Some(ProviderId::Unison)
+        );
+        assert_eq!(
+            ProviderId::from_config_name("betterlyrics"),
+            Some(ProviderId::BetterLyrics)
+        );
 
         let unison = ProviderId::from_cache_name("unison").unwrap();
-        let simpmusic = ProviderId::from_cache_name("simpmusic").unwrap();
+        let legacy = ProviderId::from_cache_name("legacy-provider").unwrap();
         assert_eq!(unison.as_str(), "unison");
-        assert_ne!(unison, simpmusic);
+        assert_ne!(unison, legacy);
         assert_ne!(unison, ProviderId::Lrclib);
 
         assert_eq!(
@@ -1167,6 +1235,22 @@ mod tests {
         );
         assert_eq!(
             Provider::LyricsPlus.capabilities(),
+            ProviderCapabilities {
+                supports_search: false,
+                needs_hydration: false,
+                max_candidates: 1,
+            }
+        );
+        assert_eq!(
+            Provider::Unison.capabilities(),
+            ProviderCapabilities {
+                supports_search: true,
+                needs_hydration: true,
+                max_candidates: 20,
+            }
+        );
+        assert_eq!(
+            Provider::BetterLyrics.capabilities(),
             ProviderCapabilities {
                 supports_search: false,
                 needs_hydration: false,

@@ -599,7 +599,7 @@ allowed_origins = []
 
 [providers]
 # Provider resolution order
-order = ["local", "lrclib", "lyricsplus", "ytmusic"]
+order = ["local", "betterlyrics", "unison", "lrclib", "lyricsplus", "ytmusic"]
 # Enable or disable network lyric providers
 network = true
 # Additional local lyric directories
@@ -1098,9 +1098,34 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
         assert!(outcome.warnings.iter().any(|warning| {
             warning.contains("bogus")
                 && warning.contains("local")
+                && warning.contains("betterlyrics")
+                && warning.contains("unison")
                 && warning.contains("lrclib")
                 && warning.contains("lyricsplus")
         }));
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn accepts_open_providers_in_order() {
+        let path = temp_file(
+            "open-provider-order",
+            "[providers]\norder = [\"local\", \"betterlyrics\", \"unison\", \"lrclib\", \"lyricsplus\"]\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert!(outcome.warnings.is_empty());
+        assert_eq!(
+            outcome.config.provider_order,
+            vec![
+                Provider::Local,
+                Provider::BetterLyrics,
+                Provider::Unison,
+                Provider::Lrclib,
+                Provider::LyricsPlus
+            ]
+        );
 
         fs::remove_file(path).unwrap();
     }

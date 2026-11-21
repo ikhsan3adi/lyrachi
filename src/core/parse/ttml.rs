@@ -426,6 +426,15 @@ fn parse_timestamp(value: &str) -> Result<u64, ProviderError> {
         return Ok(millis.round() as u64);
     }
 
+    if !value.contains(':') {
+        let seconds = value.parse::<f64>().map_err(|_| invalid())?;
+        let millis = seconds * 1000.0;
+        if !millis.is_finite() || millis < 0.0 || millis > u64::MAX as f64 {
+            return Err(invalid());
+        }
+        return Ok(millis.round() as u64);
+    }
+
     let mut parts = value.split(':');
     let first = parts.next().ok_or_else(invalid)?;
     let second = parts.next().ok_or_else(invalid)?;
@@ -647,6 +656,7 @@ mod tests {
     #[test]
     fn parses_clock_and_second_timestamps() {
         assert_eq!(parse_timestamp("12.345s").unwrap(), 12_345);
+        assert_eq!(parse_timestamp("12.345").unwrap(), 12_345);
         assert_eq!(parse_timestamp("00:01.250").unwrap(), 1_250);
         assert_eq!(parse_timestamp("01:02:03.400").unwrap(), 3_723_400);
         assert_eq!(parse_timestamp("1:02.5").unwrap(), 62_500);

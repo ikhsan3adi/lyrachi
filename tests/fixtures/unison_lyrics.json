@@ -1,0 +1,16 @@
+{
+  "success": true,
+  "data": {
+    "id": 13529,
+    "videoId": "Ugr4KKK_SqY",
+    "song": "Explorer",
+    "artist": "Justice, Connan Mockasin",
+    "album": "Hyperdrama",
+    "isrc": "FR8EU2300090",
+    "duration": 249,
+    "lyrics": "<tt xmlns=\"http://www.w3.org/ns/ttml\" xmlns:ttm=\"http://www.w3.org/ns/ttml#metadata\"><body dur=\"4:09.452\"><div><p begin=\"1.000\" end=\"3.000\" ttm:agent=\"v1\"><span begin=\"1.000\" end=\"1.400\">Look</span> <span begin=\"1.400\" end=\"1.800\">at</span> <span begin=\"1.800\" end=\"3.000\">stars</span></p><p begin=\"4.000\" end=\"6.000\" ttm:agent=\"v1\"><span begin=\"4.000\" end=\"4.500\">And</span> <span begin=\"4.500\" end=\"6.000\">shine</span></p></div></body></tt>",
+    "format": "ttml",
+    "syncType": "richsync",
+    "confidence": "low"
+  }
+}
