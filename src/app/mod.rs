@@ -29,7 +29,8 @@ use crate::{
     },
     ui::{
         CandidateMenuItem, ContextMenuAction, ContextMenuView, UiModal, UiState,
-        block::BlockStageCache, effects::UiEffects, render,
+        effects::UiEffects,
+        render::{self, RenderCache},
     },
 };
 
@@ -66,7 +67,7 @@ impl AnimationStatus {
 
 pub struct AppRuntime {
     pub animation: AnimationStatus,
-    pub block_cache: BlockStageCache,
+    pub render_cache: RenderCache,
     pub effects: UiEffects,
     pub base_style_name: String,
     pub styles_dir: Option<PathBuf>,
@@ -96,7 +97,7 @@ impl Default for AppRuntime {
     fn default() -> Self {
         Self {
             animation: AnimationStatus::default(),
-            block_cache: BlockStageCache::default(),
+            render_cache: RenderCache::default(),
             effects: UiEffects::default(),
             base_style_name: DEFAULT_STYLE_NAME.to_string(),
             styles_dir: None,
@@ -278,7 +279,7 @@ pub async fn run(
             draw_frame_with_effects(
                 terminal,
                 &mut state,
-                &mut runtime.block_cache,
+                &mut runtime.render_cache,
                 &mut runtime.effects,
                 &clock,
             )?;
@@ -451,33 +452,33 @@ pub fn draw_frame<B: ratatui::backend::Backend>(
     state: &mut UiState,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
-    let mut cache = BlockStageCache::default();
+    let mut cache = RenderCache::default();
     draw_frame_with_cache(terminal, state, &mut cache, clock)
 }
 
 pub fn draw_frame_with_cache<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,
-    block_cache: &mut BlockStageCache,
+    render_cache: &mut RenderCache,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
-    draw_frame_internal(terminal, state, block_cache, None, clock)
+    draw_frame_internal(terminal, state, render_cache, None, clock)
 }
 
 pub fn draw_frame_with_effects<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,
-    block_cache: &mut BlockStageCache,
+    render_cache: &mut RenderCache,
     effects: &mut UiEffects,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
-    draw_frame_internal(terminal, state, block_cache, Some(effects), clock)
+    draw_frame_internal(terminal, state, render_cache, Some(effects), clock)
 }
 
 fn draw_frame_internal<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,
-    block_cache: &mut BlockStageCache,
+    render_cache: &mut RenderCache,
     effects: Option<&mut UiEffects>,
     clock: &PlaybackClock,
 ) -> Result<(), B::Error> {
@@ -504,12 +505,12 @@ fn draw_frame_internal<B: ratatui::backend::Backend>(
                 render::render_with_cache_and_effects(
                     frame,
                     state,
-                    block_cache,
+                    render_cache,
                     effects,
                     effective_ms,
                 );
             }
-            None => render::render_with_cache(frame, state, block_cache, effective_ms),
+            None => render::render_with_cache(frame, state, render_cache, effective_ms),
         }
     })?;
 
@@ -1003,7 +1004,7 @@ pub fn reload_active_style(state: &mut UiState, runtime: &mut AppRuntime, now: I
                     .profile
                     .resolve(desired, runtime.color_capability, runtime.bg_blend_hint);
             state.set_resolved_style(resolved);
-            runtime.block_cache.clear();
+            runtime.render_cache.clear();
             runtime.effects.reset();
         }
         Err(error) => {
@@ -1295,7 +1296,7 @@ fn handle_input_with_runtime(
                     warn!(%error, "failed to persist style preference");
                 }
                 apply_active_style(state, runtime);
-                runtime.block_cache.clear();
+                runtime.render_cache.clear();
                 runtime.effects.reset();
                 if let Some(pinned) = state.pinned_style.as_deref() {
                     state.show_banner(

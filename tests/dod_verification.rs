@@ -19,7 +19,7 @@ use lyrachi::{
         ProviderAnswer, ProviderError, ProviderId, TrackQuery, lrclib::LrclibRecord, score,
     },
     style::{HighlightMode, LineChangeEffect, LineChangeEffectKind},
-    ui::{DisplayMode, UiState, block::BlockStageCache, effects::UiEffects},
+    ui::{DisplayMode, UiState, effects::UiEffects, render::RenderCache},
 };
 use ratatui::{Terminal, backend::TestBackend};
 use tokio::sync::mpsc;
@@ -394,7 +394,7 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
         }];
     }
 
-    let mut cache = BlockStageCache::default();
+    let mut cache = RenderCache::default();
     let mut effects = UiEffects::new();
     if wipe {
         effects.trigger_line_change(&state.style);

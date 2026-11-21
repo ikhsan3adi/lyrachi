@@ -1,7 +1,9 @@
 pub mod block;
 pub mod effects;
 pub mod help;
+pub(crate) mod kinetic;
 pub mod menu;
+pub(crate) mod normal;
 pub mod render;
 pub mod status_bar;
 
