@@ -145,7 +145,8 @@ impl ModeRenderer for CylinderRenderer {
                     - f64::from(out_cols) / 2.0)
                     .round() as i32;
                 if place_bitmap(cache, left_col, top, out_rows, out_cols, glyph, style) {
-                    leftmost = Some(leftmost.map_or(left_col, |prev| prev.min(left_col)));
+                    let visible_left = left_col.max(0);
+                    leftmost = Some(leftmost.map_or(visible_left, |prev| prev.min(visible_left)));
                 }
                 x += f64::from(glyph.display_width);
             }
@@ -459,7 +460,7 @@ fn place_bitmap(
     glyph: &CylinderGlyph,
     style: Style,
 ) -> bool {
-    let Ok(x) = u16::try_from(left_col) else {
+    let Ok(x) = u16::try_from(left_col.max(0)) else {
         return false;
     };
     let grid_width = cache.grid_width();
@@ -472,7 +473,19 @@ fn place_bitmap(
         .max(1);
     let base_cols = usize::from(glyph.bitmap.width.max(1));
     let out_rows = out_rows.max(1);
-    let out_cols = out_cols.max(1);
+    let total_out_cols = usize::from(out_cols.max(1));
+    let skipped_cols = usize::try_from(
+        left_col
+            .checked_neg()
+            .unwrap_or(i32::MAX)
+            .max(0)
+            .unsigned_abs(),
+    )
+    .unwrap_or(usize::MAX);
+    if skipped_cols >= total_out_cols {
+        return false;
+    }
+    let visible_out_cols = total_out_cols - skipped_cols;
     let mut placed = false;
 
     for j in 0..out_rows {
@@ -486,12 +499,13 @@ fn place_bitmap(
             break;
         }
         let chars: Vec<char> = row.chars().collect();
-        for c in 0..out_cols {
-            let src_col = (usize::from(c) * base_cols / usize::from(out_cols)).min(base_cols - 1);
+        for c in 0..visible_out_cols {
+            let source_col = c + skipped_cols;
+            let src_col = (source_col * base_cols / total_out_cols).min(base_cols - 1);
             let Some(symbol) = chars.get(src_col) else {
                 continue;
             };
-            let column = x.saturating_add(c);
+            let column = x.saturating_add(c as u16);
             if column >= grid_width {
                 break;
             }
@@ -761,12 +775,29 @@ mod tests {
     }
 
     #[test]
+    fn bitmap_clips_at_the_left_edge() {
+        let mut cache = grid_with(10, 8);
+        let glyph = &glyphs("A")[0];
+        assert!(place_bitmap(
+            &mut cache,
+            -1,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
+        assert!(cache.cell(0, 1).is_some());
+        assert!(cache.cell(0, 5).is_none());
+    }
+
+    #[test]
     fn clipping_at_edges_does_not_panic() {
         let mut cache = grid_with(10, 8);
         let glyph = &glyphs("A")[0];
         assert!(!place_bitmap(
             &mut cache,
-            -1,
+            -(i32::from(glyph.bitmap.width)),
             1,
             4,
             glyph.bitmap.width,

@@ -1333,14 +1333,17 @@ fn handle_input_with_runtime(
         }
         KeyAction::CylinderSpeedDown => {
             state.adjust_cylinder_speed(-10);
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyAction::CylinderSpeedUp => {
             state.adjust_cylinder_speed(10);
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyAction::CylinderSpeedReset => {
             state.reset_cylinder_speed();
+            persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
         KeyAction::ScrollUp => {
@@ -2460,6 +2463,17 @@ mod tests {
     fn cylinder_speed_keys_adjust_and_reset_multiplier() {
         use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-cylinder-speed-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
         let mut state = UiState::new();
         let mut coordinator = ResolveCoordinator::new();
         let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
@@ -2477,20 +2491,22 @@ mod tests {
                 &mut state,
                 &mut coordinator,
                 &mut offsets,
-                None,
+                Some(&config_file),
                 Instant::now(),
                 press(KeyCode::Char('='))
             )
             .quit
         );
         assert_eq!(state.cylinder_speed_pct, 110);
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("speed_pct = 110"), "{saved}");
 
         assert!(
             !handle_input(
                 &mut state,
                 &mut coordinator,
                 &mut offsets,
-                None,
+                Some(&config_file),
                 Instant::now(),
                 press(KeyCode::Char('+'))
             )
@@ -2503,7 +2519,7 @@ mod tests {
                 &mut state,
                 &mut coordinator,
                 &mut offsets,
-                None,
+                Some(&config_file),
                 Instant::now(),
                 press(KeyCode::Char('-'))
             )
@@ -2517,7 +2533,7 @@ mod tests {
                     &mut state,
                     &mut coordinator,
                     &mut offsets,
-                    None,
+                    Some(&config_file),
                     Instant::now(),
                     press(KeyCode::Char('-'))
                 )
@@ -2531,13 +2547,15 @@ mod tests {
                 &mut state,
                 &mut coordinator,
                 &mut offsets,
-                None,
+                Some(&config_file),
                 Instant::now(),
                 press(KeyCode::Char('0'))
             )
             .quit
         );
         assert_eq!(state.cylinder_speed_pct, 100);
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
