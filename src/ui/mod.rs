@@ -99,6 +99,33 @@ impl CylinderAnnotationMode {
     }
 }
 
+pub const CYLINDER_MIN_SPEED_PCT: i32 = 50;
+pub const CYLINDER_MAX_SPEED_PCT: i32 = 300;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CylinderSpeedMode {
+    #[default]
+    Constant,
+    LineLength,
+}
+
+impl CylinderSpeedMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Constant => "constant",
+            Self::LineLength => "line_length",
+        }
+    }
+
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "constant" => Some(Self::Constant),
+            "line_length" => Some(Self::LineLength),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum LyricsView {
     Idle,
@@ -141,6 +168,8 @@ pub struct UiState {
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
     pub cylinder_annotations: CylinderAnnotationMode,
+    pub cylinder_speed_mode: CylinderSpeedMode,
+    pub cylinder_speed_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: ResolvedStyle,
@@ -186,6 +215,8 @@ impl UiState {
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
             cylinder_annotations: CylinderAnnotationMode::Auto,
+            cylinder_speed_mode: CylinderSpeedMode::Constant,
+            cylinder_speed_pct: 100,
             word_highlight: true,
             fps_active: 60,
             style: ResolvedStyle::default(),
@@ -451,6 +482,19 @@ impl UiState {
 
     pub fn set_cylinder_annotations(&mut self, mode: CylinderAnnotationMode) {
         self.cylinder_annotations = mode;
+    }
+
+    pub fn set_cylinder_speed_mode(&mut self, mode: CylinderSpeedMode) {
+        self.cylinder_speed_mode = mode;
+    }
+
+    pub fn adjust_cylinder_speed(&mut self, delta_pct: i32) {
+        let next = i32::from(self.cylinder_speed_pct) + delta_pct;
+        self.cylinder_speed_pct = next.clamp(CYLINDER_MIN_SPEED_PCT, CYLINDER_MAX_SPEED_PCT) as u16;
+    }
+
+    pub fn reset_cylinder_speed(&mut self) {
+        self.cylinder_speed_pct = 100;
     }
 
     pub fn toggle_display_mode(&mut self) {

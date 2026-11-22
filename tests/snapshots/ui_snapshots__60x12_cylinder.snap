@@ -6,11 +6,11 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-                                           ▀██▀
-                                           ▀██▀    ▄█▀▀█▄
-                                            ██     ██  ██
-                                            ██  ▄█ ██  ██
-                                           ▀▀▀▀▀▀▀  ▀▀▀▀
-
+                                           ▀▀██▀
+                                           ▀▀██▀        ▄▄
+                                             ██   ▄▄█▀▀▀▄▄
+                                             ██  ▄███   ██
+                                           ▀▀▀▀▀▀▀███   ██
+                                                    ▀▀▀▀
 
 playing · lrclib · -300 ms

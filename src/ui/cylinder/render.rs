@@ -67,7 +67,12 @@ impl ModeRenderer for CylinderRenderer {
             height: annotation_rows,
         };
 
-        let geometry = CylinderGeometry::new(main_area.width, main_area.height);
+        let geometry = CylinderGeometry::new(
+            main_area.width,
+            main_area.height,
+            state.cylinder_speed_mode,
+            f64::from(state.cylinder_speed_pct) / 100.0,
+        );
         let cache = &mut ctx.cache.cylinder;
         cache.prepare(timeline.context.options_hash());
 
@@ -116,6 +121,7 @@ impl ModeRenderer for CylinderRenderer {
             let active = cursor.active_line_idx == Some(index);
             let holding = active && effective_ms > compiled.end_ms;
             let mut x = first_col;
+            let mut leftmost: Option<i32> = None;
 
             for glyph in &entry.glyphs {
                 let screen_x = x.round() as i32;
@@ -132,9 +138,21 @@ impl ModeRenderer for CylinderRenderer {
                     &state.style,
                 );
                 let out_rows = geometry.stretch_rows(screen_x, BLOCK_ROWS);
-                let top = geometry.glyph_top(screen_x, out_rows);
-                any_cell |= place_bitmap(cache, screen_x, top, out_rows, glyph, style);
+                let top = geometry.glyph_top(out_rows);
+                let base_cols = glyph.display_width.max(1);
+                let out_cols = geometry.stretch_cols(screen_x, base_cols);
+                let left_col = (f64::from(screen_x) + f64::from(base_cols) / 2.0
+                    - f64::from(out_cols) / 2.0)
+                    .round() as i32;
+                if place_bitmap(cache, left_col, top, out_rows, out_cols, glyph, style) {
+                    leftmost = Some(leftmost.map_or(left_col, |prev| prev.min(left_col)));
+                }
                 x += f64::from(glyph.display_width);
+            }
+
+            if let Some(leftmost) = leftmost {
+                clear_column(cache, leftmost - 1);
+                any_cell = true;
             }
         }
 
@@ -434,13 +452,14 @@ fn word_index_for_byte(compiled: &CompiledLine, byte: usize) -> Option<usize> {
 
 fn place_bitmap(
     cache: &mut CylinderStageCache,
-    screen_x: i32,
+    left_col: i32,
     top: u16,
     out_rows: u16,
+    out_cols: u16,
     glyph: &CylinderGlyph,
     style: Style,
 ) -> bool {
-    let Ok(x) = u16::try_from(screen_x) else {
+    let Ok(x) = u16::try_from(left_col) else {
         return false;
     };
     let grid_width = cache.grid_width();
@@ -451,24 +470,28 @@ fn place_bitmap(
     let base_rows = u16::try_from(glyph.bitmap.rows.len())
         .unwrap_or(BLOCK_ROWS)
         .max(1);
+    let base_cols = usize::from(glyph.bitmap.width.max(1));
     let out_rows = out_rows.max(1);
+    let out_cols = out_cols.max(1);
     let mut placed = false;
 
     for j in 0..out_rows {
-        let src = (usize::from(j) * usize::from(base_rows) / usize::from(out_rows))
+        let src_row = (usize::from(j) * usize::from(base_rows) / usize::from(out_rows))
             .min(usize::from(base_rows) - 1);
-        let Some(row) = glyph.bitmap.rows.get(src) else {
+        let Some(row) = glyph.bitmap.rows.get(src_row) else {
             continue;
         };
         let y = top.saturating_add(j);
         if y >= grid_height {
             break;
         }
-        for (offset, symbol) in row.chars().enumerate() {
-            let Ok(offset) = u16::try_from(offset) else {
-                break;
+        let chars: Vec<char> = row.chars().collect();
+        for c in 0..out_cols {
+            let src_col = (usize::from(c) * base_cols / usize::from(out_cols)).min(base_cols - 1);
+            let Some(symbol) = chars.get(src_col) else {
+                continue;
             };
-            let column = x.saturating_add(offset);
+            let column = x.saturating_add(c);
             if column >= grid_width {
                 break;
             }
@@ -483,6 +506,20 @@ fn place_bitmap(
         }
     }
     placed
+}
+
+fn clear_column(cache: &mut CylinderStageCache, column: i32) {
+    let Ok(x) = u16::try_from(column) else {
+        return;
+    };
+    if x >= cache.grid_width() {
+        return;
+    }
+    for y in 0..cache.grid_height() {
+        if let Some(slot) = cache.cell_slot_mut(x, y) {
+            *slot = None;
+        }
+    }
 }
 
 fn grid_to_lines(cache: &CylinderStageCache) -> (Vec<Line<'static>>, bool) {
@@ -540,6 +577,9 @@ fn push_grid_span(
 mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
+    use super::super::{
+        CYLINDER_MAX_SPEED, CYLINDER_MAX_STRETCH, CYLINDER_MIN_SPEED, CYLINDER_TRAVERSE_SECONDS,
+    };
     use super::*;
     use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
     use crate::core::clock::PlaybackStatus;
@@ -622,6 +662,36 @@ mod tests {
         terminal.backend().buffer().clone()
     }
 
+    fn render_cylinder_with_area(
+        track: SyncedTrack,
+        effective_ms: u64,
+        width: u16,
+        height: u16,
+    ) -> (Buffer, Rect) {
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        let profile = StyleProfile::builtin("builtin:dark", width).unwrap();
+        let resolved = profile.resolve("dark", ColorCapability::TrueColor, None);
+        state.set_resolved_style(resolved);
+        state.display_mode = DisplayMode::Cylinder;
+        state.set_lyrics(track);
+        let backend = TestBackend::new(width, height);
+        let mut terminal = Terminal::new(backend).unwrap();
+        let mut cache = crate::ui::render::RenderCache::default();
+        let mut area = Rect::default();
+        terminal
+            .draw(|frame| {
+                area = crate::ui::render::render_with_cache_area(
+                    frame,
+                    &state,
+                    &mut cache,
+                    effective_ms,
+                );
+            })
+            .unwrap();
+        (terminal.backend().buffer().clone(), area)
+    }
+
     fn glyphs(text: &str) -> Vec<CylinderGlyph> {
         glyphs_for_text(text, 1).0
     }
@@ -650,7 +720,15 @@ mod tests {
         let mut cache = grid_with(10, 8);
         let glyph = &glyphs("A")[0];
         let width = glyph.bitmap.width;
-        assert!(place_bitmap(&mut cache, 2, 1, 4, glyph, Style::default()));
+        assert!(place_bitmap(
+            &mut cache,
+            2,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
         for row in 0..4u16 {
             for column in 0..width {
                 assert!(
@@ -669,7 +747,15 @@ mod tests {
     fn bitmap_clips_at_the_right_edge() {
         let mut cache = grid_with(10, 8);
         let glyph = &glyphs("A")[0];
-        assert!(place_bitmap(&mut cache, 8, 1, 4, glyph, Style::default()));
+        assert!(place_bitmap(
+            &mut cache,
+            8,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
         assert!(cache.cell(9, 1).is_some());
         assert!(cache.cell(10, 1).is_none());
     }
@@ -678,9 +764,33 @@ mod tests {
     fn clipping_at_edges_does_not_panic() {
         let mut cache = grid_with(10, 8);
         let glyph = &glyphs("A")[0];
-        assert!(!place_bitmap(&mut cache, -1, 1, 4, glyph, Style::default()));
-        assert!(!place_bitmap(&mut cache, 10, 1, 4, glyph, Style::default()));
-        assert!(!place_bitmap(&mut cache, 0, 99, 4, glyph, Style::default()));
+        assert!(!place_bitmap(
+            &mut cache,
+            -1,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
+        assert!(!place_bitmap(
+            &mut cache,
+            10,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
+        assert!(!place_bitmap(
+            &mut cache,
+            0,
+            99,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
         assert!(cache.cell(0, 1).is_none());
     }
 
@@ -688,7 +798,15 @@ mod tests {
     fn stretched_bitmap_duplicates_source_rows() {
         let mut cache = grid_with(10, 10);
         let glyph = &glyphs("A")[0];
-        assert!(place_bitmap(&mut cache, 0, 0, 7, glyph, Style::default()));
+        assert!(place_bitmap(
+            &mut cache,
+            0,
+            0,
+            7,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
         let rows = (0..7u16)
             .map(|row| {
                 (0..glyph.bitmap.width)
@@ -706,13 +824,90 @@ mod tests {
         assert!(rows.len() == 7);
     }
 
+    fn synthetic_glyph(rows: &[&str]) -> CylinderGlyph {
+        let width = rows[0].chars().count() as u16;
+        CylinderGlyph {
+            text: "x".to_string(),
+            byte_range: (0, 1),
+            display_width: width,
+            bitmap: crate::ui::block::GlyphBitmap::new(
+                width,
+                rows.iter().map(|row| row.to_string()).collect(),
+            ),
+        }
+    }
+
+    #[test]
+    fn stretched_bitmap_duplicates_columns_nearest_neighbor() {
+        let mut cache = grid_with(10, 10);
+        let glyph = synthetic_glyph(&["ab", "cd", "ef", "gh"]);
+        assert!(place_bitmap(
+            &mut cache,
+            0,
+            0,
+            4,
+            4,
+            &glyph,
+            Style::default()
+        ));
+        let row_text = |y: u16| {
+            (0..4u16)
+                .map(|x| {
+                    cache
+                        .cell(x, y)
+                        .map(|cell| cell.text.clone())
+                        .unwrap_or_default()
+                })
+                .collect::<String>()
+        };
+        assert_eq!(row_text(0), "aabb");
+        assert_eq!(row_text(1), "ccdd");
+        assert_eq!(row_text(2), "eeff");
+        assert_eq!(row_text(3), "gghh");
+    }
+
+    #[test]
+    fn clear_column_erases_every_cell_in_the_column() {
+        let mut cache = grid_with(10, 8);
+        let glyph = &glyphs("A")[0];
+        assert!(place_bitmap(
+            &mut cache,
+            4,
+            1,
+            4,
+            glyph.bitmap.width,
+            glyph,
+            Style::default()
+        ));
+        clear_column(&mut cache, 4);
+        assert!(cache.cell(4, 1).is_none());
+        assert!(cache.cell(4, 4).is_none());
+        assert!(cache.cell(5, 1).is_some());
+    }
+
     #[test]
     fn newer_line_overwrites_older_line_at_the_same_cell() {
         let mut cache = grid_with(10, 8);
         let older = &glyphs("A")[0];
         let newer = &glyphs("B")[0];
-        assert!(place_bitmap(&mut cache, 2, 1, 4, older, Style::default()));
-        assert!(place_bitmap(&mut cache, 2, 1, 4, newer, Style::default()));
+        assert!(place_bitmap(
+            &mut cache,
+            2,
+            1,
+            4,
+            older.bitmap.width,
+            older,
+            Style::default()
+        ));
+        assert!(place_bitmap(
+            &mut cache,
+            2,
+            1,
+            4,
+            newer.bitmap.width,
+            newer,
+            Style::default()
+        ));
         assert_eq!(
             cache.cell(2, 1).unwrap().text,
             newer.bitmap.rows[0].chars().next().unwrap().to_string()
@@ -744,8 +939,42 @@ mod tests {
         count
     }
 
+    fn lane_speed(area: Rect) -> f64 {
+        (f64::from(area.width) / CYLINDER_TRAVERSE_SECONDS)
+            .clamp(CYLINDER_MIN_SPEED, CYLINDER_MAX_SPEED)
+    }
+
+    fn first_col_at(area: Rect, start_ms: u64, effective_ms: u64) -> f64 {
+        f64::from(area.width - 1) - ((effective_ms - start_ms) as f64 / 1000.0) * lane_speed(area)
+    }
+
+    fn stretched_left(area: Rect, head: f64, base_cols: u16) -> i32 {
+        let t =
+            ((head - f64::from(area.width) / 2.0) / (f64::from(area.width) / 2.0)).clamp(-1.0, 1.0);
+        let out = (f64::from(base_cols) * (1.0 + CYLINDER_MAX_STRETCH * t * t))
+            .round()
+            .max(1.0);
+        (head + f64::from(base_cols) / 2.0 - out / 2.0).round() as i32
+    }
+
+    fn column_is_blank(buffer: &Buffer, area: Rect, x: i32) -> bool {
+        let Ok(x) = u16::try_from(x) else {
+            return false;
+        };
+        (area.y..area.y + area.height).all(|y| {
+            buffer[(x, y)]
+                .symbol()
+                .chars()
+                .all(|symbol| symbol == ' ' || symbol.is_whitespace())
+        })
+    }
+
     #[test]
     fn two_contiguous_lines_render_across_the_lane() {
+        let (_, area) =
+            render_cylinder_with_area(track(vec![lyric_line(0, 1_000, "m")]), 0, 160, 40);
+        let fc0 = first_col_at(area, 0, 3_000);
+        let fc1 = first_col_at(area, 800, 3_000);
         let buffer = render_cylinder(
             track(vec![
                 lyric_line(0, 3_000, "abc"),
@@ -755,15 +984,91 @@ mod tests {
             160,
             40,
         );
-        let center = buffer.area.height / 2;
-        let band = center - 2..center + 4;
-        assert!(
-            any_ink(&buffer, 79, band.clone()),
-            "older line enters at 79"
+        let belt = area.y + area.height / 2;
+        let band = belt.saturating_sub(4)..belt + 5;
+        for head in [fc0, fc1] {
+            let column = area.x as i32 + head.round() as i32;
+            assert!(
+                (column - 2..=column + 2)
+                    .any(|x| x >= 0 && any_ink(&buffer, x as u16, band.clone())),
+                "line head near column {column} must paint ink"
+            );
+        }
+        let edge_ink = ink_count(
+            &buffer,
+            area.x..area.x + area.width,
+            belt.saturating_sub(3)..belt + 5,
         );
-        assert!(any_ink(&buffer, 100, band), "newer line enters at 100");
-        let edge_ink = ink_count(&buffer, 79..140, center - 3..center + 5);
         assert!(edge_ink > 20, "both lines painted, got {edge_ink} cells");
+    }
+
+    #[test]
+    fn overlapping_lines_keep_one_blank_column() {
+        let (_, area) =
+            render_cylinder_with_area(track(vec![lyric_line(0, 1_000, "m")]), 0, 160, 40);
+        let w_m = glyphs("m")[0].display_width;
+        let fc0 = first_col_at(area, 0, 3_000);
+        let nh = fc0 + f64::from(4 * w_m) - 10.0;
+        let s1 =
+            (3000.0 - (f64::from(area.width - 1) - nh) / lane_speed(area) * 1000.0).round() as u64;
+        let (buffer, area) = render_cylinder_with_area(
+            track(vec![
+                lyric_line(0, 3_000, &"m".repeat(4)),
+                lyric_line(s1, s1 + 800, "mmm"),
+            ]),
+            3_000,
+            160,
+            40,
+        );
+        let left = stretched_left(area, nh, w_m);
+        let belt = area.y + area.height / 2;
+        let band = belt.saturating_sub(4)..belt + 5;
+        assert!(
+            any_ink(&buffer, (area.x as i32 + left - 2) as u16, band.clone()),
+            "older ink at {}",
+            left - 2
+        );
+        assert!(
+            any_ink(&buffer, (area.x as i32 + left) as u16, band.clone()),
+            "newer ink at {left}"
+        );
+        assert!(
+            column_is_blank(&buffer, area, area.x as i32 + left - 1),
+            "column {} must stay blank between touching lines",
+            left - 1
+        );
+    }
+
+    #[test]
+    fn many_overlapping_lines_keep_gaps_everywhere() {
+        let (_, area) =
+            render_cylinder_with_area(track(vec![lyric_line(0, 1_000, "m")]), 0, 160, 40);
+        let w_m = glyphs("m")[0].display_width;
+        let spacing = 2 * w_m - 6;
+        let fc0 = first_col_at(area, 0, 3_000);
+        let mut lines = Vec::new();
+        let mut heads = Vec::new();
+        for index in 0..12usize {
+            let head = fc0 + (index as f64) * f64::from(spacing);
+            if head >= f64::from(area.width) {
+                break;
+            }
+            let start = (3000.0 - (f64::from(area.width - 1) - head) / lane_speed(area) * 1000.0)
+                .round()
+                .max(0.0) as u64;
+            lines.push(lyric_line(start, start + 500, &"m".repeat(2)));
+            heads.push(head);
+        }
+        assert!(heads.len() >= 4, "expected several visible lines");
+        let (buffer, area) = render_cylinder_with_area(track(lines), 3_000, 160, 40);
+        for head in heads {
+            let left = area.x as i32 + stretched_left(area, head, w_m);
+            assert!(
+                column_is_blank(&buffer, area, left - 1),
+                "gap column {} must stay blank",
+                left - 1
+            );
+        }
     }
 
     #[test]

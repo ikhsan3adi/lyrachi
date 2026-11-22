@@ -13,7 +13,7 @@ use crate::style::{
     DEFAULT_STYLE_NAME,
     color::{ColorMode, parse_rgb_hint},
 };
-use crate::ui::{CylinderAnnotationMode, DisplayMode};
+use crate::ui::{CylinderAnnotationMode, CylinderSpeedMode, DisplayMode};
 
 pub const DEFAULT_GLOBAL_OFFSET_MS: i64 = -300;
 const MIN_OFFSET_MS: i64 = -30_000;
@@ -40,6 +40,8 @@ pub struct RuntimeConfig {
     pub status_bar: StatusBarMode,
     pub display_mode: DisplayMode,
     pub cylinder_annotations: CylinderAnnotationMode,
+    pub cylinder_speed_mode: CylinderSpeedMode,
+    pub cylinder_speed_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: String,
@@ -66,6 +68,8 @@ impl Default for RuntimeConfig {
             status_bar: StatusBarMode::default(),
             display_mode: DisplayMode::Normal,
             cylinder_annotations: CylinderAnnotationMode::Auto,
+            cylinder_speed_mode: CylinderSpeedMode::Constant,
+            cylinder_speed_pct: 100,
             word_highlight: true,
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
@@ -183,12 +187,30 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
             )),
         }
     }
-    if let Some(annotations) = file.ui.cylinder.and_then(|cylinder| cylinder.annotations) {
-        match CylinderAnnotationMode::from_config_name(&annotations) {
-            Some(mode) => config.cylinder_annotations = mode,
-            None => warnings.push(format!(
-                "config: unknown ui.cylinder.annotations `{annotations}`; valid values: auto, show, hide"
-            )),
+    if let Some(cylinder) = file.ui.cylinder {
+        if let Some(annotations) = cylinder.annotations {
+            match CylinderAnnotationMode::from_config_name(&annotations) {
+                Some(mode) => config.cylinder_annotations = mode,
+                None => warnings.push(format!(
+                    "config: unknown ui.cylinder.annotations `{annotations}`; valid values: auto, show, hide"
+                )),
+            }
+        }
+        if let Some(speed) = cylinder.speed {
+            match CylinderSpeedMode::from_config_name(&speed) {
+                Some(mode) => config.cylinder_speed_mode = mode,
+                None => warnings.push(format!(
+                    "config: unknown ui.cylinder.speed `{speed}`; valid values: constant, line_length"
+                )),
+            }
+        }
+        if let Some(pct) = cylinder.speed_pct {
+            if !(50..=300).contains(&pct) {
+                warnings.push(format!(
+                    "config: ui.cylinder.speed_pct {pct} out of range 50..=300; clamped"
+                ));
+            }
+            config.cylinder_speed_pct = pct.clamp(50, 300);
         }
     }
     if let Some(word_highlight) = file.ui.word_highlight {
@@ -534,6 +556,8 @@ pub struct UiSection {
 #[serde(default, deny_unknown_fields)]
 pub struct CylinderSection {
     pub annotations: Option<String>,
+    pub speed: Option<String>,
+    pub speed_pct: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
@@ -645,6 +669,12 @@ style = "builtin:default"
 [ui.cylinder]
 # Cylinder annotation rows: "auto", "show", or "hide"
 annotations = "auto"
+# Cylinder lane speed: "constant" (fixed speed) or "line_length" (every line
+# crosses in about the same time, so longer lines move faster)
+speed = "constant"
+# Speed multiplier percent applied on top of the lane speed (50..=300);
+# adjust at runtime with "-" / "=" and reset with "0"
+speed_pct = 100
 
 [terminal]
 # Ambiguous-width Unicode character width: 1 or 2
@@ -1032,6 +1062,67 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
     }
 
     #[test]
+    fn loads_cylinder_speed_mode() {
+        for (speed, expected) in [
+            ("constant", CylinderSpeedMode::Constant),
+            ("line_length", CylinderSpeedMode::LineLength),
+        ] {
+            let path = temp_file(
+                "ui-cylinder-speed",
+                &format!("[ui.cylinder]\nspeed = \"{speed}\"\n"),
+            );
+            let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+            assert_eq!(outcome.config.cylinder_speed_mode, expected);
+            assert!(outcome.warnings.is_empty());
+
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn loads_and_clamps_cylinder_speed_pct() {
+        let path = temp_file("ui-cylinder-pct", "[ui.cylinder]\nspeed_pct = 250\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.cylinder_speed_pct, 250);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-cylinder-pct-high", "[ui.cylinder]\nspeed_pct = 900\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.cylinder_speed_pct, 300);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("speed_pct"))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn warns_on_unknown_cylinder_speed_and_keeps_constant() {
+        let path = temp_file(
+            "ui-cylinder-speed-invalid",
+            "[ui.cylinder]\nspeed = \"turbo\"\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(
+            outcome.config.cylinder_speed_mode,
+            CylinderSpeedMode::Constant
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.cylinder.speed") && warning.contains("turbo"))
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn warns_on_unknown_cylinder_annotation_mode_and_keeps_auto() {
         let path = temp_file(
             "ui-cylinder-invalid",
@@ -1058,6 +1149,7 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
     fn default_template_contains_cylinder_section() {
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("[ui.cylinder]"));
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("annotations = \"auto\""));
+        assert!(DEFAULT_CONFIG_TEMPLATE.contains("speed = \"constant\""));
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("display_mode = \"normal\""));
     }
 

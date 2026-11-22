@@ -39,7 +39,7 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
         Style::default()
     };
 
-    // Borders (2) + vertical padding (2)
+    // Borders (2)
     let content_width = width.saturating_sub(6);
     let mut wrapped_rows = 0usize;
     let lines: Vec<Line<'static>> = rows
@@ -61,7 +61,7 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
             ])
         })
         .collect();
-    let desired_height = u16::try_from(wrapped_rows.saturating_add(4)).unwrap_or(u16::MAX);
+    let desired_height = u16::try_from(wrapped_rows.saturating_add(2)).unwrap_or(u16::MAX);
     let height = desired_height.min(available_height);
 
     let popup = centered_rect(area, width, height);
@@ -72,7 +72,7 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
         .border_style(Style::default().fg(accent))
-        .padding(Padding::symmetric(2, 1))
+        .padding(Padding::horizontal(2))
         .title(Line::from(Span::styled(
             " Keybindings ",
             Style::default().fg(accent).add_modifier(Modifier::BOLD),

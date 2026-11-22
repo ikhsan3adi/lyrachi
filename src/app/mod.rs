@@ -221,6 +221,8 @@ pub async fn run(
     state.set_terminal_unicode(config.unicode.is_full());
     state.display_mode = config.display_mode;
     state.set_cylinder_annotations(config.cylinder_annotations);
+    state.set_cylinder_speed_mode(config.cylinder_speed_mode);
+    state.cylinder_speed_pct = config.cylinder_speed_pct;
     state.word_highlight = config.word_highlight;
     state.fps_active = config.fps_active;
     refresh_hidden_status_banner(&mut state, Instant::now());
@@ -1329,6 +1331,18 @@ fn handle_input_with_runtime(
             record_offset(state, coordinator, offsets);
             InputOutcome::default()
         }
+        KeyAction::CylinderSpeedDown => {
+            state.adjust_cylinder_speed(-10);
+            InputOutcome::default()
+        }
+        KeyAction::CylinderSpeedUp => {
+            state.adjust_cylinder_speed(10);
+            InputOutcome::default()
+        }
+        KeyAction::CylinderSpeedReset => {
+            state.reset_cylinder_speed();
+            InputOutcome::default()
+        }
         KeyAction::ScrollUp => {
             state.scroll_up();
             InputOutcome::default()
@@ -1683,6 +1697,7 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
         status_bar,
         display_mode: state.display_mode,
         word_highlight: state.word_highlight,
+        cylinder_speed_pct: state.cylinder_speed_pct,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -2439,6 +2454,90 @@ mod tests {
         );
         assert_eq!(state.user_offset_ms, 0);
         assert_eq!(offsets.offset_for(&canonical), 0);
+    }
+
+    #[test]
+    fn cylinder_speed_keys_adjust_and_reset_multiplier() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let mut state = UiState::new();
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                press(KeyCode::Char('='))
+            )
+            .quit
+        );
+        assert_eq!(state.cylinder_speed_pct, 110);
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                press(KeyCode::Char('+'))
+            )
+            .quit
+        );
+        assert_eq!(state.cylinder_speed_pct, 120);
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                press(KeyCode::Char('-'))
+            )
+            .quit
+        );
+        assert_eq!(state.cylinder_speed_pct, 110);
+
+        for _ in 0..40 {
+            assert!(
+                !handle_input(
+                    &mut state,
+                    &mut coordinator,
+                    &mut offsets,
+                    None,
+                    Instant::now(),
+                    press(KeyCode::Char('-'))
+                )
+                .quit
+            );
+        }
+        assert_eq!(state.cylinder_speed_pct, 50);
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                None,
+                Instant::now(),
+                press(KeyCode::Char('0'))
+            )
+            .quit
+        );
+        assert_eq!(state.cylinder_speed_pct, 100);
     }
 
     #[test]

@@ -4,25 +4,25 @@ expression: "render_state(state, width, height, effective_ms)"
 ---
                                 Yellow  Coldplay
           ╭ Keybindings ─────────────────────────────────────────────╮
-          │                                                          │
           │  ?           Toggle help overlay                         │
           │  r           Refetch lyrics                              │
           │  f           Toggle fullscreen                           │
           │  t           Toggle title bar                            │
           │  s           Toggle status bar                           │
-          │  m           Toggle display mode                         │
-          │  (normal/block/kinetic/cylinder)                         │
+          │  m           Cycle mode: normal/block/kinetic/cylinder   │
           │  w           Toggle word highlight                       │
           │  Tab         Peek at hidden status bar                   │
           │  S           Cycle style preset                          │
           │  [           Shift timing -100 ms                        │
           │  ]           Shift timing +100 ms                        │
           │  \           Reset timing offset                         │
+          │  -           Cylinder speed -10%                         │
+          │  =, +        Cylinder speed +10%                         │
+          │  0           Reset cylinder speed                        │
           │  Up          Scroll up (unsynced)                        │
           │  Down        Scroll down (unsynced)                      │
           │  c, Enter    Open context menu                           │
           │  q, Ctrl+C   Quit                                        │
-          │                                                          │
           ╰─────────────────────────────────────────── ? / Esc close ╯
 
 playing · normal · lrclib · -300 ms

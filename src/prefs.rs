@@ -15,6 +15,7 @@ pub struct UiPrefs {
     pub status_bar: StatusBarMode,
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
+    pub cylinder_speed_pct: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -70,6 +71,25 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
     set_value(ui, "status_bar", prefs.status_bar.as_str());
     set_value(ui, "display_mode", prefs.display_mode.as_str());
     set_value(ui, "word_highlight", prefs.word_highlight);
+
+    if ui
+        .get("cylinder")
+        .is_some_and(|item| item.as_table_like().is_none())
+    {
+        return Err(PrefsError::InvalidToml {
+            path: path.display().to_string(),
+            message: "`ui.cylinder` must be a table".to_string(),
+        });
+    }
+    if ui.get("cylinder").is_none() {
+        ui.insert("cylinder", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    if let Some(cylinder) = ui
+        .get_mut("cylinder")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        set_value(cylinder, "speed_pct", i64::from(prefs.cylinder_speed_pct));
+    }
 
     write_atomic(&target, document.to_string().as_bytes())
 }
@@ -190,6 +210,7 @@ mod tests {
             status_bar: StatusBarMode::Top,
             display_mode: DisplayMode::Block,
             word_highlight: false,
+            cylinder_speed_pct: 100,
         }
     }
 
@@ -249,6 +270,31 @@ mod tests {
         );
         assert!(
             saved.contains("word_highlight = false # keep toggle"),
+            "{saved}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_cylinder_speed_pct_into_cylinder_table() {
+        let dir = temp_dir("prefs-cylinder-speed");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\n\n[ui.cylinder]\nspeed = \"line_length\"\n",
+        )
+        .unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.cylinder_speed_pct = 140;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("speed_pct = 140"), "{saved}");
+        assert!(saved.contains("speed = \"line_length\""), "{saved}");
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
             "{saved}"
         );
 
