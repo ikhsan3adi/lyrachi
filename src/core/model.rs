@@ -80,6 +80,7 @@ pub enum AnnotationKind {
     Translation,
     Romanization,
     Secondary,
+    Background,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

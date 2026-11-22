@@ -8,7 +8,7 @@ use ratatui::{
 use unicode_segmentation::UnicodeSegmentation;
 
 use crate::compiler::timeline::{ActiveStageCursor, CompiledLine};
-use crate::core::model::{LineRole, SyncedTrack};
+use crate::core::model::{AnnotationKind, LineRole, SyncedTrack};
 use crate::core::text::{display_width_with_ambiguous, truncate_to_width_with_ambiguous};
 use crate::ui::CylinderAnnotationMode;
 use crate::ui::block::BlockFontSize;
@@ -37,41 +37,57 @@ impl ModeRenderer for CylinderRenderer {
 
         let ambiguous_width = timeline.context.ambiguous_width;
         let cursor = timeline.evaluate_for_status(effective_ms, state.playback);
-        let annotations = collect_annotations(
-            state,
-            &cursor,
-            timeline,
-            track,
-            area,
-            effective_ms,
-            ambiguous_width,
-        );
-        let gap_rows = u16::from(!annotations.is_empty());
-        let annotation_rows = u16::try_from(annotations.len()).unwrap_or(u16::MAX);
-        let main_height = area
-            .height
-            .saturating_sub(annotation_rows.saturating_add(gap_rows))
-            .max(1);
-        let main_area = Rect {
-            x: area.x,
-            y: area.y,
-            width: area.width,
-            height: main_height,
-        };
-        let annotation_area = Rect {
-            x: area.x,
-            y: area.y.saturating_add(main_height).saturating_add(gap_rows),
-            width: area.width,
-            height: annotation_rows,
-        };
-
         let geometry = CylinderGeometry::new(
-            main_area.width,
-            main_area.height,
+            area.width,
+            area.height,
             state.cylinder_speed_mode,
             f64::from(state.cylinder_speed_pct) / 100.0,
             state.cylinder_entry_lead_ms,
         );
+        let has_bg_content = timeline.lines.iter().any(|line| {
+            line.role == LineRole::BackgroundVocal
+                || track.lines.get(line.source_line_idx).is_some_and(|source| {
+                    source
+                        .annotations
+                        .iter()
+                        .any(|annotation| annotation.kind == AnnotationKind::Background)
+                })
+        });
+        // Main belt ink reaches at most belt_y + 3 (edge-stretched glyphs);
+        // the strip sits one blank row below the lyric text block itself.
+        let strip_y = area.y.saturating_add(geometry.belt_y()).saturating_add(5);
+        let strip_visible = has_bg_content
+            && background_strip_allowed(state)
+            && strip_y < area.y.saturating_add(area.height);
+        let annotations =
+            collect_annotations(state, &cursor, timeline, track, area, ambiguous_width);
+        let annotation_rows = u16::try_from(annotations.len()).unwrap_or(u16::MAX);
+
+        // The belt always gets the full area so its geometry never depends
+        // on background vocals or annotations; the strip renders right below
+        // the lyric text and the annotation rows overlay beneath it.
+        let main_area = area;
+        let bg_area = Rect {
+            x: area.x,
+            y: strip_y,
+            width: area.width,
+            height: u16::from(strip_visible),
+        };
+        let annotation_y = if strip_visible {
+            strip_y.saturating_add(1)
+        } else {
+            strip_y
+        };
+        let annotation_height = annotation_y
+            .saturating_add(annotation_rows)
+            .min(area.y.saturating_add(area.height))
+            .saturating_sub(annotation_y);
+        let annotation_area = Rect {
+            x: area.x,
+            y: annotation_y,
+            width: area.width,
+            height: annotation_height,
+        };
         let cache = &mut ctx.cache.cylinder;
         cache.prepare(timeline.context.options_hash());
 
@@ -163,6 +179,18 @@ impl ModeRenderer for CylinderRenderer {
             frame.render_widget(Paragraph::new(lines), main_area);
         }
 
+        if strip_visible {
+            render_background_strip(
+                frame,
+                bg_area,
+                state,
+                timeline,
+                track,
+                effective_ms,
+                ambiguous_width,
+            );
+        }
+
         if !annotations.is_empty() {
             let lines = annotations
                 .into_iter()
@@ -181,7 +209,6 @@ fn collect_annotations(
     timeline: &crate::compiler::timeline::CompiledTimeline,
     track: &SyncedTrack,
     area: Rect,
-    effective_ms: u64,
     ambiguous_width: u8,
 ) -> Vec<AnnotationRow> {
     if state.cylinder_annotations == CylinderAnnotationMode::Hide {
@@ -201,24 +228,12 @@ fn collect_annotations(
             if rows.len() >= CYLINDER_MAX_ANNOTATIONS {
                 break;
             }
+            if annotation.kind == AnnotationKind::Background {
+                continue;
+            }
             rows.push(AnnotationRow {
                 text: truncate_annotation(&annotation.text, area.width, ambiguous_width),
                 style: state.style.annotation_style(),
-            });
-        }
-    }
-
-    for line in &timeline.lines {
-        if rows.len() >= CYLINDER_MAX_ANNOTATIONS {
-            break;
-        }
-        if line.role == LineRole::BackgroundVocal
-            && line.start_ms <= effective_ms
-            && line.end_ms >= effective_ms
-        {
-            rows.push(AnnotationRow {
-                text: truncate_annotation(line_text(track, line), area.width, ambiguous_width),
-                style: state.style.line_style(LineRole::BackgroundVocal, 0, true),
             });
         }
     }
@@ -245,6 +260,114 @@ fn truncate_annotation(text: &str, width: u16, ambiguous_width: u8) -> String {
     }
     let prefix = truncate_to_width_with_ambiguous(text, width - 3, ambiguous_width);
     format!("{prefix}...")
+}
+
+/// Whether the background-vocal strip may render. The strip overlays the
+/// last row of the area instead of reserving it, so this never affects the
+/// belt geometry.
+fn background_strip_allowed(state: &crate::ui::UiState) -> bool {
+    if state.cylinder_annotations == CylinderAnnotationMode::Hide {
+        return false;
+    }
+    !(state.cylinder_annotations == CylinderAnnotationMode::Auto && !state.style.annotations_show)
+}
+
+/// Renders background vocals as a single row of normal characters beneath
+/// the belt. The text rides the same belt timing as the main lines but is
+/// never stretched at the edges, and long text simply clips at the screen
+/// borders while it scrolls through.
+fn render_background_strip(
+    frame: &mut Frame,
+    area: Rect,
+    state: &crate::ui::UiState,
+    timeline: &crate::compiler::timeline::CompiledTimeline,
+    track: &SyncedTrack,
+    effective_ms: u64,
+    ambiguous_width: u8,
+) {
+    let geometry = CylinderGeometry::new(
+        area.width,
+        area.height,
+        state.cylinder_speed_mode,
+        f64::from(state.cylinder_speed_pct) / 100.0,
+        state.cylinder_entry_lead_ms,
+    );
+    let scan_until = effective_ms.saturating_add(state.cylinder_entry_lead_ms);
+    let start_index = timeline
+        .lines
+        .partition_point(|line| line.start_ms <= scan_until);
+    let mut visible: Vec<(&str, f64)> = Vec::new();
+    for (scanned, index) in (0..start_index).rev().enumerate() {
+        if scanned >= CYLINDER_MAX_VISIBLE_LINES {
+            break;
+        }
+        let compiled = &timeline.lines[index];
+        if compiled.role == LineRole::BackgroundVocal {
+            let text = line_text(track, compiled);
+            let text_width = display_width_with_ambiguous(text, ambiguous_width);
+            let placement = geometry.place(compiled.start_ms, effective_ms, text_width);
+            if placement.visible {
+                visible.push((text, placement.first_col));
+            }
+        }
+        let Some(source) = track.lines.get(compiled.source_line_idx) else {
+            continue;
+        };
+        for annotation in &source.annotations {
+            if annotation.kind != AnnotationKind::Background {
+                continue;
+            }
+            let text = annotation.text.trim();
+            if text.is_empty() {
+                continue;
+            }
+            let text_width = display_width_with_ambiguous(text, ambiguous_width);
+            let placement = geometry.place(compiled.start_ms, effective_ms, text_width);
+            if placement.visible {
+                visible.push((text, placement.first_col));
+            }
+        }
+    }
+    visible.reverse();
+
+    let style = state.style.line_style(LineRole::BackgroundVocal, 0, true);
+    let mut cells: Vec<Option<String>> = vec![None; usize::from(area.width)];
+    for (text, first_col) in visible {
+        let mut col = first_col;
+        let mut last_placed: Option<usize> = None;
+        for grapheme in text.graphemes(true) {
+            let width = display_width_with_ambiguous(grapheme, ambiguous_width);
+            if width == 0 {
+                if let Some(previous) = last_placed
+                    && let Some(slot) = &mut cells[previous]
+                {
+                    slot.push_str(grapheme);
+                }
+                continue;
+            }
+            let start = col.round();
+            if start >= 0.0 && start < f64::from(area.width) {
+                let index = start as usize;
+                cells[index] = Some(grapheme.to_string());
+                last_placed = Some(index);
+            } else {
+                last_placed = None;
+            }
+            col += f64::from(width);
+        }
+    }
+
+    let buffer = frame.buffer_mut();
+    for (offset, symbol) in cells.iter().enumerate() {
+        let Some(symbol) = symbol else {
+            continue;
+        };
+        let x = area.x.saturating_add(offset as u16);
+        if let Some(cell) = buffer.cell_mut((x, area.y)) {
+            cell.set_symbol(symbol.as_str());
+            cell.set_style(style);
+        }
+    }
 }
 
 const BLOCK_ROWS: u16 = 4;
@@ -498,6 +621,13 @@ mod tests {
                     .collect::<String>()
             })
             .collect()
+    }
+
+    fn find_text_pos(buffer: &Buffer, needle: &str) -> Option<(usize, usize)> {
+        buffer_text(buffer)
+            .into_iter()
+            .enumerate()
+            .find_map(|(y, row)| row.find(needle).map(|x| (y, x)))
     }
 
     fn render_cylinder(track: SyncedTrack, effective_ms: u64, width: u16, height: u16) -> Buffer {
@@ -1002,7 +1132,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 80, 24),
-            1_000,
             1,
         );
         assert!(rows.is_empty());
@@ -1019,7 +1148,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 80, 24),
-            1_000,
             1,
         );
         assert!(rows.is_empty());
@@ -1041,7 +1169,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 80, 6),
-            1_000,
             1,
         );
         assert!(rows.is_empty());
@@ -1054,7 +1181,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 80, 6),
-            1_000,
             1,
         );
         assert_eq!(rows.len(), 1);
@@ -1086,7 +1212,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 80, 24),
-            1_000,
             1,
         );
         assert_eq!(rows.len(), CYLINDER_MAX_ANNOTATIONS);
@@ -1095,27 +1220,159 @@ mod tests {
     }
 
     #[test]
-    fn background_vocal_becomes_an_annotation() {
-        let state = annotated_state(CylinderAnnotationMode::Show, true);
+    fn annotations_do_not_shift_the_belt() {
+        let mut annotated = lyric_line(0, 4_000, "main line");
+        annotated.annotations = vec![Annotation {
+            kind: crate::core::model::AnnotationKind::Translation,
+            text: "terjemahan".to_string(),
+        }];
+        let with = track(vec![annotated, lyric_line(5_000, 9_000, "second line")]);
+        let without = track(vec![
+            lyric_line(0, 4_000, "main line"),
+            lyric_line(5_000, 9_000, "second line"),
+        ]);
+        let (a, area) = render_cylinder_with_area(with, 2_000, 80, 24);
+        let (b, _) = render_cylinder_with_area(without, 2_000, 80, 24);
+
+        let rows_a = buffer_text(&a);
+        let rows_b = buffer_text(&b);
+        let annotation_row = usize::from(area.y) + usize::from(area.height) / 2 + 5;
+        for (y, row) in rows_a.iter().enumerate().take(annotation_row) {
+            assert_eq!(
+                row, &rows_b[y],
+                "belt row {y} must not move for annotations"
+            );
+        }
+        assert!(
+            rows_a[annotation_row].contains("terjemahan"),
+            "annotation renders on the overlay row"
+        );
+        assert!(
+            rows_b[annotation_row].chars().all(|c| c == ' '),
+            "no annotation, no overlay ink"
+        );
+    }
+
+    #[test]
+    fn background_vocals_render_as_a_moving_strip() {
         let source = track(vec![
-            lyric_line(0, 4_000, "main"),
+            lyric_line(0, 60_000, "main line"),
             lyric_line_role(1_000, 3_000, "backing vocals", LineRole::BackgroundVocal),
         ]);
-        let timeline = CompiledTimeline::compile(&source, TimelineContext::default());
-        let rows = collect_annotations(
-            &state,
-            &annotation_cursor(Some(0)),
-            &timeline,
-            &source,
-            Rect::new(0, 0, 80, 24),
-            2_000,
-            1,
-        );
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].text, "backing vocals");
+        let (first, area) = render_cylinder_with_area(source.clone(), 2_000, 80, 24);
+        let (later, _) = render_cylinder_with_area(source, 3_000, 80, 24);
+
+        let strip_row = usize::from(area.y) + usize::from(area.height) / 2 + 5;
+        let (row, col) = find_text_pos(&first, "backing vocals").expect("strip text rendered");
         assert_eq!(
-            rows[0].style,
-            state.style.line_style(LineRole::BackgroundVocal, 0, true)
+            row, strip_row,
+            "strip sits one blank row below the lyric text block"
+        );
+        assert!(
+            col > usize::from(area.width) / 2,
+            "strip enters from the right: col {col}"
+        );
+        let (_, later_col) = find_text_pos(&later, "backing vocals").expect("still rendered");
+        assert!(
+            later_col < col,
+            "strip moves left with the belt: {later_col} vs {col}"
+        );
+
+        let gap_row = &buffer_text(&first)[strip_row - 1];
+        assert!(
+            gap_row.chars().all(|c| c == ' '),
+            "gap row between belt and strip must be blank: {gap_row:?}"
+        );
+    }
+
+    #[test]
+    fn background_vocals_do_not_shift_the_main_layout() {
+        let source = track(vec![
+            lyric_line(0, 60_000, "main line"),
+            lyric_line_role(10_000, 12_000, "backing vocals", LineRole::BackgroundVocal),
+        ]);
+        let (before, area) = render_cylinder_with_area(source.clone(), 2_000, 80, 24);
+        let (during, _) = render_cylinder_with_area(source, 11_000, 80, 24);
+
+        let strip_row = usize::from(area.y) + usize::from(area.height) / 2 + 5;
+        let before_rows = buffer_text(&before);
+        let during_rows = buffer_text(&during);
+        assert!(
+            before_rows[strip_row].chars().all(|c| c == ' '),
+            "strip row is reserved before the vocal starts"
+        );
+        assert!(
+            during_rows[strip_row].contains("backing vocals"),
+            "strip renders once the vocal is active"
+        );
+        let gap_row = strip_row - 1;
+        assert!(
+            before_rows[gap_row].chars().all(|c| c == ' '),
+            "gap row stays blank before the vocal starts"
+        );
+        assert!(
+            during_rows[gap_row].chars().all(|c| c == ' '),
+            "gap row stays blank while the vocal renders, so the belt never shifts"
+        );
+    }
+
+    #[test]
+    fn inline_background_annotations_ride_the_strip() {
+        let mut line = lyric_line(0, 60_000, "main line");
+        line.annotations = vec![Annotation {
+            kind: crate::core::model::AnnotationKind::Background,
+            text: "(echo)".to_string(),
+        }];
+        let source = track(vec![line, lyric_line(5_000, 9_000, "second line")]);
+        let (first, area) = render_cylinder_with_area(source.clone(), 2_000, 80, 24);
+        let (later, _) = render_cylinder_with_area(source, 3_000, 80, 24);
+
+        let strip_row = usize::from(area.y) + usize::from(area.height) / 2 + 5;
+        let (row, col) = find_text_pos(&first, "(echo)").expect("strip text rendered");
+        assert_eq!(
+            row, strip_row,
+            "inline background rides the strip below the lyrics"
+        );
+        assert!(
+            col + 6 > usize::from(area.width) / 2,
+            "strip enters from the right: col {col}"
+        );
+        let (_, later_col) = find_text_pos(&later, "(echo)").expect("still rendered");
+        assert!(
+            later_col < col,
+            "strip moves left with the belt: {later_col} vs {col}"
+        );
+
+        let rows = buffer_text(&first);
+        assert!(
+            !rows[strip_row + 1].contains("(echo)"),
+            "inline background must not render as a static annotation"
+        );
+    }
+
+    #[test]
+    fn background_strip_respects_hide_mode() {
+        let source = track(vec![
+            lyric_line(0, 60_000, "main line"),
+            lyric_line_role(1_000, 3_000, "backing vocals", LineRole::BackgroundVocal),
+        ]);
+        let mut state = UiState::new();
+        state.playback = PlaybackStatus::Playing;
+        let profile = StyleProfile::builtin("builtin:dark", 80).unwrap();
+        let resolved = profile.resolve("dark", ColorCapability::TrueColor, None);
+        state.set_resolved_style(resolved);
+        state.display_mode = DisplayMode::Cylinder;
+        state.set_cylinder_annotations(CylinderAnnotationMode::Hide);
+        state.set_lyrics(source);
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| crate::ui::render::render(frame, &state, 2_000))
+            .unwrap();
+        let buffer = terminal.backend().buffer().clone();
+        assert!(
+            find_text_pos(&buffer, "backing vocals").is_none(),
+            "hide mode must suppress the strip"
         );
     }
 
@@ -1136,7 +1393,6 @@ mod tests {
             &timeline,
             &source,
             Rect::new(0, 0, 20, 24),
-            1_000,
             1,
         );
         assert_eq!(rows.len(), 1);
