@@ -81,6 +81,8 @@ struct LyricsPlusWord {
     time: Option<f64>,
     duration: Option<f64>,
     text: Option<String>,
+    #[serde(rename = "isBackground")]
+    is_background: bool,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -103,10 +105,19 @@ where
     Ok(Option::<T>::deserialize(deserializer)?.unwrap_or_default())
 }
 
+#[derive(Clone)]
 struct Piece<'a> {
     text: &'a str,
     start_ms: u64,
     end_ms: Option<u64>,
+    is_background: bool,
+}
+
+struct LineContent {
+    text: String,
+    words: Vec<ParsedWord>,
+    inline_background: Option<String>,
+    all_background: bool,
 }
 
 pub struct LyricsPlusProvider {
@@ -429,13 +440,20 @@ fn response_to_parsed(response: &LyricsPlusResponse) -> Result<ParsedTrack, Prov
         };
         let start_ms = millis(time, "line time")?;
         let end_ms = optional_end_ms(line.duration, start_ms, "line duration")?;
-        let (text, words) = build_line_content(line, start_ms)?;
-        if text.trim().is_empty() && words.is_empty() {
+        let content = build_line_content(line, start_ms)?;
+        if content.text.trim().is_empty() && content.words.is_empty() {
             continue;
         }
 
+        let mut annotations = line_annotations(line);
+        if let Some(background) = &content.inline_background {
+            push_annotation(&mut annotations, AnnotationKind::Background, background);
+        }
+
         let singer = line.element.singer.as_deref().and_then(non_empty);
-        let role = if singer
+        let role = if content.all_background {
+            LineRole::BackgroundVocal
+        } else if singer
             .zip(primary_singer.as_deref())
             .is_some_and(|(singer, primary)| singer != primary)
         {
@@ -448,9 +466,9 @@ fn response_to_parsed(response: &LyricsPlusResponse) -> Result<ParsedTrack, Prov
             start_ms,
             end_ms,
             role,
-            text,
-            words,
-            annotations: line_annotations(line),
+            text: content.text,
+            words: content.words,
+            annotations,
             explicit_last_word_end_ms: None,
         });
     }
@@ -481,7 +499,7 @@ fn primary_singer(response: &LyricsPlusResponse) -> Option<String> {
 fn build_line_content(
     line: &LyricsPlusLine,
     line_start_ms: u64,
-) -> Result<(String, Vec<ParsedWord>), ProviderError> {
+) -> Result<LineContent, ProviderError> {
     let mut pieces = Vec::with_capacity(line.syllabus.len());
     for word in &line.syllabus {
         let Some(text) = word.text.as_deref() else {
@@ -499,28 +517,111 @@ fn build_line_content(
             text,
             start_ms,
             end_ms,
+            is_background: word.is_background,
         });
     }
 
     if pieces.is_empty() {
-        return Ok((
-            line.text.as_deref().unwrap_or_default().trim().to_string(),
-            Vec::new(),
-        ));
+        return Ok(LineContent {
+            text: line.text.as_deref().unwrap_or_default().trim().to_string(),
+            words: Vec::new(),
+            inline_background: None,
+            all_background: false,
+        });
     }
 
+    if pieces.iter().all(|piece| piece.is_background) {
+        let (text, words) = timed_content(&pieces, line.text.as_deref());
+        return Ok(LineContent {
+            text,
+            words,
+            inline_background: None,
+            all_background: true,
+        });
+    }
+
+    let main: Vec<Piece<'_>> = pieces
+        .iter()
+        .filter(|piece| !piece.is_background)
+        .cloned()
+        .collect();
+    let background: Vec<Piece<'_>> = pieces
+        .iter()
+        .filter(|piece| piece.is_background)
+        .cloned()
+        .collect();
+
+    let inline = background
+        .iter()
+        .map(|piece| piece.text)
+        .collect::<String>()
+        .trim()
+        .to_string();
+    let inline = (!inline.is_empty()).then_some(inline);
+
     if let Some(text) = line.text.as_deref().filter(|text| !text.trim().is_empty()) {
-        if let Some(words) = map_pieces(text, &pieces) {
-            return Ok(trim_line_with_words(text.to_string(), words));
+        if let Some(clean) = remove_background_text(text, &background)
+            && let Some(words) = map_pieces(&clean, &main)
+        {
+            let (text, words) = trim_line_with_words(clean, words);
+            return Ok(LineContent {
+                text,
+                words,
+                inline_background: inline,
+                all_background: false,
+            });
         }
         warn!("LyricsPlus syllable text did not match line text; using joined words");
     }
 
+    let joined = main.iter().map(|piece| piece.text).collect::<String>();
+    let words = sequential_pieces(&joined, &main);
+    Ok(LineContent {
+        text: joined,
+        words,
+        inline_background: inline,
+        all_background: false,
+    })
+}
+
+fn remove_background_text(text: &str, background: &[Piece<'_>]) -> Option<String> {
+    if background.is_empty() {
+        return Some(text.to_string());
+    }
+    let mut cleaned = text.to_string();
+    for piece in background {
+        let needle = piece.text.trim();
+        if needle.is_empty() {
+            continue;
+        }
+        let start = cleaned.find(needle)?;
+        let end = start + needle.len();
+        let mut start = start;
+        let mut end = end;
+        while start > 0 && cleaned[..start].ends_with(char::is_whitespace) {
+            start -= 1;
+        }
+        while end < cleaned.len() && cleaned[end..].starts_with(char::is_whitespace) {
+            end += 1;
+        }
+        let seam = start > 0 && end < cleaned.len();
+        cleaned.replace_range(start..end, "");
+        if seam {
+            cleaned.insert(start, ' ');
+        }
+    }
+    Some(cleaned)
+}
+
+fn timed_content(pieces: &[Piece<'_>], line_text: Option<&str>) -> (String, Vec<ParsedWord>) {
+    if let Some(text) = line_text.filter(|text| !text.trim().is_empty())
+        && let Some(words) = map_pieces(text, pieces)
+    {
+        return trim_line_with_words(text.to_string(), words);
+    }
     let joined = pieces.iter().map(|piece| piece.text).collect::<String>();
-    Ok(trim_line_with_words(
-        joined.clone(),
-        sequential_pieces(&joined, &pieces),
-    ))
+    let words = sequential_pieces(&joined, pieces);
+    trim_line_with_words(joined, words)
 }
 
 fn map_pieces(text: &str, pieces: &[Piece<'_>]) -> Option<Vec<ParsedWord>> {
@@ -979,6 +1080,74 @@ mod tests {
         assert_eq!(line.track.granularity, SyncGranularity::Line);
         assert_eq!(word.tier, Tier::Word);
         assert_eq!(word.track.granularity, SyncGranularity::Word);
+    }
+
+    #[test]
+    fn background_syllables_become_strip_annotations() {
+        let body = serde_json::json!({
+            "metadata": { "title": "Yellow", "artist": "Coldplay" },
+            "lyrics": [{
+                "time": 1000,
+                "duration": 2000,
+                "text": "I need you all night (You)",
+                "syllabus": [
+                    { "time": 1000, "duration": 500, "text": "I " },
+                    { "time": 1500, "duration": 500, "text": "need " },
+                    { "time": 2000, "duration": 500, "text": "you " },
+                    { "time": 1800, "duration": 400, "text": "(You)", "isBackground": true },
+                    { "time": 2500, "duration": 500, "text": "all " },
+                    { "time": 3000, "duration": 500, "text": "night" }
+                ]
+            }]
+        })
+        .to_string();
+
+        let answer = LyricsPlusProvider::parse_response(&body, &query())
+            .unwrap()
+            .unwrap();
+        let line = &answer.track.lines[0];
+        assert_eq!(line.text, "I need you all night");
+        assert_eq!(line.role, LineRole::Primary);
+        assert!(
+            line.annotations
+                .iter()
+                .any(|annotation| annotation.kind == AnnotationKind::Background
+                    && annotation.text == "(You)")
+        );
+        assert_eq!(line.words.len(), 5);
+    }
+
+    #[test]
+    fn fully_background_lines_map_to_background_vocals() {
+        let body = serde_json::json!({
+            "metadata": { "title": "Yellow", "artist": "Coldplay" },
+            "lyrics": [
+                { "time": 1000, "duration": 2000, "text": "Main line" },
+                {
+                    "time": 3000,
+                    "duration": 1000,
+                    "text": "(Echo echo)",
+                    "syllabus": [
+                        { "time": 3000, "duration": 500, "text": "(Echo ", "isBackground": true },
+                        { "time": 3500, "duration": 500, "text": "echo)", "isBackground": true }
+                    ]
+                }
+            ]
+        })
+        .to_string();
+
+        let answer = LyricsPlusProvider::parse_response(&body, &query())
+            .unwrap()
+            .unwrap();
+        let line = &answer.track.lines[1];
+        assert_eq!(line.role, LineRole::BackgroundVocal);
+        assert_eq!(line.text, "(Echo echo)");
+        assert_eq!(line.words.len(), 2);
+        assert!(
+            line.annotations
+                .iter()
+                .all(|annotation| annotation.kind != AnnotationKind::Background)
+        );
     }
 
     #[test]
