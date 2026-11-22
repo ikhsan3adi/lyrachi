@@ -181,6 +181,7 @@ pub struct UiState {
     pub canvas3d_speed_pct: u16,
     pub canvas3d_tilt_deg: u16,
     pub canvas3d_spawn_y_pct: u16,
+    pub canvas3d_zoom_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: ResolvedStyle,
@@ -233,6 +234,7 @@ impl UiState {
             canvas3d_speed_pct: 100,
             canvas3d_tilt_deg: canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
             canvas3d_spawn_y_pct: canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
+            canvas3d_zoom_pct: canvas3d::CANVAS3D_DEFAULT_ZOOM_PCT,
             word_highlight: true,
             fps_active: 60,
             style: ResolvedStyle::default(),
@@ -560,6 +562,21 @@ impl UiState {
         self.canvas3d_spawn_y_pct = next.clamp(
             i32::from(canvas3d::CANVAS3D_MIN_SPAWN_PCT),
             i32::from(canvas3d::CANVAS3D_MAX_SPAWN_PCT),
+        ) as u16;
+    }
+
+    pub fn set_canvas3d_zoom_pct(&mut self, zoom_pct: u16) {
+        self.canvas3d_zoom_pct = zoom_pct.clamp(
+            canvas3d::CANVAS3D_MIN_ZOOM_PCT,
+            canvas3d::CANVAS3D_MAX_ZOOM_PCT,
+        );
+    }
+
+    pub fn adjust_canvas3d_zoom_pct(&mut self, delta_pct: i32) {
+        let next = i32::from(self.canvas3d_zoom_pct) + delta_pct;
+        self.canvas3d_zoom_pct = next.clamp(
+            i32::from(canvas3d::CANVAS3D_MIN_ZOOM_PCT),
+            i32::from(canvas3d::CANVAS3D_MAX_ZOOM_PCT),
         ) as u16;
     }
 

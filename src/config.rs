@@ -47,6 +47,7 @@ pub struct RuntimeConfig {
     pub canvas3d_speed_pct: u16,
     pub canvas3d_tilt_deg: u16,
     pub canvas3d_spawn_y_pct: u16,
+    pub canvas3d_zoom_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: String,
@@ -80,6 +81,7 @@ impl Default for RuntimeConfig {
             canvas3d_speed_pct: 100,
             canvas3d_tilt_deg: crate::ui::canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
             canvas3d_spawn_y_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
+            canvas3d_zoom_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_ZOOM_PCT,
             word_highlight: true,
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
@@ -271,6 +273,20 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
             config.canvas3d_spawn_y_pct = pct.clamp(
                 crate::ui::canvas3d::CANVAS3D_MIN_SPAWN_PCT,
                 crate::ui::canvas3d::CANVAS3D_MAX_SPAWN_PCT,
+            );
+        }
+        if let Some(pct) = canvas3d.zoom_pct {
+            if !(crate::ui::canvas3d::CANVAS3D_MIN_ZOOM_PCT
+                ..=crate::ui::canvas3d::CANVAS3D_MAX_ZOOM_PCT)
+                .contains(&pct)
+            {
+                warnings.push(format!(
+                    "config: ui.canvas3d.zoom_pct {pct} out of range 50..=200; clamped"
+                ));
+            }
+            config.canvas3d_zoom_pct = pct.clamp(
+                crate::ui::canvas3d::CANVAS3D_MIN_ZOOM_PCT,
+                crate::ui::canvas3d::CANVAS3D_MAX_ZOOM_PCT,
             );
         }
     }
@@ -630,6 +646,7 @@ pub struct Canvas3dSection {
     pub speed_pct: Option<u16>,
     pub tilt_deg: Option<u16>,
     pub spawn_y_pct: Option<u16>,
+    pub zoom_pct: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
@@ -765,6 +782,9 @@ tilt_deg = 60
 # Screen height (percent from the top, 50..=95) where new lines appear;
 # adjust at runtime with "," / "."
 spawn_y_pct = 82
+# Text scale percent (50..=200). Zoom out to fit longer lines on screen;
+# adjust at runtime with "<" / ">"
+zoom_pct = 100
 
 [terminal]
 # Ambiguous-width Unicode character width: 1 or 2
@@ -1223,6 +1243,26 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
                 .warnings
                 .iter()
                 .any(|warning| warning.contains("ui.canvas3d.spawn_y_pct"))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_and_clamps_canvas3d_zoom_pct() {
+        let path = temp_file("ui-canvas3d-zoom", "[ui.canvas3d]\nzoom_pct = 150\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_zoom_pct, 150);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-canvas3d-zoom-high", "[ui.canvas3d]\nzoom_pct = 999\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_zoom_pct, 200);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.canvas3d.zoom_pct"))
         );
         fs::remove_file(path).unwrap();
     }

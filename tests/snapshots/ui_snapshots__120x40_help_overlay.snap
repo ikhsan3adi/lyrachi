@@ -8,7 +8,6 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
                     ╭ Keybindings ─────────────────────────────────────────────────────────────────╮
                     │  ?           Toggle help overlay                                             │
                     │  r           Refetch lyrics                                                  │
@@ -29,12 +28,13 @@ expression: "render_state(state, width, height, effective_ms)"
                     │  }           Crawl tilt +5°                                                  │
                     │  ,           Spawn height -2%                                                │
                     │  .           Spawn height +2%                                                │
+                    │  <           Text zoom -10%                                                  │
+                    │  >           Text zoom +10%                                                  │
                     │  Up          Scroll up (unsynced)                                            │
                     │  Down        Scroll down (unsynced)                                          │
                     │  c, Enter    Open context menu                                               │
                     │  q, Ctrl+C   Quit                                                            │
                     ╰─────────────────────────────────────────────────────────────── ? / Esc close ╯
-
 
 
 

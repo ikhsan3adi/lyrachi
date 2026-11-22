@@ -23,6 +23,6 @@ expression: "render_state(state, width, height, effective_ms)"
       │  }           Crawl tilt +5°                                      │
       │  ,           Spawn height -2%                                    │
       │  .           Spawn height +2%                                    │
-      │  Up          Scroll up (unsynced)                                │
+      │  <           Text zoom -10%                                      │
       ╰─────────────────────────────────────────────────── ? / Esc close ╯
 playing · normal · lrclib · -300 ms

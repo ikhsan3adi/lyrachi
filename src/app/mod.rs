@@ -232,6 +232,7 @@ pub async fn run(
     state.set_canvas3d_speed_pct(config.canvas3d_speed_pct);
     state.set_canvas3d_tilt_deg(config.canvas3d_tilt_deg);
     state.set_canvas3d_spawn_y_pct(config.canvas3d_spawn_y_pct);
+    state.set_canvas3d_zoom_pct(config.canvas3d_zoom_pct);
     state.cylinder_speed_pct = config.cylinder_speed_pct;
     state.word_highlight = config.word_highlight;
     state.fps_active = config.fps_active;
@@ -1389,6 +1390,20 @@ fn handle_input_with_runtime(
             }
             InputOutcome::default()
         }
+        KeyAction::StageZoomOut => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_zoom_pct(-crate::ui::canvas3d::CANVAS3D_ZOOM_STEP_PCT);
+                persist_preferences(state, config_file, now);
+            }
+            InputOutcome::default()
+        }
+        KeyAction::StageZoomIn => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_zoom_pct(crate::ui::canvas3d::CANVAS3D_ZOOM_STEP_PCT);
+                persist_preferences(state, config_file, now);
+            }
+            InputOutcome::default()
+        }
         KeyAction::ScrollUp => {
             state.scroll_up();
             InputOutcome::default()
@@ -1747,6 +1762,7 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
         canvas3d_speed_pct: state.canvas3d_speed_pct,
         canvas3d_tilt_deg: state.canvas3d_tilt_deg,
         canvas3d_spawn_y_pct: state.canvas3d_spawn_y_pct,
+        canvas3d_zoom_pct: state.canvas3d_zoom_pct,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -2803,6 +2819,67 @@ mod tests {
             .quit
         );
         assert_eq!(state.canvas3d_spawn_y_pct, 82);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn canvas3d_zoom_keys_adjust_and_persist() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-canvas3d-zoom-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
+        let mut state = UiState::new();
+        state.display_mode = DisplayMode::Canvas3D;
+        state.set_terminal_unicode(true);
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('<'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_zoom_pct, 90);
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("zoom_pct = 90"), "{saved}");
+        assert!(saved.contains("[ui.canvas3d]"), "{saved}");
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('>'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_zoom_pct, 100);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }

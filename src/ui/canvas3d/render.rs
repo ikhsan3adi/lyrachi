@@ -41,6 +41,7 @@ impl ModeRenderer for Canvas3DRenderer {
         let camera = CrawlCamera::new(area.width, area.height, tilt_deg);
         let v_enter = spawn_v_for(tilt_deg, state.canvas3d_spawn_y_pct);
         let dim_depth = dim_depth_for(v_enter);
+        let glyph_scale = CANVAS3D_GLYPH_SCALE * f32::from(state.canvas3d_zoom_pct) / 100.0;
 
         let scan_lead = u64::from(state.canvas3d_flip) * CANVAS3D_FLIP_MS;
         let scan_until = effective_ms.saturating_add(scan_lead);
@@ -130,9 +131,9 @@ impl ModeRenderer for Canvas3DRenderer {
                     let sx = center_x + (f32::from(*px) - center_x) * scale;
                     let sy = 3.5 + (f32::from(*py) - 3.5) * scale;
                     let u_rel = glyph_x as f32 + sx;
-                    let u = u_rel * flip_angle.cos() * CANVAS3D_GLYPH_SCALE;
-                    let w = u_rel * flip_angle.sin() * CANVAS3D_GLYPH_SCALE;
-                    let v = v_line + (7.0 - sy) * CANVAS3D_Y_STRETCH * CANVAS3D_GLYPH_SCALE;
+                    let u = u_rel * flip_angle.cos() * glyph_scale;
+                    let w = u_rel * flip_angle.sin() * glyph_scale;
+                    let v = v_line + (7.0 - sy) * CANVAS3D_Y_STRETCH * glyph_scale;
                     if let Some((x, y, _)) = camera.project(u, v, w) {
                         cache.plot(x, y, style);
                     }
@@ -216,8 +217,8 @@ mod tests {
     use crate::ui::render::{WordState, word_state_style};
 
     use super::super::{
-        CANVAS3D_DEFAULT_SPAWN_PCT, CANVAS3D_DEFAULT_TILT_DEG, CANVAS3D_MIN_HEIGHT,
-        CANVAS3D_MIN_WIDTH,
+        CANVAS3D_DEFAULT_SPAWN_PCT, CANVAS3D_DEFAULT_TILT_DEG, CANVAS3D_DEFAULT_ZOOM_PCT,
+        CANVAS3D_MIN_HEIGHT, CANVAS3D_MIN_WIDTH,
     };
     use super::*;
     use crate::core::clock::PlaybackStatus;
@@ -260,6 +261,7 @@ mod tests {
         speed_pct: u16,
         tilt_deg: u16,
         spawn_pct: u16,
+        zoom_pct: u16,
     }
 
     impl Canvas3dTestOpts {
@@ -268,6 +270,7 @@ mod tests {
                 speed_pct: 100,
                 tilt_deg: CANVAS3D_DEFAULT_TILT_DEG,
                 spawn_pct: CANVAS3D_DEFAULT_SPAWN_PCT,
+                zoom_pct: CANVAS3D_DEFAULT_ZOOM_PCT,
                 ..Self::default()
             }
         }
@@ -285,6 +288,7 @@ mod tests {
         state.set_canvas3d_speed_pct(opts.speed_pct);
         state.set_canvas3d_tilt_deg(opts.tilt_deg);
         state.set_canvas3d_spawn_y_pct(opts.spawn_pct);
+        state.set_canvas3d_zoom_pct(opts.zoom_pct);
         state.resize(width, height);
         state.playback = PlaybackStatus::Playing;
         let profile = StyleProfile::builtin("builtin:dark", width).unwrap();
@@ -535,6 +539,45 @@ mod tests {
             "lower spawn must render more dots: {} vs {}",
             count_braille(&low),
             count_braille(&deep)
+        );
+    }
+
+    #[test]
+    fn zoom_out_fits_the_whole_line() {
+        let long_line = "la ".repeat(20);
+        let source = track(vec![lyric_line(0, 60_000, long_line.trim_end())]);
+        let braille_span = |buffer: &Buffer| {
+            let mut min_x = u16::MAX;
+            let mut max_x = 0u16;
+            for y in 0..buffer.area.height {
+                for x in 0..buffer.area.width {
+                    let sym = buffer[(x, y)].symbol().chars().next().unwrap_or(' ');
+                    if ('\u{2800}'..='\u{28FF}').contains(&sym) {
+                        min_x = min_x.min(x);
+                        max_x = max_x.max(x);
+                    }
+                }
+            }
+            assert!(min_x != u16::MAX, "expected braille dots");
+            u32::from(max_x - min_x)
+        };
+        let zoomed_in =
+            render_canvas3d_opts(source.clone(), 1_500, 120, 40, Canvas3dTestOpts::new());
+        let zoomed_out = render_canvas3d_opts(
+            source,
+            1_500,
+            120,
+            40,
+            Canvas3dTestOpts {
+                zoom_pct: 50,
+                ..Canvas3dTestOpts::new()
+            },
+        );
+        assert!(
+            braille_span(&zoomed_out) < braille_span(&zoomed_in),
+            "zoomed-out line must fit within a narrower span: {} vs {}",
+            braille_span(&zoomed_out),
+            braille_span(&zoomed_in)
         );
     }
 

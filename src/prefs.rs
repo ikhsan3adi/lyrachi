@@ -19,6 +19,7 @@ pub struct UiPrefs {
     pub canvas3d_speed_pct: u16,
     pub canvas3d_tilt_deg: u16,
     pub canvas3d_spawn_y_pct: u16,
+    pub canvas3d_zoom_pct: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -117,6 +118,7 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
             "spawn_y_pct",
             i64::from(prefs.canvas3d_spawn_y_pct),
         );
+        set_value(canvas3d, "zoom_pct", i64::from(prefs.canvas3d_zoom_pct));
     }
 
     write_atomic(&target, document.to_string().as_bytes())
@@ -242,6 +244,7 @@ mod tests {
             canvas3d_speed_pct: 100,
             canvas3d_tilt_deg: crate::ui::canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
             canvas3d_spawn_y_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
+            canvas3d_zoom_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_ZOOM_PCT,
         }
     }
 
@@ -418,6 +421,31 @@ mod tests {
         let saved = fs::read_to_string(&path).unwrap();
 
         assert!(saved.contains("spawn_y_pct = 70"), "{saved}");
+        assert!(saved.contains("flip = true"), "{saved}");
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
+            "{saved}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_canvas3d_zoom_pct_into_canvas3d_table() {
+        let dir = temp_dir("prefs-canvas3d-zoom");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\n\n[ui.canvas3d]\nflip = true\n",
+        )
+        .unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.canvas3d_zoom_pct = 150;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("zoom_pct = 150"), "{saved}");
         assert!(saved.contains("flip = true"), "{saved}");
         assert!(
             saved.contains("display_mode = \"block\" # keep mode"),
