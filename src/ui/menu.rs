@@ -198,7 +198,13 @@ impl ContextMenuState {
     }
 }
 
-pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState, style: &ResolvedStyle) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    menu: &ContextMenuState,
+    style: &ResolvedStyle,
+    unicode: bool,
+) {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
     if available_width < MIN_MODAL_WIDTH || available_height < MIN_MODAL_HEIGHT {
@@ -240,7 +246,7 @@ pub fn render(frame: &mut Frame, area: Rect, menu: &ContextMenuState, style: &Re
             );
         }
         ContextMenuView::SearchInput(search) => {
-            render_search_input(frame, area, search, available_height, style);
+            render_search_input(frame, area, search, available_height, style, unicode);
         }
     }
 }
@@ -327,17 +333,23 @@ fn render_actions(
         0
     };
     let end = (start + action_slots).min(rows.len());
+    let is_scrolling = rows.len() > action_slots;
 
-    for (index, label) in rows.into_iter().enumerate().take(end).skip(start) {
+    for (index, label) in rows.iter().enumerate().take(end).skip(start) {
         let row_style = if index == selected {
             selected_style(style)
         } else {
             Style::default()
         };
-        lines.push(full_row_line(&label, inner_width, row_style));
+        lines.push(full_row_line(label, inner_width, row_style));
     }
 
     let border_style = Style::default().fg(accent(style));
+    let title = if is_scrolling {
+        format!(" Context Menu ({}/{}) ", selected + 1, rows.len())
+    } else {
+        " Context Menu ".to_string()
+    };
     let block = Block::default()
         .style(content_style(style))
         .borders(Borders::ALL)
@@ -345,7 +357,7 @@ fn render_actions(
         .border_style(border_style)
         .padding(Padding::symmetric(HORIZONTAL_PADDING, vertical_pad))
         .title(Line::from(Span::styled(
-            " Context Menu ",
+            title,
             Style::default()
                 .fg(accent(style))
                 .add_modifier(Modifier::BOLD),
@@ -353,7 +365,9 @@ fn render_actions(
         .title_bottom(
             Line::from(Span::styled(
                 " Up/Down move  Enter select  Esc close ",
-                Style::default().add_modifier(Modifier::DIM),
+                Style::default()
+                    .fg(muted_fg(style))
+                    .add_modifier(Modifier::DIM),
             ))
             .alignment(Alignment::Right),
         );
@@ -438,7 +452,7 @@ fn render_candidates(
         let msg = status_message.unwrap_or("No candidates found.");
         lines.push(Line::from(Span::styled(
             truncate_display(msg, inner_width),
-            Style::default().fg(Color::Yellow),
+            Style::default().fg(accent(style)),
         )));
     } else {
         let available_slots = usize::from(popup.height.saturating_sub(5 + extra_rows)).clamp(1, 16);
@@ -455,7 +469,7 @@ fn render_candidates(
                 Style::default()
             };
             lines.push(full_row_line(
-                &format_candidate_line(item),
+                &format_candidate_line(item, inner_width),
                 inner_width,
                 row_style,
             ));
@@ -463,12 +477,14 @@ fn render_candidates(
         if hydrating {
             lines.push(Line::from(Span::styled(
                 "Loading selected lyrics...",
-                Style::default().fg(Color::Yellow),
+                Style::default().fg(accent(style)),
             )));
         } else if let Some(msg) = status_message {
             lines.push(Line::from(Span::styled(
                 truncate_display(msg, inner_width),
-                Style::default().fg(Color::Red),
+                Style::default()
+                    .fg(accent(style))
+                    .add_modifier(Modifier::BOLD),
             )));
         }
     }
@@ -522,6 +538,7 @@ fn render_search_input(
     search: &SearchInputState,
     available_height: u16,
     style: &ResolvedStyle,
+    unicode: bool,
 ) {
     let width = modal_width(area.width);
     let height = 8u16.min(available_height);
@@ -570,6 +587,7 @@ fn render_search_input(
         &search.artist,
         search.active_field == SearchField::Artist,
         style,
+        unicode,
     );
     render_input_row(
         frame,
@@ -578,6 +596,7 @@ fn render_search_input(
         &search.title,
         search.active_field == SearchField::Title,
         style,
+        unicode,
     );
     frame.render_widget(
         Paragraph::new(Span::styled(
@@ -598,9 +617,9 @@ fn render_input_row(
     value: &str,
     active: bool,
     style: &ResolvedStyle,
+    unicode: bool,
 ) {
     let marker = if active { "> " } else { "  " };
-    let cursor = if active { "_" } else { "" };
     let label_style = if active {
         Style::default()
             .fg(accent(style))
@@ -609,17 +628,32 @@ fn render_input_row(
         Style::default().fg(muted_fg(style))
     };
     let max_val_len = usize::from(area.width).saturating_sub(marker.len() + label.len() + 3);
-    let visible = tail_display(value, max_val_len);
-    let line = Line::from(vec![
+    let truncated = usize::from(display_width(value)) > max_val_len;
+    let indicator = if truncated {
+        if unicode { "… " } else { "... " }
+    } else {
+        ""
+    };
+    let visible = tail_display(
+        value,
+        max_val_len.saturating_sub(usize::from(crate::core::text::display_width(indicator))),
+    );
+    let mut spans = vec![
         Span::styled(marker, label_style),
         Span::styled(format!("{label}: "), label_style),
+        Span::raw(indicator.to_string()),
         Span::raw(visible),
-        Span::styled(cursor, Style::default().fg(accent(style))),
-    ]);
-    frame.render_widget(Paragraph::new(line).style(content_style(style)), area);
+    ];
+    if active {
+        spans.push(Span::styled(" ", Style::default().bg(accent(style))));
+    }
+    frame.render_widget(
+        Paragraph::new(Line::from(spans)).style(content_style(style)),
+        area,
+    );
 }
 
-fn format_candidate_line(item: &CandidateMenuItem) -> String {
+fn format_candidate_line(item: &CandidateMenuItem, max_width: usize) -> String {
     let mut label = format!("[{}] {}", item.provider_label, item.title);
     if let Some(artist) = &item.artist
         && !artist.is_empty()
@@ -627,10 +661,29 @@ fn format_candidate_line(item: &CandidateMenuItem) -> String {
         label.push_str(" - ");
         label.push_str(artist);
     }
+    let album = item
+        .album
+        .as_deref()
+        .filter(|album| !album.is_empty())
+        .map(|album| format!("{label} - {album}"))
+        .unwrap_or_else(|| label.clone());
     let duration = item.duration_ms.map(format_duration_ms);
     let active_tag = if item.is_active { " *" } else { "" };
+    let with_album = match duration {
+        Some(ref dur) => format!(
+            "{album} ({dur}, {}, {}%){active_tag}",
+            item.tier_label, item.score_pct
+        ),
+        None => format!(
+            "{album} ({}, {}%){active_tag}",
+            item.tier_label, item.score_pct
+        ),
+    };
+    if label == album || usize::from(display_width(&with_album)) <= max_width {
+        return with_album;
+    }
     match duration {
-        Some(dur) => format!(
+        Some(ref dur) => format!(
             "{label} ({dur}, {}, {}%){active_tag}",
             item.tier_label, item.score_pct
         ),
@@ -698,7 +751,7 @@ mod tests {
             is_active: true,
         };
         assert_eq!(
-            format_candidate_line(&item),
+            format_candidate_line(&item, 200),
             "[lyricsplus] Yellow - Coldplay (04:27, word, 98%) *"
         );
 
@@ -713,8 +766,21 @@ mod tests {
             is_active: false,
         };
         assert_eq!(
-            format_candidate_line(&item_no_artist),
+            format_candidate_line(&item_no_artist, 200),
             "[local] Instrumental Track (line, 75%)"
+        );
+
+        let item_with_album = CandidateMenuItem {
+            album: Some("Parachutes".to_string()),
+            ..item.clone()
+        };
+        assert_eq!(
+            format_candidate_line(&item_with_album, 200),
+            "[lyricsplus] Yellow - Coldplay - Parachutes (04:27, word, 98%) *"
+        );
+        assert_eq!(
+            format_candidate_line(&item_with_album, 40),
+            "[lyricsplus] Yellow - Coldplay (04:27, word, 98%) *"
         );
     }
 
@@ -816,7 +882,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu, &style);
+                render(frame, frame.area(), &menu, &style, true);
             })
             .unwrap();
     }
@@ -852,7 +918,7 @@ mod tests {
         let style = ResolvedStyle::default();
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu, &style);
+                render(frame, frame.area(), &menu, &style, true);
             })
             .unwrap();
 
@@ -881,7 +947,7 @@ mod tests {
 
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu, &style);
+                render(frame, frame.area(), &menu, &style, true);
             })
             .unwrap();
 
@@ -933,7 +999,7 @@ mod tests {
         let style = ResolvedStyle::default();
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &menu, &style);
+                render(frame, frame.area(), &menu, &style, true);
             })
             .unwrap();
 

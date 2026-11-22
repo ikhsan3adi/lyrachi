@@ -807,7 +807,9 @@ fn block_mode_respects_timeline_max_width() {
 
 #[test]
 fn block_mode_does_not_style_anchor_as_active_in_a_gap() {
-    let buffer = render_buffer(&mut block_word_sync(), 80, 24, 0);
+    let mut state = block_word_sync();
+    state.configure_layout(false, false, StatusBarMode::Off);
+    let buffer = render_buffer(&mut state, 80, 24, 0);
     let has_accent = (0..buffer.area.height).any(|y| {
         (0..buffer.area.width)
             .filter_map(|x| buffer.cell((x, y)))

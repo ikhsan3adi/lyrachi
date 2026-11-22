@@ -213,6 +213,20 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
     },
     KeyBinding {
         scope: KeyScope::Help,
+        trigger: KeyTrigger::Up,
+        action: KeyAction::ScrollUp,
+        key_label: "Up",
+        description: "Scroll help up",
+    },
+    KeyBinding {
+        scope: KeyScope::Help,
+        trigger: KeyTrigger::Down,
+        action: KeyAction::ScrollDown,
+        key_label: "Down",
+        description: "Scroll help down",
+    },
+    KeyBinding {
+        scope: KeyScope::Help,
         trigger: KeyTrigger::CtrlChar('c'),
         action: KeyAction::Quit,
         key_label: "Ctrl+C",

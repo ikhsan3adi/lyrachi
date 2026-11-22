@@ -28,7 +28,7 @@ impl ModeRenderer for Canvas3DRenderer {
         let effective_ms = ctx.effective_ms;
 
         if timeline.lines.is_empty() {
-            centered_message(frame, area, "No lyrics found", "");
+            centered_message(frame, area, &state.style, "No lyrics found", "", false);
             return;
         }
 

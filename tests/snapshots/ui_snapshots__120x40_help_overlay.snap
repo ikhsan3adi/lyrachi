@@ -7,8 +7,8 @@ expression: "render_state(state, width, height, effective_ms)"
 
 
 
-
                     ╭ Keybindings ─────────────────────────────────────────────────────────────────╮
+                    │                                                                              │
                     │  ?           Toggle help overlay                                             │
                     │  r           Refetch lyrics                                                  │
                     │  f           Toggle fullscreen                                               │
@@ -34,8 +34,8 @@ expression: "render_state(state, width, height, effective_ms)"
                     │  Down        Scroll down (unsynced)                                          │
                     │  c, Enter    Open context menu                                               │
                     │  q, Ctrl+C   Quit                                                            │
+                    │                                                                              │
                     ╰─────────────────────────────────────────────────────────────── ? / Esc close ╯
-
 
 
 

@@ -28,7 +28,8 @@ use crate::{
         loader::load_style_name_or_default,
     },
     ui::{
-        CandidateMenuItem, ContextMenuAction, ContextMenuView, DisplayMode, UiModal, UiState,
+        BannerSeverity, CandidateMenuItem, ContextMenuAction, ContextMenuView, DisplayMode,
+        UiModal, UiState,
         effects::UiEffects,
         render::{self, RenderCache},
     },
@@ -257,7 +258,7 @@ pub async fn run(
         match spawn_style_watcher(runtime.styles_dir.as_deref(), app_tx.clone()) {
             Ok(pair) => pair,
             Err(message) => {
-                state.show_banner(message, Instant::now());
+                state.show_banner_as(message, BannerSeverity::Error, Instant::now());
                 (None, None)
             }
         };
@@ -1026,7 +1027,11 @@ pub fn reload_active_style(state: &mut UiState, runtime: &mut AppRuntime, now: I
         }
         Err(error) => {
             warn!(%error, "hot-reload style failed for `{desired}`; retaining previous valid profile");
-            state.show_banner(format!("style reload failed: {error}"), now);
+            state.show_banner_as(
+                format!("style reload failed: {error}"),
+                BannerSeverity::Error,
+                now,
+            );
         }
     }
 }
@@ -1267,7 +1272,7 @@ fn handle_input_with_runtime(
                 InputOutcome::refetch(plan)
             }
             None => {
-                state.show_banner("No track to refetch", now);
+                state.show_banner_as("No track to refetch", BannerSeverity::Warning, now);
                 InputOutcome::default()
             }
         },
@@ -1405,17 +1410,29 @@ fn handle_input_with_runtime(
             InputOutcome::default()
         }
         KeyAction::ScrollUp => {
-            state.scroll_up();
+            if matches!(state.modal, Some(UiModal::Help)) {
+                state.help_scroll_up();
+            } else {
+                state.scroll_up();
+            }
             InputOutcome::default()
         }
         KeyAction::ScrollDown => {
-            state.scroll_down();
+            if matches!(state.modal, Some(UiModal::Help)) {
+                state.help_scroll_down();
+            } else {
+                state.scroll_down();
+            }
             InputOutcome::default()
         }
         KeyAction::ToggleHelp => {
             if state.modal != Some(UiModal::Help) && !state.help_fits_viewport() {
                 state.close_context_menu_at(now);
-                state.show_banner("Terminal too small for help overlay", now);
+                state.show_banner_as(
+                    "Terminal too small for help overlay",
+                    BannerSeverity::Warning,
+                    now,
+                );
             } else {
                 state.toggle_help_at(now);
             }
@@ -1427,9 +1444,13 @@ fn handle_input_with_runtime(
         }
         KeyAction::OpenContextMenu => {
             if !state.context_menu_fits_viewport() {
-                state.show_banner("Terminal too small for context menu", now);
+                state.show_banner_as(
+                    "Terminal too small for context menu",
+                    BannerSeverity::Warning,
+                    now,
+                );
             } else if !state.open_context_menu_at(now) {
-                state.show_banner("No active track", now);
+                state.show_banner_as("No active track", BannerSeverity::Warning, now);
             }
             InputOutcome::default()
         }
@@ -1494,12 +1515,12 @@ fn handle_search_input_key(
                 state.user_offset_ms,
             );
             if !query.is_usable() {
-                state.show_banner("Enter a song title to search", now);
+                state.show_banner_as("Enter a song title to search", BannerSeverity::Warning, now);
                 return InputOutcome::default();
             }
             let Some(track_key) = coordinator.active_key().cloned() else {
                 state.close_modal();
-                state.show_banner("No active track", now);
+                state.show_banner_as("No active track", BannerSeverity::Warning, now);
                 return InputOutcome::menu(MenuCommand::CancelMenu);
             };
             let query_label = format_query_label(&query);
@@ -1548,7 +1569,7 @@ fn handle_menu_select(
         Selection::Action(ContextMenuAction::SelectCandidate) => {
             let Some(track_key) = coordinator.active_key().cloned() else {
                 state.close_modal();
-                state.show_banner("No active track", now);
+                state.show_banner_as("No active track", BannerSeverity::Warning, now);
                 return InputOutcome::menu(MenuCommand::CancelMenu);
             };
             let Some(query) = coordinator.active_query().cloned().or_else(|| {
@@ -1558,7 +1579,7 @@ fn handle_menu_select(
                     .map(|meta| TrackQuery::from_meta(meta, state.user_offset_ms))
             }) else {
                 state.close_modal();
-                state.show_banner("No active track", now);
+                state.show_banner_as("No active track", BannerSeverity::Warning, now);
                 return InputOutcome::menu(MenuCommand::CancelMenu);
             };
             let label = format_query_label(&query);
@@ -1586,7 +1607,7 @@ fn handle_menu_select(
                     InputOutcome::menu(MenuCommand::ClearPinAndRefetch(plan))
                 }
                 None => {
-                    state.show_banner("No track to reset", now);
+                    state.show_banner_as("No track to reset", BannerSeverity::Warning, now);
                     InputOutcome::menu(MenuCommand::CancelMenu)
                 }
             }
@@ -1630,7 +1651,7 @@ fn handle_menu_select(
                 .or_else(|| coordinator.active_key().cloned())
             else {
                 state.close_modal();
-                state.show_banner("No active track", now);
+                state.show_banner_as("No active track", BannerSeverity::Warning, now);
                 return InputOutcome::menu(MenuCommand::CancelMenu);
             };
             state.set_candidate_hydrating(true, None);
@@ -1767,7 +1788,7 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
         state.config_warning = Some(message.clone());
-        state.show_banner(message, now);
+        state.show_banner_as(message, BannerSeverity::Error, now);
     }
 }
 
@@ -1782,7 +1803,7 @@ fn refresh_hidden_status_banner(state: &mut UiState, now: Instant) {
         .clone()
         .or_else(|| state.offline.then(|| "Offline mode".to_string()));
     if let Some(message) = message {
-        state.show_banner(message, now);
+        state.show_banner_as(message, BannerSeverity::Warning, now);
     } else {
         state.clear_banner();
     }

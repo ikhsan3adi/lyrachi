@@ -9,7 +9,7 @@ use ratatui::{
 use crate::core::model::SyncGranularity;
 use crate::core::text::{display_width, truncate_to_width};
 
-use super::{LyricsView, UiState};
+use super::{BannerSeverity, LyricsView, UiState};
 
 pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
     if area.height == 0 || area.width == 0 {
@@ -19,14 +19,47 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
 }
 
 pub fn banner_line(state: &UiState) -> Option<Line<'static>> {
-    state.banner_message().map(|message| {
-        Line::from(Span::styled(
-            message.to_string(),
-            Style::default()
-                .fg(Color::Yellow)
-                .add_modifier(Modifier::BOLD),
-        ))
-    })
+    let (message, severity) = state.banner()?;
+    let style = &state.style;
+    let accent = style.accent;
+    let line = match severity {
+        BannerSeverity::Info => base_style(style),
+        BannerSeverity::Warning => Style::default()
+            .fg(accent.unwrap_or(Color::Yellow))
+            .add_modifier(Modifier::BOLD),
+        BannerSeverity::Error => {
+            let prefix = if state.terminal_unicode { "✗ " } else { "! " };
+            return Some(Line::from(vec![
+                Span::styled(
+                    prefix.to_string(),
+                    Style::default()
+                        .fg(accent.unwrap_or(Color::Red))
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    message.to_string(),
+                    Style::default()
+                        .fg(accent.unwrap_or(Color::Red))
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ]));
+        }
+    };
+    Some(Line::from(Span::styled(message.to_string(), line)))
+}
+
+fn base_style(style: &crate::style::ResolvedStyle) -> Style {
+    match style.inactive_fg {
+        Some(color) => Style::default().fg(color),
+        None => Style::default().add_modifier(Modifier::DIM),
+    }
+}
+
+fn accent_style(style: &crate::style::ResolvedStyle, base: Style) -> Style {
+    style
+        .accent
+        .map(|color| Style::default().fg(color))
+        .unwrap_or(base)
 }
 
 pub fn status_bar_line(state: &UiState, width: u16) -> Line<'static> {
@@ -40,34 +73,67 @@ pub fn status_bar_line(state: &UiState, width: u16) -> Line<'static> {
     let with_detail = width >= 96;
     let with_system = width >= 96;
 
-    let mut head = Vec::new();
-    head.push(playback_label(state, with_player));
+    let base = base_style(&state.style);
+    let accent = accent_style(&state.style, base);
+
+    let mut head: Vec<(String, Style)> = Vec::new();
+    head.push((playback_label(state, with_player), accent));
     if width >= 80 {
-        head.push(mode_label(state, with_style));
+        head.push((mode_label(state, with_style), base));
     }
-    head.push(source_label(state, with_detail));
+    head.push((source_label(state, with_detail), base));
     if with_system {
-        head.push(system_label(state));
+        head.push((system_label(state), base));
     }
 
     let offset = format!("{:+} ms", state.effective_offset_ms());
-    let text = compose_line(head, &offset, width, separator);
-    Line::from(text).style(Style::default().add_modifier(Modifier::DIM))
+    let spans = compose_spans(head, &offset, base, width, separator);
+    Line::from(spans)
 }
 
-fn compose_line(mut head: Vec<String>, offset: &str, width: u16, separator: &str) -> String {
+fn compose_spans(
+    mut head: Vec<(String, Style)>,
+    offset: &str,
+    base: Style,
+    width: u16,
+    separator: &str,
+) -> Vec<Span<'static>> {
     let separator_width = display_width(separator);
     let budget = width.saturating_sub(display_width(offset).saturating_add(separator_width));
-    while !head.is_empty() && display_width(&head.join(separator)) > budget {
+    while !head.is_empty() && joined_width(&head, separator_width) > usize::from(budget) {
         head.pop();
     }
 
-    let mut text = head.join(separator);
-    if !head.is_empty() {
-        text.push_str(separator);
+    let mut spans = Vec::new();
+    for (index, (text, style)) in head.iter().enumerate() {
+        if index > 0 {
+            spans.push(Span::styled(separator.to_string(), base));
+        }
+        spans.push(Span::styled(text.clone(), base.patch(*style)));
     }
-    text.push_str(offset);
-    truncate_to_width(&text, width).to_string()
+    if !head.is_empty() {
+        spans.push(Span::styled(separator.to_string(), base));
+    }
+    spans.push(Span::styled(offset.to_string(), base));
+
+    let joined = spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>();
+    if display_width(&joined) > width {
+        let truncated = truncate_to_width(&joined, width).to_string();
+        return vec![Span::styled(truncated, base)];
+    }
+    spans
+}
+
+fn joined_width(head: &[(String, Style)], separator_width: u16) -> usize {
+    let text_width = head
+        .iter()
+        .map(|(text, _)| usize::from(display_width(text)))
+        .sum::<usize>();
+    let separators = head.len().saturating_sub(1);
+    text_width + separators * usize::from(separator_width)
 }
 
 fn playback_label(state: &UiState, with_player: bool) -> String {

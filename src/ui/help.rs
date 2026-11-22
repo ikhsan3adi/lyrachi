@@ -7,7 +7,8 @@ use ratatui::{
 };
 
 use crate::app::keys::global_help_rows;
-use crate::style::ResolvedStyle;
+
+use super::UiState;
 
 const MIN_MODAL_WIDTH: u16 = 56;
 const MAX_MODAL_WIDTH: u16 = 80;
@@ -15,11 +16,17 @@ const MIN_KEY_COLUMN_WIDTH: usize = 10;
 pub const MIN_AREA_WIDTH: u16 = 20;
 pub const MIN_AREA_HEIGHT: u16 = 8;
 
-pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
+struct HelpLayout {
+    width: u16,
+    height: u16,
+    total_rows: usize,
+}
+
+fn layout(area: Rect) -> Option<HelpLayout> {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
     if available_width < MIN_AREA_WIDTH - 2 || available_height < MIN_AREA_HEIGHT - 2 {
-        return;
+        return None;
     }
 
     let rows = global_help_rows();
@@ -37,25 +44,104 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
 
     let width = modal_width(area.width, longest_row).min(available_width);
 
-    let accent = style.accent.unwrap_or(Color::Cyan);
-    let content_style = if let Some(surface) = style.surface {
+    // Borders (2)
+    let content_width = width.saturating_sub(6);
+    let mut wrapped_rows = 0usize;
+    for (keys, description) in &rows {
+        let keys = format!("{keys:<key_width$}");
+        wrapped_rows = wrapped_rows.saturating_add(
+            crate::core::text::wrap_text(&format!("{keys}  {description}"), content_width)
+                .len()
+                .max(1),
+        );
+    }
+    let desired_height = u16::try_from(wrapped_rows.saturating_add(4)).unwrap_or(u16::MAX);
+    let height = desired_height.min(available_height);
+
+    Some(HelpLayout {
+        width,
+        height,
+        total_rows: wrapped_rows,
+    })
+}
+
+pub(crate) fn max_scroll(viewport_width: u16, viewport_height: u16) -> usize {
+    let Some(layout) = layout(Rect::new(0, 0, viewport_width, viewport_height)) else {
+        return 0;
+    };
+    let visible = usize::from(layout.height.saturating_sub(4));
+    layout.total_rows.saturating_sub(visible)
+}
+
+pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
+    let Some(layout) = layout(area) else {
+        return;
+    };
+
+    let visible_rows = usize::from(layout.height.saturating_sub(4));
+    let max_scroll = layout.total_rows.saturating_sub(visible_rows);
+    let scroll = state.help_scroll.min(max_scroll);
+    let scrollable = max_scroll > 0;
+
+    let accent = state.style.accent.unwrap_or(Color::Cyan);
+    let muted = state
+        .style
+        .inactive_fg
+        .or(state.style.active_fg)
+        .unwrap_or(Color::Gray);
+    let content_style = if let Some(surface) = state.style.surface {
         Style::default().bg(surface)
     } else {
         Style::default()
     };
 
-    // Borders (2)
-    let content_width = width.saturating_sub(6);
-    let mut wrapped_rows = 0usize;
+    let popup = centered_rect(area, layout.width, layout.height);
+    frame.render_widget(Clear, popup);
+
+    let separator = if state.terminal_unicode {
+        " · "
+    } else {
+        " | "
+    };
+    let hint = if scrollable {
+        let end = (scroll + visible_rows).min(layout.total_rows);
+        format!(
+            " {}/{}{}Up/Down scroll{}? / Esc close ",
+            end, layout.total_rows, separator, separator,
+        )
+    } else {
+        " ? / Esc close ".to_string()
+    };
+
+    let block = Block::default()
+        .style(content_style)
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .padding(Padding::symmetric(2, 1))
+        .title(Line::from(Span::styled(
+            " Keybindings ",
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        )))
+        .title_bottom(
+            Line::from(Span::styled(
+                hint,
+                Style::default().fg(muted).add_modifier(Modifier::DIM),
+            ))
+            .alignment(Alignment::Right),
+        );
+
+    let rows = global_help_rows();
+    let key_width = rows
+        .iter()
+        .map(|(keys, _)| keys.len())
+        .max()
+        .unwrap_or(0)
+        .max(MIN_KEY_COLUMN_WIDTH);
     let lines: Vec<Line<'static>> = rows
         .into_iter()
         .map(|(keys, description)| {
             let keys = format!("{keys:<key_width$}");
-            wrapped_rows = wrapped_rows.saturating_add(
-                crate::core::text::wrap_text(&format!("{keys}  {description}"), content_width)
-                    .len()
-                    .max(1),
-            );
             Line::from(vec![
                 Span::styled(
                     keys,
@@ -66,35 +152,13 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
             ])
         })
         .collect();
-    let desired_height = u16::try_from(wrapped_rows.saturating_add(2)).unwrap_or(u16::MAX);
-    let height = desired_height.min(available_height);
-
-    let popup = centered_rect(area, width, height);
-    frame.render_widget(Clear, popup);
-
-    let block = Block::default()
-        .style(content_style)
-        .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(accent))
-        .padding(Padding::horizontal(2))
-        .title(Line::from(Span::styled(
-            " Keybindings ",
-            Style::default().fg(accent).add_modifier(Modifier::BOLD),
-        )))
-        .title_bottom(
-            Line::from(Span::styled(
-                " ? / Esc close ",
-                Style::default().add_modifier(Modifier::DIM),
-            ))
-            .alignment(Alignment::Right),
-        );
 
     frame.render_widget(
         Paragraph::new(lines)
             .style(content_style)
             .block(block)
-            .wrap(Wrap { trim: false }),
+            .wrap(Wrap { trim: false })
+            .scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
         popup,
     );
 }
@@ -127,6 +191,7 @@ pub(crate) fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::style::ResolvedStyle;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
@@ -162,14 +227,15 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         let surface = Color::Rgb(10, 20, 30);
         let accent = Color::Rgb(0, 200, 200);
-        let style = ResolvedStyle {
+        let mut state = UiState::new();
+        state.style = ResolvedStyle {
             surface: Some(surface),
             accent: Some(accent),
             ..ResolvedStyle::default()
         };
 
         terminal
-            .draw(|frame| render(frame, frame.area(), &style))
+            .draw(|frame| render(frame, frame.area(), &state))
             .unwrap();
 
         let buffer = terminal.backend().buffer();
@@ -192,7 +258,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render(frame, frame.area(), &ResolvedStyle::default());
+                render(frame, frame.area(), &UiState::new());
             })
             .unwrap();
 
@@ -203,5 +269,40 @@ mod tests {
                 assert_eq!(buffer.cell((x, y)).unwrap().symbol(), " ");
             }
         }
+    }
+
+    #[test]
+    fn help_scrolls_to_the_last_binding() {
+        let area = Rect::new(0, 0, 80, 24);
+        let layout = layout(area).expect("help fits 80x24");
+        let visible = usize::from(layout.height.saturating_sub(4));
+        if layout.total_rows <= visible {
+            panic!("expected the help overlay to overflow at 80x24");
+        }
+
+        let mut state = UiState::new();
+        for _ in 0..layout.total_rows {
+            state.help_scroll_down();
+        }
+        assert_eq!(state.help_scroll, layout.total_rows - visible);
+
+        let backend = TestBackend::new(80, 24);
+        let mut terminal = Terminal::new(backend).unwrap();
+        terminal
+            .draw(|frame| render(frame, frame.area(), &state))
+            .unwrap();
+        let buffer = terminal.backend().buffer();
+        let text: String = (0..buffer.area.height)
+            .flat_map(|y| (0..buffer.area.width).map(move |x| (x, y)))
+            .filter_map(|(x, y)| {
+                let cell = buffer.cell((x, y)).unwrap();
+                if cell.symbol() == " " {
+                    None
+                } else {
+                    Some(cell.symbol())
+                }
+            })
+            .collect();
+        assert!(text.contains("unsynced"), "last binding visible: {text}");
     }
 }

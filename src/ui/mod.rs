@@ -150,6 +150,13 @@ pub enum UiModal {
     ContextMenu(Box<menu::ContextMenuState>),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerSeverity {
+    Info,
+    Warning,
+    Error,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct UiState {
     pub media_availability: MediaAvailability,
@@ -188,8 +195,9 @@ pub struct UiState {
     pub modal: Option<UiModal>,
     pub pinned_source_label: Option<String>,
     pub pinned_style: Option<String>,
-    pub transient_banner: Option<(String, Instant)>,
+    pub transient_banner: Option<(String, BannerSeverity, Instant)>,
     pub scroll: usize,
+    pub help_scroll: usize,
     pub viewport_width: u16,
     pub viewport_height: u16,
     pub timeline_options_hash: u64,
@@ -243,6 +251,7 @@ impl UiState {
             pinned_style: None,
             transient_banner: None,
             scroll: 0,
+            help_scroll: 0,
             viewport_width: 80,
             viewport_height: 24,
             timeline_options_hash: TimelineContext::default().options_hash(),
@@ -262,6 +271,7 @@ impl UiState {
             }
             Some(UiModal::ContextMenu(_)) | None => {
                 self.pause_status_bar_timer(now);
+                self.help_scroll = 0;
                 self.modal = Some(UiModal::Help);
             }
         }
@@ -269,7 +279,17 @@ impl UiState {
 
     pub fn open_help(&mut self) {
         self.pause_status_bar_timer(Instant::now());
+        self.help_scroll = 0;
         self.modal = Some(UiModal::Help);
+    }
+
+    pub fn help_scroll_up(&mut self) {
+        self.help_scroll = self.help_scroll.saturating_sub(1);
+    }
+
+    pub fn help_scroll_down(&mut self) {
+        let max_scroll = help::max_scroll(self.viewport_width, self.viewport_height);
+        self.help_scroll = (self.help_scroll + 1).min(max_scroll);
     }
 
     pub fn open_context_menu(&mut self) -> bool {
@@ -795,21 +815,34 @@ impl UiState {
     }
 
     pub fn show_banner(&mut self, message: impl Into<String>, now: Instant) {
-        self.transient_banner = Some((message.into(), now));
+        self.show_banner_as(message, BannerSeverity::Info, now);
+    }
+
+    pub fn show_banner_as(
+        &mut self,
+        message: impl Into<String>,
+        severity: BannerSeverity,
+        now: Instant,
+    ) {
+        self.transient_banner = Some((message.into(), severity, now));
     }
 
     pub fn clear_banner(&mut self) {
         self.transient_banner = None;
     }
 
-    pub fn banner_message(&self) -> Option<&str> {
+    pub fn banner(&self) -> Option<(&str, BannerSeverity)> {
         self.transient_banner
             .as_ref()
-            .map(|(message, _)| message.as_str())
+            .map(|(message, severity, _)| (message.as_str(), *severity))
+    }
+
+    pub fn banner_message(&self) -> Option<&str> {
+        self.banner().map(|(message, _)| message)
     }
 
     pub fn expire_banner(&mut self, now: Instant) {
-        if let Some((_, shown_at)) = &self.transient_banner
+        if let Some((_, _, shown_at)) = &self.transient_banner
             && now.duration_since(*shown_at) >= BANNER_DURATION
         {
             self.transient_banner = None;
@@ -817,7 +850,7 @@ impl UiState {
     }
 
     pub fn time_until_banner_expiry(&self, now: Instant) -> Option<Duration> {
-        let (_, shown_at) = self.transient_banner.as_ref()?;
+        let (_, _, shown_at) = self.transient_banner.as_ref()?;
         Some(BANNER_DURATION.saturating_sub(now.duration_since(*shown_at)))
     }
 

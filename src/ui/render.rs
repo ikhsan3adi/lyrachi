@@ -143,10 +143,14 @@ fn render_internal(
         render_status_bar(frame, bottom_status, state);
     }
     match &state.modal {
-        Some(UiModal::Help) => help::render(frame, area, &state.style),
-        Some(UiModal::ContextMenu(menu_state)) => {
-            menu::render(frame, area, menu_state, &state.style)
-        }
+        Some(UiModal::Help) => help::render(frame, area, state),
+        Some(UiModal::ContextMenu(menu_state)) => menu::render(
+            frame,
+            area,
+            menu_state,
+            &state.style,
+            state.terminal_unicode,
+        ),
         None => {}
     }
     stage_area
@@ -244,50 +248,76 @@ fn render_body(
             MediaAvailability::Unsupported => centered_message(
                 frame,
                 area,
+                &state.style,
                 "Media source unavailable",
                 "This build has no media backend for this platform yet.",
+                false,
             ),
             MediaAvailability::Unavailable => centered_message(
                 frame,
                 area,
+                &state.style,
                 "Media source unavailable",
                 "Could not connect to the media session.",
+                false,
             ),
             MediaAvailability::Available if state.player.is_none() => centered_message(
                 frame,
                 area,
+                &state.style,
                 "No active player",
                 "Start playback in a supported media player.",
+                false,
             ),
             MediaAvailability::Available => centered_message(
                 frame,
                 area,
+                &state.style,
                 "No track playing",
                 "Play something to load lyrics.",
+                false,
             ),
         },
         LyricsView::Loading => {
             centered_message(
                 frame,
                 area,
+                &state.style,
                 "Loading lyrics",
                 "Searching local files and online providers.",
+                false,
             );
         }
         LyricsView::NotFound => {
             centered_message(
                 frame,
                 area,
+                &state.style,
                 "No lyrics found",
                 "Add a local .lrc file or try another track.",
+                false,
             );
         }
         LyricsView::Error(message) => {
-            centered_message(frame, area, "Could not load lyrics", message);
+            centered_message(
+                frame,
+                area,
+                &state.style,
+                "Could not load lyrics",
+                message,
+                true,
+            );
         }
         LyricsView::Loaded { track, .. } if track.is_instrumental => {
             let marker = state.style.instrumental_marker.to_string();
-            centered_message(frame, area, &marker, "No lyrics for this track.");
+            centered_message(
+                frame,
+                area,
+                &state.style,
+                &marker,
+                "No lyrics for this track.",
+                false,
+            );
         }
         LyricsView::Loaded { track, timeline }
             if track.granularity == crate::core::model::SyncGranularity::Unsynced =>
@@ -320,17 +350,29 @@ fn render_body(
     }
 }
 
-pub(crate) fn centered_message(frame: &mut Frame, area: Rect, title: &str, detail: &str) {
-    let mut lines = vec![Line::from(Span::styled(
-        title.to_string(),
-        Style::default().add_modifier(Modifier::BOLD),
-    ))];
+pub(crate) fn centered_message(
+    frame: &mut Frame,
+    area: Rect,
+    style: &crate::style::ResolvedStyle,
+    title: &str,
+    detail: &str,
+    error: bool,
+) {
+    let title_fg = if error { style.accent } else { style.active_fg };
+    let mut title_style = Style::default().add_modifier(Modifier::BOLD);
+    if let Some(color) = title_fg {
+        title_style = title_style.fg(color);
+    }
+    let mut detail_style = Style::default();
+    if let Some(color) = style.inactive_fg {
+        detail_style = detail_style.fg(color);
+    } else {
+        detail_style = detail_style.add_modifier(Modifier::DIM);
+    }
+    let mut lines = vec![Line::from(Span::styled(title.to_string(), title_style))];
     if !detail.is_empty() {
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            detail.to_string(),
-            Style::default().add_modifier(Modifier::DIM),
-        )));
+        lines.push(Line::from(Span::styled(detail.to_string(), detail_style)));
     }
 
     let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);
