@@ -131,7 +131,7 @@ fn render_internal(
         render_header(frame, content_area(header, padding), state);
     }
     if top_status_rows > 0 {
-        render_status_bar(frame, top_status, state);
+        render_status_bar(frame, top_status, state, effective_ms);
     }
     render_body(frame, stage_area, state, render_cache, effective_ms);
     if banner_rows > 0
@@ -140,7 +140,7 @@ fn render_internal(
         frame.render_widget(Paragraph::new(line), content_area(banner, padding));
     }
     if bottom_status_rows > 0 {
-        render_status_bar(frame, bottom_status, state);
+        render_status_bar(frame, bottom_status, state, effective_ms);
     }
     match &state.modal {
         Some(UiModal::Help) => help::render(frame, area, state),
@@ -252,6 +252,7 @@ fn render_body(
                 "Media source unavailable",
                 "This build has no media backend for this platform yet.",
                 false,
+                None,
             ),
             MediaAvailability::Unavailable => centered_message(
                 frame,
@@ -260,6 +261,7 @@ fn render_body(
                 "Media source unavailable",
                 "Could not connect to the media session.",
                 false,
+                None,
             ),
             MediaAvailability::Available if state.player.is_none() => centered_message(
                 frame,
@@ -268,6 +270,7 @@ fn render_body(
                 "No active player",
                 "Start playback in a supported media player.",
                 false,
+                Some("? keybindings"),
             ),
             MediaAvailability::Available => centered_message(
                 frame,
@@ -276,6 +279,7 @@ fn render_body(
                 "No track playing",
                 "Play something to load lyrics.",
                 false,
+                Some("? keybindings"),
             ),
         },
         LyricsView::Loading => {
@@ -286,6 +290,7 @@ fn render_body(
                 "Loading lyrics",
                 "Searching local files and online providers.",
                 false,
+                None,
             );
         }
         LyricsView::NotFound => {
@@ -296,6 +301,7 @@ fn render_body(
                 "No lyrics found",
                 "Add a local .lrc file or try another track.",
                 false,
+                None,
             );
         }
         LyricsView::Error(message) => {
@@ -306,6 +312,7 @@ fn render_body(
                 "Could not load lyrics",
                 message,
                 true,
+                None,
             );
         }
         LyricsView::Loaded { track, .. } if track.is_instrumental => {
@@ -317,6 +324,7 @@ fn render_body(
                 &marker,
                 "No lyrics for this track.",
                 false,
+                None,
             );
         }
         LyricsView::Loaded { track, timeline }
@@ -357,6 +365,7 @@ pub(crate) fn centered_message(
     title: &str,
     detail: &str,
     error: bool,
+    hint: Option<&str>,
 ) {
     let title_fg = if error { style.accent } else { style.active_fg };
     let mut title_style = Style::default().add_modifier(Modifier::BOLD);
@@ -373,6 +382,16 @@ pub(crate) fn centered_message(
     if !detail.is_empty() {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(detail.to_string(), detail_style)));
+    }
+    if let Some(hint) = hint {
+        let mut hint_style = Style::default();
+        if let Some(color) = style.inactive_fg {
+            hint_style = hint_style.fg(color);
+        } else {
+            hint_style = hint_style.add_modifier(Modifier::DIM);
+        }
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(hint.to_string(), hint_style)));
     }
 
     let rows = u16::try_from(lines.len()).unwrap_or(u16::MAX);

@@ -6,7 +6,8 @@ use ratatui::{
     widgets::{Block, BorderType, Borders, Clear, Padding, Paragraph, Wrap},
 };
 
-use crate::app::keys::global_help_rows;
+use crate::app::keys::global_help_sections;
+use crate::ui::DisplayMode;
 
 use super::UiState;
 
@@ -16,29 +17,67 @@ const MIN_KEY_COLUMN_WIDTH: usize = 10;
 pub const MIN_AREA_WIDTH: u16 = 20;
 pub const MIN_AREA_HEIGHT: u16 = 8;
 
+enum HelpRow {
+    Blank,
+    Section {
+        title: &'static str,
+        active: bool,
+    },
+    Binding {
+        keys: String,
+        description: &'static str,
+        active: bool,
+    },
+}
+
+fn help_rows(active_mode: DisplayMode) -> Vec<HelpRow> {
+    let mut rows = Vec::new();
+    for section in global_help_sections() {
+        let active = section.modes.is_empty() || section.modes.contains(&active_mode);
+        if let Some(title) = section.title {
+            rows.push(HelpRow::Blank);
+            rows.push(HelpRow::Section { title, active });
+        }
+        for (keys, description) in section.rows {
+            rows.push(HelpRow::Binding {
+                keys,
+                description,
+                active,
+            });
+        }
+    }
+    rows
+}
+
 struct HelpLayout {
     width: u16,
     height: u16,
     total_rows: usize,
 }
 
-fn layout(area: Rect) -> Option<HelpLayout> {
+fn layout(area: Rect, active_mode: DisplayMode) -> Option<HelpLayout> {
     let available_width = area.width.saturating_sub(2);
     let available_height = area.height.saturating_sub(2);
     if available_width < MIN_AREA_WIDTH - 2 || available_height < MIN_AREA_HEIGHT - 2 {
         return None;
     }
 
-    let rows = global_help_rows();
+    let rows = help_rows(active_mode);
     let key_width = rows
         .iter()
-        .map(|(keys, _)| keys.len())
+        .filter_map(|row| match row {
+            HelpRow::Binding { keys, .. } => Some(keys.len()),
+            _ => None,
+        })
         .max()
         .unwrap_or(0)
         .max(MIN_KEY_COLUMN_WIDTH);
     let longest_row = rows
         .iter()
-        .map(|(_keys, description)| key_width + 2 + description.len())
+        .filter_map(|row| match row {
+            HelpRow::Binding { description, .. } => Some(key_width + 2 + description.len()),
+            _ => None,
+        })
         .max()
         .unwrap_or(0);
 
@@ -47,13 +86,18 @@ fn layout(area: Rect) -> Option<HelpLayout> {
     // Borders (2)
     let content_width = width.saturating_sub(6);
     let mut wrapped_rows = 0usize;
-    for (keys, description) in &rows {
-        let keys = format!("{keys:<key_width$}");
-        wrapped_rows = wrapped_rows.saturating_add(
-            crate::core::text::wrap_text(&format!("{keys}  {description}"), content_width)
-                .len()
-                .max(1),
-        );
+    for row in &rows {
+        match row {
+            HelpRow::Binding { description, .. } => {
+                let keys = format!("{:<key_width$}", "");
+                wrapped_rows = wrapped_rows.saturating_add(
+                    crate::core::text::wrap_text(&format!("{keys}  {description}"), content_width)
+                        .len()
+                        .max(1),
+                );
+            }
+            HelpRow::Blank | HelpRow::Section { .. } => wrapped_rows += 1,
+        }
     }
     let desired_height = u16::try_from(wrapped_rows.saturating_add(4)).unwrap_or(u16::MAX);
     let height = desired_height.min(available_height);
@@ -65,8 +109,15 @@ fn layout(area: Rect) -> Option<HelpLayout> {
     })
 }
 
-pub(crate) fn max_scroll(viewport_width: u16, viewport_height: u16) -> usize {
-    let Some(layout) = layout(Rect::new(0, 0, viewport_width, viewport_height)) else {
+pub(crate) fn max_scroll(
+    viewport_width: u16,
+    viewport_height: u16,
+    active_mode: DisplayMode,
+) -> usize {
+    let Some(layout) = layout(
+        Rect::new(0, 0, viewport_width, viewport_height),
+        active_mode,
+    ) else {
         return 0;
     };
     let visible = usize::from(layout.height.saturating_sub(4));
@@ -74,7 +125,7 @@ pub(crate) fn max_scroll(viewport_width: u16, viewport_height: u16) -> usize {
 }
 
 pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
-    let Some(layout) = layout(area) else {
+    let Some(layout) = layout(area, state.effective_display_mode()) else {
         return;
     };
 
@@ -131,25 +182,51 @@ pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
             .alignment(Alignment::Right),
         );
 
-    let rows = global_help_rows();
+    let rows = help_rows(state.effective_display_mode());
     let key_width = rows
         .iter()
-        .map(|(keys, _)| keys.len())
+        .filter_map(|row| match row {
+            HelpRow::Binding { keys, .. } => Some(keys.len()),
+            _ => None,
+        })
         .max()
         .unwrap_or(0)
         .max(MIN_KEY_COLUMN_WIDTH);
+    let muted_style = Style::default().fg(muted).add_modifier(Modifier::DIM);
     let lines: Vec<Line<'static>> = rows
         .into_iter()
-        .map(|(keys, description)| {
-            let keys = format!("{keys:<key_width$}");
-            Line::from(vec![
-                Span::styled(
-                    keys,
-                    Style::default().fg(accent).add_modifier(Modifier::BOLD),
-                ),
-                Span::raw("  "),
-                Span::raw(description),
-            ])
+        .map(|row| match row {
+            HelpRow::Blank => Line::default(),
+            HelpRow::Section { title, active } => Line::from(Span::styled(
+                title.to_string(),
+                if active {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    muted_style
+                },
+            )),
+            HelpRow::Binding {
+                keys,
+                description,
+                active,
+            } => {
+                let keys = format!("{keys:<key_width$}");
+                let key_style = if active {
+                    Style::default().fg(accent).add_modifier(Modifier::BOLD)
+                } else {
+                    muted_style
+                };
+                let description_style = if active {
+                    Style::default()
+                } else {
+                    muted_style
+                };
+                Line::from(vec![
+                    Span::styled(keys, key_style),
+                    Span::raw("  "),
+                    Span::styled(description.to_string(), description_style),
+                ])
+            }
         })
         .collect();
 
@@ -274,7 +351,7 @@ mod tests {
     #[test]
     fn help_scrolls_to_the_last_binding() {
         let area = Rect::new(0, 0, 80, 24);
-        let layout = layout(area).expect("help fits 80x24");
+        let layout = layout(area, DisplayMode::Normal).expect("help fits 80x24");
         let visible = usize::from(layout.height.saturating_sub(4));
         if layout.total_rows <= visible {
             panic!("expected the help overlay to overflow at 80x24");

@@ -59,7 +59,15 @@ fn render_block_synced(
     effective_ms: u64,
 ) {
     if timeline.lines.is_empty() {
-        centered_message(frame, area, &state.style, "No lyrics found", "", false);
+        centered_message(
+            frame,
+            area,
+            &state.style,
+            "No lyrics found",
+            "",
+            false,
+            None,
+        );
         return;
     }
 

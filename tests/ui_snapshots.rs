@@ -1178,13 +1178,13 @@ fn status_bar_auto_hides_below_8_rows() {
 
     let short = render_state(&mut state, 80, 7, 9_500);
     assert!(
-        !short.contains("playing · normal"),
+        !short.contains("playing ·"),
         "unexpected status bar on 7 rows:\n{short}"
     );
 
     let tall = render_state(&mut state, 80, 8, 9_500);
     assert!(
-        tall.contains("playing · normal"),
+        tall.contains("playing ·") && tall.contains("· normal ·"),
         "expected status bar on 8 rows:\n{tall}"
     );
 }

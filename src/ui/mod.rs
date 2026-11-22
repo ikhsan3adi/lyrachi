@@ -20,7 +20,7 @@ use std::time::{Duration, Instant};
 use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
 use crate::config::{DEFAULT_GLOBAL_OFFSET_MS, StatusBarMode};
 use crate::core::clock::PlaybackStatus;
-use crate::core::model::{SyncGranularity, SyncedTrack};
+use crate::core::model::{AnnotationKind, LineRole, SyncGranularity, SyncedTrack};
 use crate::media::{BackendKind, MediaAvailability, TrackMeta};
 use crate::offsets::{MAX_OFFSET_MS, MIN_OFFSET_MS};
 use crate::style::{HighlightMode, InstrumentalStyle, ResolvedStyle};
@@ -198,6 +198,7 @@ pub struct UiState {
     pub transient_banner: Option<(String, BannerSeverity, Instant)>,
     pub scroll: usize,
     pub help_scroll: usize,
+    pub lyric_markers: (bool, bool),
     pub viewport_width: u16,
     pub viewport_height: u16,
     pub timeline_options_hash: u64,
@@ -252,6 +253,7 @@ impl UiState {
             transient_banner: None,
             scroll: 0,
             help_scroll: 0,
+            lyric_markers: (false, false),
             viewport_width: 80,
             viewport_height: 24,
             timeline_options_hash: TimelineContext::default().options_hash(),
@@ -288,7 +290,11 @@ impl UiState {
     }
 
     pub fn help_scroll_down(&mut self) {
-        let max_scroll = help::max_scroll(self.viewport_width, self.viewport_height);
+        let max_scroll = help::max_scroll(
+            self.viewport_width,
+            self.viewport_height,
+            self.effective_display_mode(),
+        );
         self.help_scroll = (self.help_scroll + 1).min(max_scroll);
     }
 
@@ -858,6 +864,7 @@ impl UiState {
         self.player = None;
         self.playback = PlaybackStatus::Stopped;
         self.track = None;
+        self.lyric_markers = (false, false);
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
@@ -873,6 +880,7 @@ impl UiState {
 
     pub fn set_track(&mut self, track: TrackMeta) {
         self.track = Some(track);
+        self.lyric_markers = (false, false);
         self.lyrics = LyricsView::Loading;
         self.refetching = false;
         self.user_offset_ms = 0;
@@ -884,6 +892,7 @@ impl UiState {
 
     pub fn set_no_track(&mut self) {
         self.track = None;
+        self.lyric_markers = (false, false);
         self.lyrics = LyricsView::Idle;
         self.refetching = false;
         self.user_offset_ms = 0;
@@ -899,16 +908,34 @@ impl UiState {
         }
         self.sync_timeline_context();
         self.timeline_options_hash = self.timeline_context.options_hash();
+        let has_background = track.lines.iter().any(|line| {
+            line.role == LineRole::BackgroundVocal
+                || line
+                    .annotations
+                    .iter()
+                    .any(|annotation| annotation.kind == AnnotationKind::Background)
+        });
+        let has_translation = track.lines.iter().any(|line| {
+            line.annotations.iter().any(|annotation| {
+                matches!(
+                    annotation.kind,
+                    AnnotationKind::Translation | AnnotationKind::Romanization
+                )
+            })
+        });
+        self.lyric_markers = (has_background, has_translation);
         let timeline = CompiledTimeline::compile(&track, self.timeline_context);
         self.lyrics = LyricsView::Loaded { track, timeline };
         self.scroll = 0;
     }
 
     pub fn set_not_found(&mut self) {
+        self.lyric_markers = (false, false);
         self.lyrics = LyricsView::NotFound;
     }
 
     pub fn set_error(&mut self, message: String) {
+        self.lyric_markers = (false, false);
         self.lyrics = LyricsView::Error(message);
     }
 

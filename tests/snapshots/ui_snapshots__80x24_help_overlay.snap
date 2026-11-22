@@ -17,12 +17,12 @@ expression: "render_state(state, width, height, effective_ms)"
       │  [           Shift timing -100 ms                                │
       │  ]           Shift timing +100 ms                                │
       │  \           Reset timing offset                                 │
-      │  -           Scroll speed -10%                                   │
-      │  =, +        Scroll speed +10%                                   │
-      │  0           Reset scroll speed                                  │
-      │  {           Crawl tilt -5°                                      │
-      │  }           Crawl tilt +5°                                      │
-      │  ,           Spawn height -2%                                    │
+      │  Up          Scroll up (unsynced)                                │
+      │  Down        Scroll down (unsynced)                              │
+      │  c, Enter    Open context menu                                   │
+      │  q, Ctrl+C   Quit                                                │
       │                                                                  │
-      ╰────────────────────────── 18/25 · Up/Down scroll · ? / Esc close ╯
-playing · normal · lrclib · -300 ms
+      │  Cylinder / Canvas3D                                             │
+      │                                                                  │
+      ╰────────────────────────── 18/29 · Up/Down scroll · ? / Esc close ╯
+playing · 00:09/04:27 · normal · lrclib · ? help · -300 ms

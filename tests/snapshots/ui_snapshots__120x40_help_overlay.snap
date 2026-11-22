@@ -5,8 +5,6 @@ expression: "render_state(state, width, height, effective_ms)"
                                                     Yellow  Coldplay
 
 
-
-
                     ╭ Keybindings ─────────────────────────────────────────────────────────────────╮
                     │                                                                              │
                     │  ?           Toggle help overlay                                             │
@@ -21,24 +19,26 @@ expression: "render_state(state, width, height, effective_ms)"
                     │  [           Shift timing -100 ms                                            │
                     │  ]           Shift timing +100 ms                                            │
                     │  \           Reset timing offset                                             │
-                    │  -           Scroll speed -10%                                               │
-                    │  =, +        Scroll speed +10%                                               │
-                    │  0           Reset scroll speed                                              │
+                    │  Up          Scroll up (unsynced)                                            │
+                    │  Down        Scroll down (unsynced)                                          │
+                    │  c, Enter    Open context menu                                               │
+                    │  q, Ctrl+C   Quit                                                            │
+                    │                                                                              │
+                    │  Cylinder / Canvas3D                                                         │
+                    │  -           Stage speed -10%                                                │
+                    │  =, +        Stage speed +10%                                                │
+                    │  0           Reset stage speed                                               │
+                    │                                                                              │
+                    │  Canvas3D                                                                    │
                     │  {           Crawl tilt -5°                                                  │
                     │  }           Crawl tilt +5°                                                  │
                     │  ,           Spawn height -2%                                                │
                     │  .           Spawn height +2%                                                │
                     │  <           Text zoom -10%                                                  │
                     │  >           Text zoom +10%                                                  │
-                    │  Up          Scroll up (unsynced)                                            │
-                    │  Down        Scroll down (unsynced)                                          │
-                    │  c, Enter    Open context menu                                               │
-                    │  q, Ctrl+C   Quit                                                            │
                     │                                                                              │
                     ╰─────────────────────────────────────────────────────────────── ? / Esc close ╯
 
 
 
-
-
-playing limusic · normal/default · lrclib/word 97% · word-hl on · -300 ms
+playing limusic · 00:09/04:27 · normal/default · lrclib/word 97% · tr · word-hl on · ? help · -300 ms

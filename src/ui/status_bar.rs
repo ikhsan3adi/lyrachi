@@ -11,11 +11,14 @@ use crate::core::text::{display_width, truncate_to_width};
 
 use super::{BannerSeverity, LyricsView, UiState};
 
-pub fn render(frame: &mut Frame, area: Rect, state: &UiState) {
+pub fn render(frame: &mut Frame, area: Rect, state: &UiState, effective_ms: u64) {
     if area.height == 0 || area.width == 0 {
         return;
     }
-    frame.render_widget(Paragraph::new(status_bar_line(state, area.width)), area);
+    frame.render_widget(
+        Paragraph::new(status_bar_line(state, area.width, effective_ms)),
+        area,
+    );
 }
 
 pub fn banner_line(state: &UiState) -> Option<Line<'static>> {
@@ -62,7 +65,7 @@ fn accent_style(style: &crate::style::ResolvedStyle, base: Style) -> Style {
         .unwrap_or(base)
 }
 
-pub fn status_bar_line(state: &UiState, width: u16) -> Line<'static> {
+pub fn status_bar_line(state: &UiState, width: u16, effective_ms: u64) -> Line<'static> {
     let separator = if state.terminal_unicode {
         " · "
     } else {
@@ -78,17 +81,82 @@ pub fn status_bar_line(state: &UiState, width: u16) -> Line<'static> {
 
     let mut head: Vec<(String, Style)> = Vec::new();
     head.push((playback_label(state, with_player), accent));
+    if width >= 80
+        && state.lyrics_track().is_some()
+        && let Some(time) = time_label(state, effective_ms)
+    {
+        head.push((time, base));
+    }
     if width >= 80 {
         head.push((mode_label(state, with_style), base));
     }
     head.push((source_label(state, with_detail), base));
     if with_system {
+        for marker in lyric_markers(state) {
+            head.push((marker, base));
+        }
         head.push((system_label(state), base));
+        if let Some(stage) = stage_label(state) {
+            head.push((stage, base));
+        }
+    }
+    if width >= 80 {
+        head.push(("? help".to_string(), base));
     }
 
     let offset = format!("{:+} ms", state.effective_offset_ms());
     let spans = compose_spans(head, &offset, base, width, separator);
     Line::from(spans)
+}
+
+fn time_label(state: &UiState, effective_ms: u64) -> Option<String> {
+    let elapsed = format_ms(effective_ms);
+    Some(
+        match state.track.as_ref().and_then(|track| track.duration_ms) {
+            Some(duration_ms) => format!("{elapsed}/{}", format_ms(duration_ms)),
+            None => elapsed,
+        },
+    )
+}
+
+fn format_ms(ms: u64) -> String {
+    let total_seconds = ms / 1_000;
+    format!("{:02}:{:02}", total_seconds / 60, total_seconds % 60)
+}
+
+fn lyric_markers(state: &UiState) -> Vec<String> {
+    let (has_background, has_translation) = state.lyric_markers;
+    let mut markers = Vec::new();
+    if has_background {
+        markers.push("bg".to_string());
+    }
+    if has_translation {
+        markers.push("tr".to_string());
+    }
+    markers
+}
+
+fn stage_label(state: &UiState) -> Option<String> {
+    match state.effective_display_mode() {
+        crate::ui::DisplayMode::Cylinder => Some(format!(
+            "cyl {}% {:.1}s",
+            state.cylinder_speed_pct,
+            state.cylinder_entry_lead_ms as f64 / 1_000.0
+        )),
+        crate::ui::DisplayMode::Canvas3D => {
+            let degree = if state.terminal_unicode { "°" } else { "deg" };
+            Some(format!(
+                "c3d {}% {}{} {}% {}%{}",
+                state.canvas3d_speed_pct,
+                state.canvas3d_tilt_deg,
+                degree,
+                state.canvas3d_spawn_y_pct,
+                state.canvas3d_zoom_pct,
+                if state.canvas3d_flip { " f" } else { "" },
+            ))
+        }
+        _ => None,
+    }
 }
 
 fn compose_spans(
@@ -232,6 +300,7 @@ mod tests {
     use super::*;
     use crate::core::clock::PlaybackStatus;
     use crate::core::model::{LineRole, LyricLine, SyncedTrack};
+    use crate::media::TrackMeta;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
 
@@ -260,15 +329,15 @@ mod tests {
     fn status_bar_adapts_to_width() {
         let state = UiState::new();
         assert_eq!(
-            status_bar_line(&state, 120).to_string(),
-            "stopped no player · normal/default · - · word-hl off · -300 ms"
+            status_bar_line(&state, 120, 0).to_string(),
+            "stopped no player · normal/default · - · word-hl off · ? help · -300 ms"
         );
         assert_eq!(
-            status_bar_line(&state, 80).to_string(),
-            "stopped · normal · - · -300 ms"
+            status_bar_line(&state, 80, 0).to_string(),
+            "stopped · normal · - · ? help · -300 ms"
         );
         assert_eq!(
-            status_bar_line(&state, 40).to_string(),
+            status_bar_line(&state, 40, 0).to_string(),
             "stopped · - · -300 ms"
         );
     }
@@ -281,15 +350,15 @@ mod tests {
         state.set_lyrics(sample_track(SyncGranularity::Word, false));
 
         assert_eq!(
-            status_bar_line(&state, 120).to_string(),
-            "playing mpv · normal/default · lrclib/word 90% · word-hl on · -300 ms"
+            status_bar_line(&state, 120, 0).to_string(),
+            "playing mpv · 00:00 · normal/default · lrclib/word 90% · word-hl on · ? help · -300 ms"
         );
         assert_eq!(
-            status_bar_line(&state, 80).to_string(),
-            "playing · normal · lrclib · -300 ms"
+            status_bar_line(&state, 80, 0).to_string(),
+            "playing · 00:00 · normal · lrclib · ? help · -300 ms"
         );
         assert_eq!(
-            status_bar_line(&state, 40).to_string(),
+            status_bar_line(&state, 40, 0).to_string(),
             "playing · lrclib · -300 ms"
         );
     }
@@ -301,7 +370,7 @@ mod tests {
         state.set_lyrics(sample_track(SyncGranularity::Line, false));
 
         for width in [24, 32, 48, 79, 95] {
-            let line = status_bar_line(&state, width).to_string();
+            let line = status_bar_line(&state, width, 0).to_string();
             assert!(display_width(&line) <= width, "{width}: {line}");
             assert!(line.ends_with("-300 ms"), "{width}: {line}");
         }
@@ -312,8 +381,8 @@ mod tests {
         let mut state = UiState::new();
         state.terminal_unicode = false;
         assert_eq!(
-            status_bar_line(&state, 80).to_string(),
-            "stopped | normal | - | -300 ms"
+            status_bar_line(&state, 80, 0).to_string(),
+            "stopped | normal | - | ? help | -300 ms"
         );
     }
 
@@ -325,7 +394,7 @@ mod tests {
         state.config_warning = Some("invalid config: unknown key".to_string());
         state.set_not_found();
 
-        let wide = status_bar_line(&state, 120).to_string();
+        let wide = status_bar_line(&state, 120, 0).to_string();
         assert!(wide.contains("not found"), "{wide}");
         assert!(wide.contains("offline"), "{wide}");
         assert!(wide.contains("invalid config: unknown key"), "{wide}");
@@ -350,7 +419,7 @@ mod tests {
         let mut terminal = Terminal::new(backend).unwrap();
         terminal
             .draw(|frame| {
-                render(frame, Rect::new(0, 0, 0, 0), &state);
+                render(frame, Rect::new(0, 0, 0, 0), &state, 0);
             })
             .unwrap();
     }
@@ -365,5 +434,59 @@ mod tests {
 
         state.backend = crate::media::BackendKind::Mpris;
         assert_eq!(playback_label(&state, true), "playing mpd");
+    }
+
+    #[test]
+    fn status_bar_shows_elapsed_and_duration_when_known() {
+        let mut state = UiState::new();
+        state.set_lyrics(sample_track(SyncGranularity::Word, false));
+        state.track = Some(TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: None,
+            duration_ms: Some(200_000),
+            track_id: None,
+            url: None,
+        });
+
+        let line = status_bar_line(&state, 120, 83_000).to_string();
+        assert!(line.contains("01:23/03:20"), "{line}");
+    }
+
+    #[test]
+    fn status_bar_shows_lyric_markers() {
+        let mut track = sample_track(SyncGranularity::Word, false);
+        track.lines[0].role = LineRole::BackgroundVocal;
+        let mut state = UiState::new();
+        state.set_lyrics(track);
+        state.track = Some(TrackMeta {
+            title: "Yellow".to_string(),
+            artist: "Coldplay".to_string(),
+            album: None,
+            duration_ms: None,
+            track_id: None,
+            url: None,
+        });
+
+        let line = status_bar_line(&state, 120, 0).to_string();
+        assert!(line.contains("· bg ·"), "{line}");
+        assert!(!line.contains("tr "), "{line}");
+    }
+
+    #[test]
+    fn status_bar_shows_stage_parameters_for_stage_modes() {
+        let mut state = UiState::new();
+        state.display_mode = crate::ui::DisplayMode::Cylinder;
+        let cylinder = status_bar_line(&state, 120, 0).to_string();
+        assert!(cylinder.contains("cyl 100% 1.0s"), "{cylinder}");
+
+        state.display_mode = crate::ui::DisplayMode::Canvas3D;
+        let canvas3d = status_bar_line(&state, 120, 0).to_string();
+        assert!(canvas3d.contains("c3d 100% 60° 82% 100%"), "{canvas3d}");
+
+        state.display_mode = crate::ui::DisplayMode::Normal;
+        let normal = status_bar_line(&state, 120, 0).to_string();
+        assert!(!normal.contains("cyl "), "{normal}");
+        assert!(!normal.contains("c3d "), "{normal}");
     }
 }

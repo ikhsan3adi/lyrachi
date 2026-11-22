@@ -321,28 +321,28 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
         trigger: KeyTrigger::Char('-'),
         action: KeyAction::StageSpeedDown,
         key_label: "-",
-        description: "Scroll speed -10%",
+        description: "Stage speed -10%",
     },
     KeyBinding {
         scope: KeyScope::Global,
         trigger: KeyTrigger::Char('='),
         action: KeyAction::StageSpeedUp,
         key_label: "=",
-        description: "Scroll speed +10%",
+        description: "Stage speed +10%",
     },
     KeyBinding {
         scope: KeyScope::Global,
         trigger: KeyTrigger::Char('+'),
         action: KeyAction::StageSpeedUp,
         key_label: "+",
-        description: "Scroll speed +10%",
+        description: "Stage speed +10%",
     },
     KeyBinding {
         scope: KeyScope::Global,
         trigger: KeyTrigger::Char('0'),
         action: KeyAction::StageSpeedReset,
         key_label: "0",
-        description: "Reset scroll speed",
+        description: "Reset stage speed",
     },
     KeyBinding {
         scope: KeyScope::Global,
@@ -487,23 +487,82 @@ pub fn resolve_key(active_scope: KeyScope, key: KeyEvent) -> Option<KeyAction> {
 }
 
 pub fn global_help_rows() -> Vec<(String, &'static str)> {
-    let mut rows: Vec<(KeyAction, Vec<&'static str>, &'static str)> = Vec::new();
+    global_help_sections()
+        .into_iter()
+        .flat_map(|section| section.rows)
+        .collect()
+}
+
+pub struct HelpSection {
+    pub title: Option<&'static str>,
+    pub modes: &'static [crate::ui::DisplayMode],
+    pub rows: Vec<(String, &'static str)>,
+}
+
+fn help_section_of(action: KeyAction) -> Option<(&'static str, &'static [crate::ui::DisplayMode])> {
+    use crate::ui::DisplayMode;
+    const STAGE: &[DisplayMode] = &[DisplayMode::Cylinder, DisplayMode::Canvas3D];
+    const CANVAS3D: &[DisplayMode] = &[DisplayMode::Canvas3D];
+    match action {
+        KeyAction::StageSpeedDown | KeyAction::StageSpeedUp | KeyAction::StageSpeedReset => {
+            Some(("Cylinder / Canvas3D", STAGE))
+        }
+        KeyAction::StageTiltDown
+        | KeyAction::StageTiltUp
+        | KeyAction::StageSpawnHigher
+        | KeyAction::StageSpawnLower
+        | KeyAction::StageZoomOut
+        | KeyAction::StageZoomIn => Some(("Canvas3D", CANVAS3D)),
+        _ => None,
+    }
+}
+
+type SectionRows = Vec<(KeyAction, Vec<&'static str>, &'static str)>;
+
+pub fn global_help_sections() -> Vec<HelpSection> {
+    let mut sections: Vec<(
+        Option<&'static str>,
+        &'static [crate::ui::DisplayMode],
+        SectionRows,
+    )> = vec![(None, &[], Vec::new())];
     for binding in KEYBINDINGS
         .iter()
         .filter(|binding| binding.scope == KeyScope::Global)
     {
-        if let Some((_, labels, _)) = rows
+        let section = help_section_of(binding.action);
+        let section_title = section.map(|(title, _)| title);
+        let target = match sections
             .iter_mut()
-            .find(|(action, _, _)| *action == binding.action)
+            .find(|(title, _, _)| *title == section_title)
+        {
+            Some((_, _, rows)) => rows,
+            None => {
+                let (title, modes) = section.expect("unmatched sections always carry a title");
+                sections.push((Some(title), modes, Vec::new()));
+                let (_, _, rows) = sections.last_mut().unwrap();
+                rows
+            }
+        };
+        if let Some((_, labels, _)) = target
+            .iter_mut()
+            .find(|(existing_action, _, _)| *existing_action == binding.action)
         {
             labels.push(binding.key_label);
         } else {
-            rows.push((binding.action, vec![binding.key_label], binding.description));
+            target.push((binding.action, vec![binding.key_label], binding.description));
         }
     }
 
-    rows.into_iter()
-        .map(|(_, labels, description)| (labels.join(", "), description))
+    sections
+        .into_iter()
+        .map(|(title, modes, rows)| HelpSection {
+            title,
+            modes,
+            rows: rows
+                .into_iter()
+                .map(|(_, labels, description)| (labels.join(", "), description))
+                .collect(),
+        })
         .collect()
 }
 
@@ -512,6 +571,42 @@ mod tests {
     use std::collections::HashSet;
 
     use super::*;
+    use crate::ui::DisplayMode;
+
+    #[test]
+    fn global_help_sections_group_mode_keys() {
+        let sections = global_help_sections();
+        assert_eq!(sections[0].title, None);
+        assert!(sections[0].modes.is_empty());
+        assert!(!sections[0].rows.is_empty());
+
+        let stage = sections
+            .iter()
+            .find(|section| section.title == Some("Cylinder / Canvas3D"))
+            .expect("stage speed section");
+        assert_eq!(
+            stage.modes,
+            &[DisplayMode::Cylinder, DisplayMode::Canvas3D][..]
+        );
+        assert!(
+            stage
+                .rows
+                .iter()
+                .any(|(_, description)| *description == "Stage speed -10%")
+        );
+
+        let canvas3d = sections
+            .iter()
+            .find(|section| section.title == Some("Canvas3D"))
+            .expect("canvas3d section");
+        assert_eq!(canvas3d.modes, &[DisplayMode::Canvas3D][..]);
+        assert!(
+            canvas3d
+                .rows
+                .iter()
+                .any(|(_, description)| description.contains("Crawl tilt"))
+        );
+    }
 
     #[test]
     fn keybindings_have_no_duplicate_triggers_per_scope() {

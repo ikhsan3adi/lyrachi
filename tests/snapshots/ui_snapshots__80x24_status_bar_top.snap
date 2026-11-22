@@ -3,7 +3,7 @@ source: tests/ui_snapshots.rs
 expression: "render_state(state, width, height, effective_ms)"
 ---
                                 Yellow  Coldplay
-playing · normal · lrclib · -300 ms
+playing · 00:09/04:27 · normal · lrclib · ? help · -300 ms
 
 
 

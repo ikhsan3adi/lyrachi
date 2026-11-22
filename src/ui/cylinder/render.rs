@@ -31,7 +31,15 @@ impl ModeRenderer for CylinderRenderer {
         let effective_ms = ctx.effective_ms;
 
         if timeline.lines.is_empty() {
-            centered_message(frame, area, &state.style, "No lyrics found", "", false);
+            centered_message(
+                frame,
+                area,
+                &state.style,
+                "No lyrics found",
+                "",
+                false,
+                None,
+            );
             return;
         }
 
