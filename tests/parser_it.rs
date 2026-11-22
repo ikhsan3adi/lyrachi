@@ -267,7 +267,7 @@ fn real_sample_syllable_ttml_parses_with_syllable_granularity() {
     assert_eq!(track.lines[1].role, LineRole::DuetSecondary);
     assert_eq!(track.lines[1].text, "Second voice");
     assert!(track.lines[2].annotations.iter().any(|annotation| {
-        annotation.kind == AnnotationKind::Secondary && annotation.text == "background"
+        annotation.kind == AnnotationKind::Background && annotation.text == "background"
     }));
     assert_eq!(track.lines[3].role, LineRole::BackgroundVocal);
     assert_eq!(track.lines[3].text, "Echo");

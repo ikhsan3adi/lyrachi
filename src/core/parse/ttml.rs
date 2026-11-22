@@ -158,7 +158,7 @@ fn parse_line(
     } else {
         push_annotation(
             &mut annotations,
-            AnnotationKind::Secondary,
+            AnnotationKind::Background,
             background.text.trim(),
         );
         main
@@ -647,7 +647,7 @@ mod tests {
         assert_eq!(track.lines[1].role, LineRole::DuetSecondary);
         assert_eq!(track.lines[1].text, "Second voice");
         assert!(track.lines[2].annotations.iter().any(|annotation| {
-            annotation.kind == AnnotationKind::Secondary && annotation.text == "background"
+            annotation.kind == AnnotationKind::Background && annotation.text == "background"
         }));
         assert_eq!(track.lines[3].role, LineRole::BackgroundVocal);
         assert_eq!(track.lines[3].text, "Echo");
