@@ -16,6 +16,7 @@ pub struct CylinderGeometry {
     height: u16,
     speed_mode: CylinderSpeedMode,
     speed_multiplier: f64,
+    entry_lead_ms: u64,
 }
 
 impl CylinderGeometry {
@@ -24,6 +25,7 @@ impl CylinderGeometry {
         height: u16,
         speed_mode: CylinderSpeedMode,
         speed_multiplier: f64,
+        entry_lead_ms: u64,
     ) -> Self {
         let width = width.max(1);
         let height = height.max(1);
@@ -37,6 +39,7 @@ impl CylinderGeometry {
             height,
             speed_mode,
             speed_multiplier,
+            entry_lead_ms,
         }
     }
 
@@ -55,8 +58,12 @@ impl CylinderGeometry {
     }
 
     pub fn first_col(&self, start_ms: u64, effective_ms: u64, text_width: u16) -> f64 {
-        let elapsed_sec = (effective_ms as f64 - start_ms as f64) / 1000.0;
+        let elapsed_sec = (effective_ms as f64 - start_ms as f64) / 1000.0 + self.lead_seconds();
         f64::from(self.width - 1) - elapsed_sec * self.speed_for(text_width)
+    }
+
+    fn lead_seconds(&self) -> f64 {
+        self.entry_lead_ms as f64 / 1000.0
     }
 
     pub fn place(
@@ -65,7 +72,7 @@ impl CylinderGeometry {
         effective_ms: u64,
         text_width: u16,
     ) -> CylinderLinePlacement {
-        let started = effective_ms >= start_ms;
+        let started = effective_ms.saturating_add(self.entry_lead_ms) >= start_ms;
         let first_col = self.first_col(start_ms, effective_ms, text_width);
         let tail = first_col + f64::from(text_width);
         let visible = started && first_col < f64::from(self.width) && tail > 0.0;
@@ -111,15 +118,36 @@ mod tests {
     use super::*;
 
     fn geometry() -> CylinderGeometry {
-        CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 1.0)
+        CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 1.0, 1_000)
     }
 
     #[test]
-    fn first_character_enters_at_right_edge_at_start_ms() {
+    fn line_enters_entry_lead_ms_before_start_ms() {
+        let geometry = geometry();
+        let placement = geometry.place(5_000, 4_000, 10);
+        assert!(placement.visible);
+        let first_col = geometry.first_col(5_000, 4_000, 10);
+        assert!((first_col - 79.0).abs() < 1e-9, "{first_col}");
+        let early = geometry.place(5_000, 3_999, 10);
+        assert!(!early.visible);
+        assert!(!early.fully_left);
+    }
+
+    #[test]
+    fn at_start_ms_the_head_has_traveled_the_lead_distance() {
         let geometry = geometry();
         let first_col = geometry.first_col(5_000, 5_000, 10);
-        assert!((first_col - 79.0).abs() < 1e-9, "{first_col}");
+        let expected = 79.0 - 80.0 / 6.0;
+        assert!((first_col - expected).abs() < 1e-9, "{first_col}");
         assert!(geometry.place(5_000, 5_000, 10).visible);
+    }
+
+    #[test]
+    fn zero_lead_restores_entry_at_start_ms() {
+        let geometry = CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 1.0, 0);
+        assert!(!geometry.place(5_000, 4_999, 10).visible);
+        let first_col = geometry.first_col(5_000, 5_000, 10);
+        assert!((first_col - 79.0).abs() < 1e-9, "{first_col}");
     }
 
     #[test]
@@ -141,7 +169,8 @@ mod tests {
                 40,
                 12,
                 CylinderSpeedMode::Constant,
-                1.0
+                1.0,
+                0
             )) - CYLINDER_MIN_SPEED)
                 .abs()
                 < 1e-9
@@ -151,7 +180,8 @@ mod tests {
                 400,
                 24,
                 CylinderSpeedMode::Constant,
-                1.0
+                1.0,
+                0
             )) - CYLINDER_MAX_SPEED)
                 .abs()
                 < 1e-9
@@ -161,7 +191,7 @@ mod tests {
 
     #[test]
     fn line_length_mode_crosses_in_traverse_seconds() {
-        let geometry = CylinderGeometry::new(80, 24, CylinderSpeedMode::LineLength, 1.0);
+        let geometry = CylinderGeometry::new(80, 24, CylinderSpeedMode::LineLength, 1.0, 0);
         let speed = geometry.first_col(0, 0, 40) - geometry.first_col(0, 1_000, 40);
         assert!((speed - (120.0 / 6.0)).abs() < 1e-9, "{speed}");
         let huge = geometry.first_col(0, 0, 400) - geometry.first_col(0, 1_000, 400);
@@ -170,17 +200,17 @@ mod tests {
 
     #[test]
     fn speed_multiplier_scales_both_modes() {
-        let doubled = CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 2.0);
+        let doubled = CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 2.0, 0);
         let speed = doubled.first_col(0, 0, 10) - doubled.first_col(0, 1_000, 10);
         assert!((speed - 2.0 * 80.0 / 6.0).abs() < 1e-9, "{speed}");
-        let by_length = CylinderGeometry::new(80, 24, CylinderSpeedMode::LineLength, 0.5);
+        let by_length = CylinderGeometry::new(80, 24, CylinderSpeedMode::LineLength, 0.5, 0);
         let speed = by_length.first_col(0, 0, 40) - by_length.first_col(0, 1_000, 40);
         assert!((speed - 10.0).abs() < 1e-9, "{speed}");
     }
 
     #[test]
     fn invalid_multiplier_falls_back_to_one() {
-        let geometry = CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 0.0);
+        let geometry = CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 0.0, 0);
         let speed = geometry.first_col(0, 0, 10) - geometry.first_col(0, 1_000, 10);
         assert!((speed - 80.0 / 6.0).abs() < 1e-9, "{speed}");
     }
@@ -191,7 +221,7 @@ mod tests {
         let text_width = 200;
         let start = 5_000;
         let speed = geometry.first_col(0, 0, text_width) - geometry.first_col(0, 1_000, text_width);
-        let traverse = (80.0 + 200.0) / speed;
+        let traverse = 1.0 + (80.0 + 200.0) / speed;
         let mid = start + (traverse * 0.5 * 1000.0) as u64;
         assert!(geometry.place(start, mid, text_width).visible);
         let end = start + (traverse * 1000.0) as u64 + 1;
@@ -209,9 +239,9 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_negative_elapsed_time_is_not_visible() {
+    fn line_more_than_lead_before_start_is_not_visible() {
         let geometry = geometry();
-        let before = geometry.place(5_000, 4_999, 10);
+        let before = geometry.place(5_000, 2_999, 10);
         assert!(!before.visible);
         assert!(!before.fully_left);
     }
@@ -222,7 +252,7 @@ mod tests {
         assert_eq!(geometry.belt_y(), 12);
         assert_eq!(
             geometry.belt_y(),
-            CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 1.0).belt_y()
+            CylinderGeometry::new(80, 24, CylinderSpeedMode::Constant, 1.0, 0).belt_y()
         );
     }
 
@@ -252,7 +282,7 @@ mod tests {
 
     #[test]
     fn glyph_top_never_underflows_at_the_top_row() {
-        let geometry = CylinderGeometry::new(80, 2, CylinderSpeedMode::Constant, 1.0);
+        let geometry = CylinderGeometry::new(80, 2, CylinderSpeedMode::Constant, 1.0, 0);
         assert_eq!(geometry.belt_y(), 1);
         assert_eq!(geometry.glyph_top(7), 0);
     }

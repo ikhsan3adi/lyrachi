@@ -222,6 +222,7 @@ pub async fn run(
     state.display_mode = config.display_mode;
     state.set_cylinder_annotations(config.cylinder_annotations);
     state.set_cylinder_speed_mode(config.cylinder_speed_mode);
+    state.set_cylinder_entry_lead_ms(config.cylinder_entry_lead_ms);
     state.cylinder_speed_pct = config.cylinder_speed_pct;
     state.word_highlight = config.word_highlight;
     state.fps_active = config.fps_active;

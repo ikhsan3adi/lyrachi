@@ -170,6 +170,7 @@ pub struct UiState {
     pub cylinder_annotations: CylinderAnnotationMode,
     pub cylinder_speed_mode: CylinderSpeedMode,
     pub cylinder_speed_pct: u16,
+    pub cylinder_entry_lead_ms: u64,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: ResolvedStyle,
@@ -217,6 +218,7 @@ impl UiState {
             cylinder_annotations: CylinderAnnotationMode::Auto,
             cylinder_speed_mode: CylinderSpeedMode::Constant,
             cylinder_speed_pct: 100,
+            cylinder_entry_lead_ms: cylinder::CYLINDER_DEFAULT_ENTRY_LEAD_MS,
             word_highlight: true,
             fps_active: 60,
             style: ResolvedStyle::default(),
@@ -486,6 +488,10 @@ impl UiState {
 
     pub fn set_cylinder_speed_mode(&mut self, mode: CylinderSpeedMode) {
         self.cylinder_speed_mode = mode;
+    }
+
+    pub fn set_cylinder_entry_lead_ms(&mut self, lead_ms: u64) {
+        self.cylinder_entry_lead_ms = lead_ms.min(cylinder::CYLINDER_MAX_ENTRY_LEAD_MS);
     }
 
     pub fn adjust_cylinder_speed(&mut self, delta_pct: i32) {

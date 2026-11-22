@@ -42,6 +42,7 @@ pub struct RuntimeConfig {
     pub cylinder_annotations: CylinderAnnotationMode,
     pub cylinder_speed_mode: CylinderSpeedMode,
     pub cylinder_speed_pct: u16,
+    pub cylinder_entry_lead_ms: u64,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: String,
@@ -70,6 +71,7 @@ impl Default for RuntimeConfig {
             cylinder_annotations: CylinderAnnotationMode::Auto,
             cylinder_speed_mode: CylinderSpeedMode::Constant,
             cylinder_speed_pct: 100,
+            cylinder_entry_lead_ms: crate::ui::cylinder::CYLINDER_DEFAULT_ENTRY_LEAD_MS,
             word_highlight: true,
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
@@ -203,6 +205,16 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
                     "config: unknown ui.cylinder.speed `{speed}`; valid values: constant, line_length"
                 )),
             }
+        }
+        if let Some(lead) = cylinder.entry_lead_ms {
+            if lead > crate::ui::cylinder::CYLINDER_MAX_ENTRY_LEAD_MS {
+                warnings.push(format!(
+                    "config: ui.cylinder.entry_lead_ms {lead} above maximum {}; clamped",
+                    crate::ui::cylinder::CYLINDER_MAX_ENTRY_LEAD_MS
+                ));
+            }
+            config.cylinder_entry_lead_ms =
+                lead.min(crate::ui::cylinder::CYLINDER_MAX_ENTRY_LEAD_MS);
         }
         if let Some(pct) = cylinder.speed_pct {
             if !(50..=300).contains(&pct) {
@@ -558,6 +570,7 @@ pub struct CylinderSection {
     pub annotations: Option<String>,
     pub speed: Option<String>,
     pub speed_pct: Option<u16>,
+    pub entry_lead_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
@@ -675,6 +688,9 @@ speed = "constant"
 # Speed multiplier percent applied on top of the lane speed (50..=300);
 # adjust at runtime with "-" / "=" and reset with "0"
 speed_pct = 100
+# How early a line starts entering from the right edge, in ms before its
+# first word is sung (0..=5000). Larger values give more reading lead.
+entry_lead_ms = 1000
 
 [terminal]
 # Ambiguous-width Unicode character width: 1 or 2
@@ -1078,6 +1094,32 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
 
             fs::remove_file(path).unwrap();
         }
+    }
+
+    #[test]
+    fn loads_and_clamps_cylinder_entry_lead() {
+        let path = temp_file("ui-cylinder-lead", "[ui.cylinder]\nentry_lead_ms = 2500\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.cylinder_entry_lead_ms, 2_500);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file(
+            "ui-cylinder-lead-high",
+            "[ui.cylinder]\nentry_lead_ms = 9000\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(
+            outcome.config.cylinder_entry_lead_ms,
+            crate::ui::cylinder::CYLINDER_MAX_ENTRY_LEAD_MS
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("entry_lead_ms"))
+        );
+        fs::remove_file(path).unwrap();
     }
 
     #[test]

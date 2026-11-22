@@ -72,13 +72,16 @@ impl ModeRenderer for CylinderRenderer {
             main_area.height,
             state.cylinder_speed_mode,
             f64::from(state.cylinder_speed_pct) / 100.0,
+            state.cylinder_entry_lead_ms,
         );
         let cache = &mut ctx.cache.cylinder;
         cache.prepare(timeline.context.options_hash());
 
+        let lead = state.cylinder_entry_lead_ms;
+        let scan_until = effective_ms.saturating_add(lead);
         let start_index = timeline
             .lines
-            .partition_point(|line| line.start_ms <= effective_ms);
+            .partition_point(|line| line.start_ms <= scan_until);
         let mut visible = Vec::new();
 
         for (scanned, index) in (0..start_index).rev().enumerate() {
@@ -592,7 +595,8 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend, buffer::Buffer};
 
     use super::super::{
-        CYLINDER_MAX_SPEED, CYLINDER_MAX_STRETCH, CYLINDER_MIN_SPEED, CYLINDER_TRAVERSE_SECONDS,
+        CYLINDER_DEFAULT_ENTRY_LEAD_MS, CYLINDER_MAX_SPEED, CYLINDER_MAX_STRETCH,
+        CYLINDER_MIN_SPEED, CYLINDER_TRAVERSE_SECONDS,
     };
     use super::*;
     use crate::compiler::timeline::{CompiledTimeline, TimelineContext};
@@ -976,7 +980,9 @@ mod tests {
     }
 
     fn first_col_at(area: Rect, start_ms: u64, effective_ms: u64) -> f64 {
-        f64::from(area.width - 1) - ((effective_ms - start_ms) as f64 / 1000.0) * lane_speed(area)
+        let lead_sec = CYLINDER_DEFAULT_ENTRY_LEAD_MS as f64 / 1000.0;
+        f64::from(area.width - 1)
+            - (((effective_ms - start_ms) as f64 / 1000.0) + lead_sec) * lane_speed(area)
     }
 
     fn stretched_left(area: Rect, head: f64, base_cols: u16) -> i32 {
@@ -1040,8 +1046,11 @@ mod tests {
         let w_m = glyphs("m")[0].display_width;
         let fc0 = first_col_at(area, 0, 3_000);
         let nh = fc0 + f64::from(4 * w_m) - 10.0;
-        let s1 =
-            (3000.0 - (f64::from(area.width - 1) - nh) / lane_speed(area) * 1000.0).round() as u64;
+        let s1 = (3000.0
+            - ((f64::from(area.width - 1) - nh) / lane_speed(area)
+                - CYLINDER_DEFAULT_ENTRY_LEAD_MS as f64 / 1000.0)
+                * 1000.0)
+            .round() as u64;
         let (buffer, area) = render_cylinder_with_area(
             track(vec![
                 lyric_line(0, 3_000, &"m".repeat(4)),
@@ -1084,7 +1093,10 @@ mod tests {
             if head >= f64::from(area.width) {
                 break;
             }
-            let start = (3000.0 - (f64::from(area.width - 1) - head) / lane_speed(area) * 1000.0)
+            let start = (3000.0
+                - ((f64::from(area.width - 1) - head) / lane_speed(area)
+                    - CYLINDER_DEFAULT_ENTRY_LEAD_MS as f64 / 1000.0)
+                    * 1000.0)
                 .round()
                 .max(0.0) as u64;
             lines.push(lyric_line(start, start + 500, &"m".repeat(2)));

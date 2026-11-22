@@ -17,6 +17,8 @@ pub const CYLINDER_MAX_SPEED: f64 = 40.0;
 pub const CYLINDER_MAX_VISIBLE_LINES: usize = 32;
 pub const CYLINDER_MAX_ANNOTATIONS: usize = 2;
 pub const CYLINDER_MIN_MAIN_HEIGHT: u16 = 5;
+pub const CYLINDER_DEFAULT_ENTRY_LEAD_MS: u64 = 1_000;
+pub const CYLINDER_MAX_ENTRY_LEAD_MS: u64 = 5_000;
 pub const CYLINDER_MAX_STRETCH: f64 = 0.75;
 
 pub(crate) const CYLINDER_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
