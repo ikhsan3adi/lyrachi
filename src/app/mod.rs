@@ -58,11 +58,16 @@ pub struct AnimationStatus {
     pub wipe_active: bool,
     pub countdown_active: bool,
     pub cylinder_active: bool,
+    pub canvas3d_active: bool,
 }
 
 impl AnimationStatus {
     pub fn needs_frame_tick(self) -> bool {
-        self.effects_active || self.wipe_active || self.countdown_active || self.cylinder_active
+        self.effects_active
+            || self.wipe_active
+            || self.countdown_active
+            || self.cylinder_active
+            || self.canvas3d_active
     }
 }
 
@@ -293,6 +298,7 @@ pub async fn run(
             runtime.animation.wipe_active = is_wipe_active(&state, &clock, now);
             runtime.animation.countdown_active = is_countdown_active(&state, &clock, now);
             runtime.animation.cylinder_active = is_cylinder_active(&state, &clock);
+            runtime.animation.canvas3d_active = is_canvas3d_active(&state, &clock);
             let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
                 .time_until_flush(now)
@@ -1789,9 +1795,9 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
         .is_some()
 }
 
-fn is_cylinder_active(state: &UiState, clock: &PlaybackClock) -> bool {
+fn is_stage_mode_active(state: &UiState, clock: &PlaybackClock, mode: DisplayMode) -> bool {
     if state.is_modal_open()
-        || state.effective_display_mode() != DisplayMode::Cylinder
+        || state.effective_display_mode() != mode
         || !matches!(clock.state(), ClockState::Playing { .. })
     {
         return false;
@@ -1802,6 +1808,14 @@ fn is_cylinder_active(state: &UiState, clock: &PlaybackClock) -> bool {
     state
         .timeline()
         .is_some_and(|timeline| !timeline.lines.is_empty())
+}
+
+fn is_cylinder_active(state: &UiState, clock: &PlaybackClock) -> bool {
+    is_stage_mode_active(state, clock, DisplayMode::Cylinder)
+}
+
+fn is_canvas3d_active(state: &UiState, clock: &PlaybackClock) -> bool {
+    is_stage_mode_active(state, clock, DisplayMode::Canvas3D)
 }
 
 fn next_wait(
@@ -2869,6 +2883,7 @@ mod tests {
                     wipe_active: true,
                     countdown_active: true,
                     cylinder_active: false,
+                    canvas3d_active: false,
                 }
             ),
             Duration::from_secs(1)

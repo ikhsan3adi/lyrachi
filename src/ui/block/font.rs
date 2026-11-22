@@ -1,18 +1,8 @@
-use font8x8::{BASIC_FONTS, GREEK_FONTS, LATIN_FONTS, UnicodeFonts};
 use unicode_normalization::UnicodeNormalization;
 
+use super::geometry::{SOURCE_HEIGHT, SOURCE_WIDTH, source_bitmap};
+
 pub const GLYPH_GAP: u16 = 1;
-
-const SOURCE_HEIGHT: usize = 8;
-const SOURCE_WIDTH: usize = 8;
-
-const MUSIC_NOTE_SINGLE: [u8; 8] = [
-    0b00001100, 0b00010100, 0b00010000, 0b00010000, 0b00010000, 0b00010000, 0b00011100, 0b00111110,
-];
-
-const MUSIC_NOTE_BEAMED: [u8; 8] = [
-    0b00111100, 0b00100100, 0b00100100, 0b00100100, 0b00100100, 0b00100100, 0b00110110, 0b00111111,
-];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BlockFontSize {
@@ -94,14 +84,7 @@ pub fn space_bitmap(size: BlockFontSize) -> GlyphBitmap {
 }
 
 fn source_glyph(ch: char) -> Option<[u8; 8]> {
-    match ch {
-        '♪' => Some(MUSIC_NOTE_SINGLE),
-        '♫' => Some(MUSIC_NOTE_BEAMED),
-        _ => BASIC_FONTS
-            .get(ch)
-            .or_else(|| LATIN_FONTS.get(ch))
-            .or_else(|| GREEK_FONTS.get(ch)),
-    }
+    source_bitmap(ch)
 }
 
 fn ink_bounds(raw: [u8; 8]) -> Option<(usize, usize)> {

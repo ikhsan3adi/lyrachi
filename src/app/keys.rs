@@ -246,7 +246,7 @@ pub const KEYBINDINGS: &[KeyBinding] = &[
         trigger: KeyTrigger::Char('m'),
         action: KeyAction::ToggleDisplayMode,
         key_label: "m",
-        description: "Cycle mode: normal/block/kinetic/cylinder",
+        description: "Cycle mode: normal/block/kinetic/cylinder/canvas3d",
     },
     KeyBinding {
         scope: KeyScope::Global,

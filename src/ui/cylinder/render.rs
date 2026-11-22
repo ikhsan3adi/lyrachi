@@ -1,7 +1,7 @@
 use ratatui::{
     Frame,
     layout::{Alignment, Rect},
-    style::{Modifier, Style},
+    style::Style,
     text::{Line, Span},
     widgets::Paragraph,
 };
@@ -10,13 +10,11 @@ use unicode_segmentation::UnicodeSegmentation;
 use crate::compiler::timeline::{ActiveStageCursor, CompiledLine};
 use crate::core::model::{LineRole, SyncedTrack};
 use crate::core::text::{display_width_with_ambiguous, truncate_to_width_with_ambiguous};
-use crate::style::{HighlightMode, ResolvedStyle};
 use crate::ui::CylinderAnnotationMode;
 use crate::ui::block::BlockFontSize;
 use crate::ui::block::font::{glyph_bitmap_for_cluster, placeholder_bitmap, space_bitmap};
-use crate::ui::render::{
-    ModeRenderer, RenderContext, WordState, centered_message, word_state_style,
-};
+use crate::ui::render::{ModeRenderer, RenderContext, centered_message};
+use crate::ui::word_style;
 
 use super::{
     AnnotationRow, CYLINDER_MAX_ANNOTATIONS, CYLINDER_MAX_VISIBLE_LINES, CYLINDER_MIN_MAIN_HEIGHT,
@@ -128,10 +126,10 @@ impl ModeRenderer for CylinderRenderer {
 
             for glyph in &entry.glyphs {
                 let screen_x = x.round() as i32;
-                let style = glyph_style(
+                let style = word_style::style_for_byte(
                     compiled,
                     text,
-                    glyph,
+                    glyph.byte_range,
                     &cursor,
                     active,
                     holding,
@@ -291,167 +289,6 @@ fn line_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a str {
         .lines
         .get(compiled.source_line_idx)
         .map_or("", |line| line.text.as_str())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn glyph_style(
-    compiled: &CompiledLine,
-    line_text: &str,
-    glyph: &CylinderGlyph,
-    cursor: &ActiveStageCursor,
-    active: bool,
-    holding: bool,
-    effective_ms: u64,
-    depth: f64,
-    word_highlight: bool,
-    style: &ResolvedStyle,
-) -> Style {
-    let style = if !active {
-        style.line_style(compiled.role, 1, false)
-    } else if holding {
-        held_style(compiled, glyph, word_highlight, style)
-    } else if !word_highlight || compiled.words.is_empty() {
-        active_line_style(style, compiled.role)
-    } else {
-        active_word_style(compiled, line_text, glyph, cursor, effective_ms, style)
-    };
-
-    if depth < 0.45 {
-        style.add_modifier(Modifier::DIM)
-    } else {
-        style
-    }
-}
-
-fn active_line_style(style: &ResolvedStyle, role: LineRole) -> Style {
-    match role {
-        LineRole::Primary | LineRole::DuetSecondary => {
-            word_state_style(style, role, WordState::Active)
-        }
-        LineRole::BackgroundVocal | LineRole::InstrumentalBreak => style.line_style(role, 0, true),
-    }
-}
-
-fn held_style(
-    compiled: &CompiledLine,
-    glyph: &CylinderGlyph,
-    word_highlight: bool,
-    style: &ResolvedStyle,
-) -> Style {
-    if !word_highlight || compiled.words.is_empty() {
-        return style.line_style(compiled.role, 0, true);
-    }
-    let last_word = compiled.words.len() - 1;
-    match word_index_for_byte(compiled, glyph.byte_range.0) {
-        Some(index) if index == last_word => {
-            word_state_style(style, compiled.role, WordState::Active)
-        }
-        _ => word_state_style(style, compiled.role, WordState::Sung),
-    }
-}
-
-fn active_word_style(
-    compiled: &CompiledLine,
-    line_text: &str,
-    glyph: &CylinderGlyph,
-    cursor: &ActiveStageCursor,
-    effective_ms: u64,
-    style: &ResolvedStyle,
-) -> Style {
-    let Some(word_idx) = word_index_for_byte(compiled, glyph.byte_range.0) else {
-        return gap_style(compiled, glyph, effective_ms, style);
-    };
-    let word = &compiled.words[word_idx];
-    let state = if cursor.active_word_idx == Some(word_idx) {
-        if style.highlight_mode == HighlightMode::Wipe && !style.reduced_motion {
-            return wipe_word_style(compiled, line_text, glyph, cursor, word_idx, style);
-        }
-        WordState::Active
-    } else if cursor
-        .active_word_idx
-        .is_some_and(|active| word_idx < active)
-        || effective_ms > word.end_ms
-    {
-        WordState::Sung
-    } else {
-        WordState::Unsung
-    };
-    word_state_style(style, compiled.role, state)
-}
-
-fn gap_style(
-    compiled: &CompiledLine,
-    glyph: &CylinderGlyph,
-    effective_ms: u64,
-    style: &ResolvedStyle,
-) -> Style {
-    let next_word = compiled
-        .words
-        .iter()
-        .find(|word| word.byte_range.0 >= glyph.byte_range.0);
-    let sung = match next_word {
-        Some(word) => effective_ms >= word.start_ms,
-        None => compiled
-            .words
-            .last()
-            .is_some_and(|word| effective_ms > word.end_ms),
-    };
-    word_state_style(
-        style,
-        compiled.role,
-        if sung {
-            WordState::Sung
-        } else {
-            WordState::Unsung
-        },
-    )
-}
-
-fn wipe_word_style(
-    compiled: &CompiledLine,
-    line_text: &str,
-    glyph: &CylinderGlyph,
-    cursor: &ActiveStageCursor,
-    word_idx: usize,
-    style: &ResolvedStyle,
-) -> Style {
-    let word = &compiled.words[word_idx];
-    let word_text = line_text
-        .get(word.byte_range.0..word.byte_range.1)
-        .unwrap_or("");
-    let glyph_offset = glyph
-        .byte_range
-        .0
-        .saturating_sub(word.byte_range.0)
-        .min(word_text.len());
-    let before = word_text.get(..glyph_offset).unwrap_or("");
-    let ordinal = before.graphemes(true).count();
-    let total = word_text.graphemes(true).count();
-    if total == 0 {
-        return word_state_style(style, compiled.role, WordState::Active);
-    }
-
-    let head = cursor.progress.clamp(0.0, 1.0) * total as f32;
-    let head_index = head.floor() as usize;
-    let trail = f32::from(style.highlight_trail);
-    let distance = head - (ordinal as f32 + 0.5);
-    let state = if ordinal == head_index {
-        WordState::Active
-    } else if distance < 0.0 {
-        WordState::Unsung
-    } else if trail > 0.0 && distance <= trail {
-        return style.wipe_style(compiled.role, distance / trail);
-    } else {
-        WordState::Sung
-    };
-    word_state_style(style, compiled.role, state)
-}
-
-fn word_index_for_byte(compiled: &CompiledLine, byte: usize) -> Option<usize> {
-    compiled
-        .words
-        .iter()
-        .position(|word| word.byte_range.0 <= byte && byte < word.byte_range.1)
 }
 
 fn place_bitmap(

@@ -1,4 +1,5 @@
 pub mod block;
+pub mod canvas3d;
 pub mod cylinder;
 pub mod effects;
 pub mod help;
@@ -7,6 +8,7 @@ pub mod menu;
 pub(crate) mod normal;
 pub mod render;
 pub mod status_bar;
+pub mod word_style;
 
 pub use menu::{
     CandidateMenuItem, ContextMenuAction, ContextMenuState, ContextMenuView, SearchField,
@@ -40,6 +42,7 @@ pub enum DisplayMode {
     Block,
     Kinetic,
     Cylinder,
+    Canvas3D,
 }
 
 impl DisplayMode {
@@ -49,6 +52,7 @@ impl DisplayMode {
             Self::Block => "block",
             Self::Kinetic => "kinetic",
             Self::Cylinder => "cylinder",
+            Self::Canvas3D => "canvas3d",
         }
     }
 
@@ -58,6 +62,7 @@ impl DisplayMode {
             "block" => Some(Self::Block),
             "kinetic" => Some(Self::Kinetic),
             "cylinder" => Some(Self::Cylinder),
+            "canvas3d" => Some(Self::Canvas3D),
             _ => None,
         }
     }
@@ -67,7 +72,8 @@ impl DisplayMode {
             Self::Normal => Self::Block,
             Self::Block => Self::Kinetic,
             Self::Kinetic => Self::Cylinder,
-            Self::Cylinder => Self::Normal,
+            Self::Cylinder => Self::Canvas3D,
+            Self::Canvas3D => Self::Normal,
         }
     }
 }
@@ -476,6 +482,12 @@ impl UiState {
         if self.display_mode == DisplayMode::Cylinder
             && (self.viewport_width < cylinder::CYLINDER_MIN_WIDTH
                 || self.viewport_height < cylinder::CYLINDER_MIN_HEIGHT)
+        {
+            return DisplayMode::Normal;
+        }
+        if self.display_mode == DisplayMode::Canvas3D
+            && (self.viewport_width < canvas3d::CANVAS3D_MIN_WIDTH
+                || self.viewport_height < canvas3d::CANVAS3D_MIN_HEIGHT)
         {
             return DisplayMode::Normal;
         }
@@ -1066,6 +1078,14 @@ mod tests {
         state.toggle_display_mode();
         assert_eq!(state.display_mode, DisplayMode::Cylinder);
         assert_eq!(state.effective_display_mode(), DisplayMode::Cylinder);
+
+        state.set_terminal_unicode(false);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        state.set_terminal_unicode(true);
+
+        state.toggle_display_mode();
+        assert_eq!(state.display_mode, DisplayMode::Canvas3D);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Canvas3D);
 
         state.set_terminal_unicode(false);
         assert_eq!(state.effective_display_mode(), DisplayMode::Normal);

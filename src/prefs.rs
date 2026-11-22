@@ -252,6 +252,26 @@ mod tests {
     }
 
     #[test]
+    fn saves_canvas3d_display_mode() {
+        let dir = temp_dir("prefs-canvas3d");
+        let path = dir.join("config.toml");
+        fs::write(&path, "[ui]\ndisplay_mode = \"normal\"\n").unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.display_mode = DisplayMode::Canvas3D;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("display_mode = \"canvas3d\""), "{saved}");
+        assert_eq!(
+            DisplayMode::from_config_name("canvas3d"),
+            Some(DisplayMode::Canvas3D)
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn updates_display_mode_without_dropping_inline_comments() {
         let dir = temp_dir("prefs-display-comment");
         let path = dir.join("config.toml");

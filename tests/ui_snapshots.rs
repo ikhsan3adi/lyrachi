@@ -610,6 +610,27 @@ fn block_word_sync_120x40() {
     );
 }
 
+fn canvas3d_word_sync() -> UiState {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Canvas3D;
+    state
+}
+
+#[test]
+fn canvas3d_word_sync_60x16() {
+    snapshot(&mut canvas3d_word_sync(), 60, 16, 2_500, "60x16_canvas3d");
+}
+
+#[test]
+fn canvas3d_word_sync_80x24() {
+    snapshot(&mut canvas3d_word_sync(), 80, 24, 2_500, "80x24_canvas3d");
+}
+
+#[test]
+fn canvas3d_word_sync_120x40() {
+    snapshot(&mut canvas3d_word_sync(), 120, 40, 2_500, "120x40_canvas3d");
+}
+
 #[test]
 fn cylinder_word_sync_60x12() {
     snapshot(&mut cylinder_word_sync(), 60, 12, 2_500, "60x12_cylinder");

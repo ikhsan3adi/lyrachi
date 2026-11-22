@@ -29,8 +29,13 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
         .max()
         .unwrap_or(0)
         .max(MIN_KEY_COLUMN_WIDTH);
+    let longest_row = rows
+        .iter()
+        .map(|(_keys, description)| key_width + 2 + description.len())
+        .max()
+        .unwrap_or(0);
 
-    let width = modal_width(area.width).min(available_width);
+    let width = modal_width(area.width, longest_row).min(available_width);
 
     let accent = style.accent.unwrap_or(Color::Cyan);
     let content_style = if let Some(surface) = style.surface {
@@ -94,10 +99,12 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
     );
 }
 
-fn modal_width(area_width: u16) -> u16 {
+fn modal_width(area_width: u16, longest_row: usize) -> u16 {
     let available = area_width.saturating_sub(2);
     let preferred = area_width.saturating_mul(3) / 4;
+    let needed = u16::try_from(longest_row + 6).unwrap_or(MAX_MODAL_WIDTH);
     preferred
+        .max(needed)
         .clamp(MIN_MODAL_WIDTH, MAX_MODAL_WIDTH)
         .min(available)
 }
@@ -123,6 +130,15 @@ mod tests {
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use ratatui::style::Color;
+
+    #[test]
+    fn modal_width_grows_for_long_descriptions() {
+        assert_eq!(modal_width(80, 40), 60);
+        assert_eq!(modal_width(80, 54), 60);
+        assert_eq!(modal_width(80, 60), 66);
+        assert_eq!(modal_width(80, 200), 78);
+        assert_eq!(modal_width(50, 60), 48);
+    }
 
     #[test]
     fn centered_rect_clamps_within_bounds() {

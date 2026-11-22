@@ -3,6 +3,7 @@ use std::hash::{DefaultHasher, Hash, Hasher};
 use std::mem::size_of;
 
 pub mod font;
+pub mod geometry;
 pub mod layout;
 pub mod render;
 pub(crate) mod stage;

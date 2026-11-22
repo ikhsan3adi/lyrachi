@@ -17,7 +17,7 @@ expression: "render_state(state, width, height, effective_ms)"
                     │  f           Toggle fullscreen                                               │
                     │  t           Toggle title bar                                                │
                     │  s           Toggle status bar                                               │
-                    │  m           Cycle mode: normal/block/kinetic/cylinder                       │
+                    │  m           Cycle mode: normal/block/kinetic/cylinder/canvas3d              │
                     │  w           Toggle word highlight                                           │
                     │  Tab         Peek at hidden status bar                                       │
                     │  S           Cycle style preset                                              │

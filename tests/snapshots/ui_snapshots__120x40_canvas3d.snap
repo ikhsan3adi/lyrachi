@@ -1,0 +1,44 @@
+---
+source: tests/ui_snapshots.rs
+expression: "render_state(state, width, height, effective_ms)"
+---
+                                                    Yellow  Coldplay
+
+
+         ⢀⡀⡀     ⡀⣀  ⣀⣀                 ⡀⣀
+  ⠃⠋⠁⠰⠔⠘⠋⠁⠉   ⠶⠘⠊⠭⠸⠂⠫⠸⠊⠻⠰⠫⠞⠙⠋  ⠤⠨⠪⠳⠝⠌⠈⠠⠯⠏⠌⠥⠦⠫⠪⠿⠅⠬⠮⠧⠁⠙⠙⠌⠏⠧⠻⠨
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+playing limusic · canvas3d/default · lrclib/word 97% · word-hl on · -300 ms

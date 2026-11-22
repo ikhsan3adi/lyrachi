@@ -185,7 +185,7 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
         match DisplayMode::from_config_name(&name) {
             Some(mode) => config.display_mode = mode,
             None => warnings.push(format!(
-                "config: unknown ui.display_mode `{name}`; valid values: normal, block, kinetic, cylinder"
+                "config: unknown ui.display_mode `{name}`; valid values: normal, block, kinetic, cylinder, canvas3d"
             )),
         }
     }

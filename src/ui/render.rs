@@ -4,6 +4,7 @@ use std::time::Instant;
 use super::{
     DisplayMode, LyricsView, StatusBarPlacement, UiModal, UiState,
     block::{BlockStageCache, stage::BlockRenderer},
+    canvas3d::{CanvasStageCache, render::Canvas3DRenderer},
     cylinder::{CylinderStageCache, render::CylinderRenderer},
     effects::UiEffects,
     help,
@@ -36,12 +37,14 @@ pub(crate) enum CountdownSize {
 pub struct RenderCache {
     pub block: BlockStageCache,
     pub cylinder: CylinderStageCache,
+    pub canvas: CanvasStageCache,
 }
 
 impl RenderCache {
     pub fn clear(&mut self) {
         self.block.clear();
         self.cylinder.clear();
+        self.canvas.clear();
     }
 }
 
@@ -311,6 +314,7 @@ fn render_body(
                 DisplayMode::Block => BlockRenderer.render(frame, area, &mut ctx),
                 DisplayMode::Kinetic => KineticRenderer.render(frame, area, &mut ctx),
                 DisplayMode::Cylinder => CylinderRenderer.render(frame, area, &mut ctx),
+                DisplayMode::Canvas3D => Canvas3DRenderer.render(frame, area, &mut ctx),
             }
         }
     }
