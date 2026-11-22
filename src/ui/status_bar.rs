@@ -100,12 +100,29 @@ pub fn status_bar_line(state: &UiState, width: u16, effective_ms: u64) -> Line<'
             head.push((stage, base));
         }
     }
-    if width >= 80 {
-        head.push(("? help".to_string(), base));
-    }
+
+    let hint = "? help";
+    let hint_width = display_width(hint);
+    let with_hint = width >= 80;
+    let content_width = if with_hint {
+        width.saturating_sub(hint_width.saturating_add(1))
+    } else {
+        width
+    };
 
     let offset = format!("{:+} ms", state.effective_offset_ms());
-    let spans = compose_spans(head, &offset, base, width, separator);
+    let mut spans = compose_spans(head, &offset, base, content_width, separator);
+    if with_hint {
+        let content_display = spans
+            .iter()
+            .map(|span| usize::from(display_width(span.content.as_ref())))
+            .sum::<usize>();
+        let padding = usize::from(width)
+            .saturating_sub(content_display)
+            .saturating_sub(usize::from(hint_width));
+        spans.push(Span::styled(" ".repeat(padding), base));
+        spans.push(Span::styled(hint.to_string(), base));
+    }
     Line::from(spans)
 }
 
@@ -328,14 +345,22 @@ mod tests {
     #[test]
     fn status_bar_adapts_to_width() {
         let state = UiState::new();
-        assert_eq!(
-            status_bar_line(&state, 120, 0).to_string(),
-            "stopped no player · normal/default · - · word-hl off · ? help · -300 ms"
+        let wide = status_bar_line(&state, 120, 0).to_string();
+        assert!(
+            wide.starts_with("stopped no player · normal/default · - · word-hl off · -300 ms"),
+            "{wide}"
         );
-        assert_eq!(
-            status_bar_line(&state, 80, 0).to_string(),
-            "stopped · normal · - · ? help · -300 ms"
+        assert!(wide.ends_with("? help"), "{wide}");
+        assert_eq!(display_width(&wide), 120);
+
+        let medium = status_bar_line(&state, 80, 0).to_string();
+        assert!(
+            medium.starts_with("stopped · normal · - · -300 ms"),
+            "{medium}"
         );
+        assert!(medium.ends_with("? help"), "{medium}");
+        assert_eq!(display_width(&medium), 80);
+
         assert_eq!(
             status_bar_line(&state, 40, 0).to_string(),
             "stopped · - · -300 ms"
@@ -349,14 +374,22 @@ mod tests {
         state.playback = PlaybackStatus::Playing;
         state.set_lyrics(sample_track(SyncGranularity::Word, false));
 
-        assert_eq!(
-            status_bar_line(&state, 120, 0).to_string(),
-            "playing mpv · 00:00 · normal/default · lrclib/word 90% · word-hl on · ? help · -300 ms"
+        let wide = status_bar_line(&state, 120, 0).to_string();
+        assert!(
+            wide.starts_with(
+                "playing mpv · 00:00 · normal/default · lrclib/word 90% · word-hl on · -300 ms"
+            ),
+            "{wide}"
         );
-        assert_eq!(
-            status_bar_line(&state, 80, 0).to_string(),
-            "playing · 00:00 · normal · lrclib · ? help · -300 ms"
+        assert!(wide.ends_with("? help"), "{wide}");
+
+        let medium = status_bar_line(&state, 80, 0).to_string();
+        assert!(
+            medium.starts_with("playing · 00:00 · normal · lrclib · -300 ms"),
+            "{medium}"
         );
+        assert!(medium.ends_with("? help"), "{medium}");
+
         assert_eq!(
             status_bar_line(&state, 40, 0).to_string(),
             "playing · lrclib · -300 ms"
@@ -372,7 +405,7 @@ mod tests {
         for width in [24, 32, 48, 79, 95] {
             let line = status_bar_line(&state, width, 0).to_string();
             assert!(display_width(&line) <= width, "{width}: {line}");
-            assert!(line.ends_with("-300 ms"), "{width}: {line}");
+            assert!(line.contains("-300 ms"), "{width}: {line}");
         }
     }
 
@@ -380,10 +413,9 @@ mod tests {
     fn status_bar_uses_ascii_separator_without_unicode() {
         let mut state = UiState::new();
         state.terminal_unicode = false;
-        assert_eq!(
-            status_bar_line(&state, 80, 0).to_string(),
-            "stopped | normal | - | ? help | -300 ms"
-        );
+        let line = status_bar_line(&state, 80, 0).to_string();
+        assert!(line.starts_with("stopped | normal | - | -300 ms"), "{line}");
+        assert!(line.ends_with("? help"), "{line}");
     }
 
     #[test]
@@ -398,7 +430,8 @@ mod tests {
         assert!(wide.contains("not found"), "{wide}");
         assert!(wide.contains("offline"), "{wide}");
         assert!(wide.contains("invalid config: unknown key"), "{wide}");
-        assert!(wide.ends_with("-300 ms"), "{wide}");
+        assert!(wide.contains("-300 ms"), "{wide}");
+        assert!(wide.ends_with("? help"), "{wide}");
     }
 
     #[test]
