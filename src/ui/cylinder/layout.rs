@@ -1,4 +1,6 @@
-use super::{CYLINDER_MAX_SPEED, CYLINDER_MIN_SPEED, CYLINDER_TRAVERSE_SECONDS};
+use super::{
+    CYLINDER_MAX_SPEED, CYLINDER_MAX_STRETCH, CYLINDER_MIN_SPEED, CYLINDER_TRAVERSE_SECONDS,
+};
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct CylinderLinePlacement {
@@ -62,6 +64,18 @@ impl CylinderGeometry {
 
     pub fn depth(&self, screen_x: i32) -> f64 {
         1.0 - self.bend_t(screen_x) * self.bend_t(screen_x)
+    }
+
+    pub fn stretch_rows(&self, screen_x: i32, base_rows: u16) -> u16 {
+        let t = self.bend_t(screen_x);
+        let factor = 1.0 + CYLINDER_MAX_STRETCH * t * t;
+        let rows = (f64::from(base_rows) * factor).round();
+        (rows as u16).max(1)
+    }
+
+    pub fn glyph_top(&self, screen_x: i32, out_rows: u16) -> u16 {
+        self.screen_y(screen_x)
+            .saturating_sub(out_rows.saturating_sub(1) / 2)
     }
 
     fn bend_t(&self, screen_x: i32) -> f64 {
@@ -148,6 +162,34 @@ mod tests {
         assert_eq!(center_y - left_y, bend_rows);
         assert_eq!(center_y - right_y, bend_rows);
         assert_eq!(left_y, right_y);
+    }
+
+    #[test]
+    fn stretch_rows_are_native_at_center_and_maxed_at_edges() {
+        let geometry = geometry();
+        assert_eq!(geometry.stretch_rows(40, 4), 4);
+        assert_eq!(geometry.stretch_rows(0, 4), 7);
+        assert_eq!(geometry.stretch_rows(79, 4), 7);
+        assert!(geometry.stretch_rows(60, 4) > 4);
+        assert!(geometry.stretch_rows(60, 4) < 7);
+    }
+
+    #[test]
+    fn stretch_grows_symmetrically_around_the_belt() {
+        let geometry = geometry();
+        let center = geometry.glyph_top(40, 4);
+        assert_eq!(center, geometry.screen_y(40) - 1);
+        let edge_top = geometry.glyph_top(0, 7);
+        let edge_belt = geometry.screen_y(0);
+        assert_eq!(edge_belt - edge_top, 3);
+        assert_eq!(edge_top + 6 - edge_belt, 3);
+    }
+
+    #[test]
+    fn glyph_top_never_underflows_at_the_top_row() {
+        let geometry = CylinderGeometry::new(80, 2);
+        assert_eq!(geometry.screen_y(0), 0);
+        assert_eq!(geometry.glyph_top(0, 7), 0);
     }
 
     #[test]

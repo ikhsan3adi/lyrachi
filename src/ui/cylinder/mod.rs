@@ -4,6 +4,8 @@ use std::mem::{size_of, size_of_val};
 
 use ratatui::style::Style;
 
+use crate::ui::block::GlyphBitmap;
+
 pub(crate) mod layout;
 pub(crate) mod render;
 
@@ -15,6 +17,7 @@ pub const CYLINDER_MAX_SPEED: f64 = 40.0;
 pub const CYLINDER_MAX_VISIBLE_LINES: usize = 32;
 pub const CYLINDER_MAX_ANNOTATIONS: usize = 2;
 pub const CYLINDER_MIN_MAIN_HEIGHT: u16 = 5;
+pub const CYLINDER_MAX_STRETCH: f64 = 0.75;
 
 pub(crate) const CYLINDER_CACHE_MAX_BYTES: usize = 2 * 1024 * 1024;
 
@@ -23,13 +26,13 @@ pub struct CylinderGlyph {
     pub text: String,
     pub byte_range: (usize, usize),
     pub display_width: u16,
+    pub bitmap: GlyphBitmap,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct GridCell {
     pub text: String,
     pub style: Style,
-    pub continuation: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -233,6 +236,10 @@ fn line_bytes(glyphs: &[CylinderGlyph]) -> usize {
     bytes = bytes.saturating_add(size_of_val(glyphs));
     for glyph in glyphs {
         bytes = bytes.saturating_add(glyph.text.capacity());
+        bytes = bytes.saturating_add(glyph.bitmap.width.into());
+        for row in &glyph.bitmap.rows {
+            bytes = bytes.saturating_add(row.capacity());
+        }
     }
     bytes
 }
@@ -256,6 +263,10 @@ mod tests {
             text: text.to_string(),
             byte_range,
             display_width,
+            bitmap: GlyphBitmap::new(
+                display_width,
+                vec![" ".repeat(usize::from(display_width)); 4],
+            ),
         }
     }
 
@@ -269,7 +280,6 @@ mod tests {
             *slot = Some(GridCell {
                 text: "x".to_string(),
                 style: Style::default(),
-                continuation: false,
             });
         }
         assert!(cache.cell(0, 0).is_some());

@@ -12,6 +12,8 @@ use crate::core::model::{LineRole, SyncedTrack};
 use crate::core::text::{display_width_with_ambiguous, truncate_to_width_with_ambiguous};
 use crate::style::{HighlightMode, ResolvedStyle};
 use crate::ui::CylinderAnnotationMode;
+use crate::ui::block::BlockFontSize;
+use crate::ui::block::font::{glyph_bitmap_for_cluster, placeholder_bitmap, space_bitmap};
 use crate::ui::render::{
     ModeRenderer, RenderContext, WordState, centered_message, word_state_style,
 };
@@ -114,7 +116,6 @@ impl ModeRenderer for CylinderRenderer {
             let active = cursor.active_line_idx == Some(index);
             let holding = active && effective_ms > compiled.end_ms;
             let mut x = first_col;
-            let mut last_cell = None;
 
             for glyph in &entry.glyphs {
                 let screen_x = x.round() as i32;
@@ -130,14 +131,9 @@ impl ModeRenderer for CylinderRenderer {
                     state.effective_word_highlight(),
                     &state.style,
                 );
-                any_cell |= place_grapheme(
-                    cache,
-                    screen_x,
-                    geometry.screen_y(screen_x),
-                    glyph,
-                    style,
-                    &mut last_cell,
-                );
+                let out_rows = geometry.stretch_rows(screen_x, BLOCK_ROWS);
+                let top = geometry.glyph_top(screen_x, out_rows);
+                any_cell |= place_bitmap(cache, screen_x, top, out_rows, glyph, style);
                 x += f64::from(glyph.display_width);
             }
         }
@@ -231,6 +227,8 @@ fn truncate_annotation(text: &str, width: u16, ambiguous_width: u8) -> String {
     format!("{prefix}...")
 }
 
+const BLOCK_ROWS: u16 = 4;
+
 fn glyphs_for_text(text: &str, ambiguous_width: u8) -> (Vec<CylinderGlyph>, u16) {
     let mut glyphs: Vec<CylinderGlyph> = Vec::new();
     for (start, grapheme) in text.grapheme_indices(true) {
@@ -240,18 +238,30 @@ fn glyphs_for_text(text: &str, ambiguous_width: u8) -> (Vec<CylinderGlyph>, u16)
         {
             previous.text.push_str(grapheme);
             previous.byte_range.1 = start + grapheme.len();
+            previous.bitmap = bitmap_for_cluster(&previous.text);
+            previous.display_width = previous.bitmap.width;
             continue;
         }
+        let bitmap = bitmap_for_cluster(grapheme);
         glyphs.push(CylinderGlyph {
             text: grapheme.to_string(),
             byte_range: (start, start + grapheme.len()),
-            display_width: width,
+            display_width: bitmap.width,
+            bitmap,
         });
     }
     let text_width = glyphs.iter().fold(0u16, |width, glyph| {
         width.saturating_add(glyph.display_width)
     });
     (glyphs, text_width)
+}
+
+fn bitmap_for_cluster(cluster: &str) -> crate::ui::block::GlyphBitmap {
+    if cluster.chars().all(char::is_whitespace) {
+        return space_bitmap(BlockFontSize::Block);
+    }
+    glyph_bitmap_for_cluster(cluster, BlockFontSize::Block)
+        .unwrap_or_else(|| placeholder_bitmap(BlockFontSize::Block))
 }
 
 fn line_text<'a>(track: &'a SyncedTrack, compiled: &CompiledLine) -> &'a str {
@@ -422,69 +432,57 @@ fn word_index_for_byte(compiled: &CompiledLine, byte: usize) -> Option<usize> {
         .position(|word| word.byte_range.0 <= byte && byte < word.byte_range.1)
 }
 
-fn place_grapheme(
+fn place_bitmap(
     cache: &mut CylinderStageCache,
     screen_x: i32,
-    screen_y: u16,
+    top: u16,
+    out_rows: u16,
     glyph: &CylinderGlyph,
     style: Style,
-    last_cell: &mut Option<(u16, u16)>,
 ) -> bool {
     let Ok(x) = u16::try_from(screen_x) else {
         return false;
     };
-    if x >= cache.grid_width() || screen_y >= cache.grid_height() {
+    let grid_width = cache.grid_width();
+    let grid_height = cache.grid_height();
+    if x >= grid_width || top >= grid_height {
         return false;
     }
-    if glyph.display_width == 0 {
-        if let Some((last_x, last_y)) = *last_cell
-            && let Some(cell) = cache.cell_mut(last_x, last_y)
-        {
-            cell.text.push_str(&glyph.text);
-        }
-        return false;
-    }
+    let base_rows = u16::try_from(glyph.bitmap.rows.len())
+        .unwrap_or(BLOCK_ROWS)
+        .max(1);
+    let out_rows = out_rows.max(1);
+    let mut placed = false;
 
-    let cells = glyph.display_width.max(1);
-    let end = usize::from(x).saturating_add(usize::from(cells));
-    if end > usize::from(cache.grid_width()) {
-        return false;
-    }
-    for column in x..x.saturating_add(cells) {
-        clear_cell_links(cache, column, screen_y);
-    }
-    for offset in 0..cells {
-        let column = x.saturating_add(offset);
-        let Some(slot) = cache.cell_slot_mut(column, screen_y) else {
+    for j in 0..out_rows {
+        let src = (usize::from(j) * usize::from(base_rows) / usize::from(out_rows))
+            .min(usize::from(base_rows) - 1);
+        let Some(row) = glyph.bitmap.rows.get(src) else {
             continue;
         };
-        *slot = Some(GridCell {
-            text: if offset == 0 {
-                glyph.text.clone()
-            } else {
-                String::new()
-            },
-            style,
-            continuation: offset > 0,
-        });
+        let y = top.saturating_add(j);
+        if y >= grid_height {
+            break;
+        }
+        for (offset, symbol) in row.chars().enumerate() {
+            let Ok(offset) = u16::try_from(offset) else {
+                break;
+            };
+            let column = x.saturating_add(offset);
+            if column >= grid_width {
+                break;
+            }
+            let Some(slot) = cache.cell_slot_mut(column, y) else {
+                continue;
+            };
+            *slot = Some(GridCell {
+                text: symbol.to_string(),
+                style,
+            });
+            placed = true;
+        }
     }
-    *last_cell = Some((x, screen_y));
-    true
-}
-
-fn clear_cell_links(cache: &mut CylinderStageCache, x: u16, y: u16) {
-    if cache.cell(x, y).is_some_and(|cell| cell.continuation)
-        && let Some(previous) = x.checked_sub(1)
-        && let Some(slot) = cache.cell_slot_mut(previous, y)
-    {
-        *slot = None;
-    }
-    let next = x.saturating_add(1);
-    if cache.cell(next, y).is_some_and(|cell| cell.continuation)
-        && let Some(slot) = cache.cell_slot_mut(next, y)
-    {
-        *slot = None;
-    }
+    placed
 }
 
 fn grid_to_lines(cache: &CylinderStageCache) -> (Vec<Line<'static>>, bool) {
@@ -507,9 +505,6 @@ fn grid_to_lines(cache: &CylinderStageCache) -> (Vec<Line<'static>>, bool) {
                 started = true;
                 continue;
             };
-            if cell.continuation {
-                continue;
-            }
             any = true;
             if !started {
                 style = cell.style;
@@ -638,137 +633,143 @@ mod tests {
     }
 
     #[test]
-    fn glyphs_measure_width_and_merge_zero_width_graphemes() {
+    fn glyphs_merge_zero_width_graphemes_and_use_block_bitmaps() {
         let glyphs = glyphs("e\u{301}ab漢");
         assert_eq!(glyphs.len(), 4);
         assert_eq!(glyphs[0].text, "e\u{301}");
-        assert_eq!(glyphs[0].display_width, 1);
         assert_eq!(glyphs[0].byte_range, (0, 3));
+        assert_eq!(glyphs[0].display_width, glyphs[0].bitmap.width);
+        assert_eq!(glyphs[0].bitmap.rows.len(), 4);
         assert_eq!(glyphs[1].text, "a");
         assert_eq!(glyphs[3].text, "漢");
-        assert_eq!(glyphs[3].display_width, 2);
+        assert_eq!(glyphs[3].bitmap, placeholder_bitmap(BlockFontSize::Block));
     }
 
     #[test]
-    fn wide_grapheme_reserves_two_cells() {
-        let mut cache = grid_with(10, 3);
-        let glyph = &glyphs("漢")[0];
-        assert!(place_grapheme(
-            &mut cache,
-            2,
-            1,
-            glyph,
-            Style::default(),
-            &mut None
-        ));
-        assert_eq!(cache.cell(2, 1).unwrap().text, "漢");
-        assert!(cache.cell(3, 1).unwrap().continuation);
+    fn bitmap_fills_every_row_and_column() {
+        let mut cache = grid_with(10, 8);
+        let glyph = &glyphs("A")[0];
+        let width = glyph.bitmap.width;
+        assert!(place_bitmap(&mut cache, 2, 1, 4, glyph, Style::default()));
+        for row in 0..4u16 {
+            for column in 0..width {
+                assert!(
+                    cache.cell(2 + column, 1 + row).is_some(),
+                    "missing cell at {column},{row}"
+                );
+            }
+        }
         let (lines, _) = grid_to_lines(&cache);
-        assert!(
-            lines[1]
-                .spans
-                .iter()
-                .any(|span| span.content.contains('漢'))
-        );
+        assert!(lines[1].spans.iter().any(|span| span.content.contains('▀')
+            || span.content.contains('█')
+            || span.content.contains('▄')));
     }
 
     #[test]
-    fn wide_grapheme_skipped_when_second_cell_leaves_the_area() {
-        let mut cache = grid_with(10, 3);
-        let glyph = &glyphs("漢")[0];
-        assert!(!place_grapheme(
-            &mut cache,
-            9,
-            1,
-            glyph,
-            Style::default(),
-            &mut None
-        ));
-        assert!(cache.cell(9, 1).is_none());
+    fn bitmap_clips_at_the_right_edge() {
+        let mut cache = grid_with(10, 8);
+        let glyph = &glyphs("A")[0];
+        assert!(place_bitmap(&mut cache, 8, 1, 4, glyph, Style::default()));
+        assert!(cache.cell(9, 1).is_some());
+        assert!(cache.cell(10, 1).is_none());
     }
 
     #[test]
     fn clipping_at_edges_does_not_panic() {
-        let mut cache = grid_with(10, 3);
+        let mut cache = grid_with(10, 8);
         let glyph = &glyphs("A")[0];
-        assert!(!place_grapheme(
-            &mut cache,
-            -1,
-            1,
-            glyph,
-            Style::default(),
-            &mut None
-        ));
-        assert!(!place_grapheme(
-            &mut cache,
-            10,
-            1,
-            glyph,
-            Style::default(),
-            &mut None
-        ));
-        assert!(!place_grapheme(
-            &mut cache,
-            0,
-            99,
-            glyph,
-            Style::default(),
-            &mut None
-        ));
+        assert!(!place_bitmap(&mut cache, -1, 1, 4, glyph, Style::default()));
+        assert!(!place_bitmap(&mut cache, 10, 1, 4, glyph, Style::default()));
+        assert!(!place_bitmap(&mut cache, 0, 99, 4, glyph, Style::default()));
         assert!(cache.cell(0, 1).is_none());
     }
 
     #[test]
-    fn newer_line_overwrites_older_line_at_the_same_cell() {
-        let mut cache = grid_with(10, 3);
-        let older = &glyphs("A")[0];
-        let newer = &glyphs("B")[0];
-        assert!(place_grapheme(
-            &mut cache,
-            2,
-            1,
-            older,
-            Style::default(),
-            &mut None
-        ));
-        assert!(place_grapheme(
-            &mut cache,
-            2,
-            1,
-            newer,
-            Style::default(),
-            &mut None
-        ));
-        assert_eq!(cache.cell(2, 1).unwrap().text, "B");
+    fn stretched_bitmap_duplicates_source_rows() {
+        let mut cache = grid_with(10, 10);
+        let glyph = &glyphs("A")[0];
+        assert!(place_bitmap(&mut cache, 0, 0, 7, glyph, Style::default()));
+        let rows = (0..7u16)
+            .map(|row| {
+                (0..glyph.bitmap.width)
+                    .map(|column| {
+                        cache
+                            .cell(column, row)
+                            .map(|cell| cell.text.clone())
+                            .unwrap_or_default()
+                    })
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(rows[0], rows[1]);
+        assert_eq!(rows[6], glyph.bitmap.rows[3]);
+        assert!(rows.len() == 7);
     }
 
     #[test]
-    fn two_contiguous_lines_render_in_order() {
+    fn newer_line_overwrites_older_line_at_the_same_cell() {
+        let mut cache = grid_with(10, 8);
+        let older = &glyphs("A")[0];
+        let newer = &glyphs("B")[0];
+        assert!(place_bitmap(&mut cache, 2, 1, 4, older, Style::default()));
+        assert!(place_bitmap(&mut cache, 2, 1, 4, newer, Style::default()));
+        assert_eq!(
+            cache.cell(2, 1).unwrap().text,
+            newer.bitmap.rows[0].chars().next().unwrap().to_string()
+        );
+    }
+
+    fn any_ink(buffer: &Buffer, x: u16, rows: std::ops::Range<u16>) -> bool {
+        rows.into_iter().any(|y| {
+            matches!(
+                buffer[(x, y)].symbol(),
+                "▀" | "▄" | "█" | "▐" | "▌" | "▖" | "▗" | "▘" | "▝"
+            )
+        })
+    }
+
+    fn ink_count(
+        buffer: &Buffer,
+        columns: std::ops::Range<u16>,
+        rows: std::ops::Range<u16>,
+    ) -> usize {
+        let mut count = 0;
+        for y in rows {
+            for x in columns.clone() {
+                if any_ink(buffer, x, y..y + 1) {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    #[test]
+    fn two_contiguous_lines_render_across_the_lane() {
         let buffer = render_cylinder(
             track(vec![
-                lyric_line(0, 3_000, "first line"),
-                lyric_line(600, 3_600, "second line"),
+                lyric_line(0, 3_000, "abc"),
+                lyric_line(800, 3_800, "xyz"),
             ]),
-            2_950,
-            120,
+            3_000,
+            160,
             40,
         );
-        let rows = buffer_text(&buffer);
-        let text = rows.join("\n");
-        assert!(text.contains("first line"), "{text}");
-        assert!(text.contains("second line"), "{text}");
-        let row = rows
-            .iter()
-            .find(|row| row.contains("first line") && row.contains("second line"))
-            .expect("contiguous lines share the flat center band");
-        assert!(row.find("first line").unwrap() < row.find("second line").unwrap());
+        let center = buffer.area.height / 2;
+        let band = center - 2..center + 4;
+        assert!(
+            any_ink(&buffer, 79, band.clone()),
+            "older line enters at 79"
+        );
+        assert!(any_ink(&buffer, 100, band), "newer line enters at 100");
+        let edge_ink = ink_count(&buffer, 79..140, center - 3..center + 5);
+        assert!(edge_ink > 20, "both lines painted, got {edge_ink} cells");
     }
 
     #[test]
     fn long_line_survives_more_than_eight_newer_starts() {
         let alphabet = "abcdefghijklmnopqrstuvwxyz";
         let long_text: String = alphabet.repeat(12).chars().take(300).collect();
-        let tail: String = long_text.chars().skip(294).collect();
         let mut lines = vec![lyric_line(0, 1_000, &long_text)];
         for index in 1..=10u64 {
             lines.push(lyric_line(
@@ -778,8 +779,14 @@ mod tests {
             ));
         }
         let buffer = render_cylinder(track(lines), 10_000, 120, 40);
-        let text = buffer_text(&buffer).join("\n");
-        assert!(text.contains(&tail), "{text}");
+        let center = buffer.area.height / 2;
+        let long_line_ink = ink_count(&buffer, 0..40, center - 6..center + 8);
+        assert!(
+            long_line_ink > 0,
+            "long line must remain painted near the left edge"
+        );
+        let newer_ink = ink_count(&buffer, 80..120, center - 4..center + 6);
+        assert!(newer_ink > 0, "newer lines paint near the right edge");
     }
 
     #[test]
@@ -973,7 +980,8 @@ mod tests {
         terminal
             .draw(|frame| crate::ui::render::render(frame, &state, 1_800))
             .unwrap();
-        let rows = buffer_text(terminal.backend().buffer());
+        let buffer = terminal.backend().buffer().clone();
+        let rows = buffer_text(&buffer);
         let row_index = rows
             .iter()
             .position(|row| row.contains("translation"))
@@ -984,10 +992,8 @@ mod tests {
             (i32::from(column as u16) - i32::from(expected as u16)).abs() <= 1,
             "column {column}, expected ~{expected}"
         );
-        let main_row = rows
-            .iter()
-            .position(|row| row.contains("main line"))
-            .expect("main line rendered");
-        assert!(main_row < row_index, "annotations must sit below the belt");
+        let belt_ink = ink_count(&buffer, 0..80, 0..(row_index as u16));
+        assert!(belt_ink > 0, "main block line rendered");
+        assert!(row_index as u16 > 0, "annotations must sit below the belt");
     }
 }
