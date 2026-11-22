@@ -618,17 +618,17 @@ fn canvas3d_word_sync() -> UiState {
 
 #[test]
 fn canvas3d_word_sync_60x16() {
-    snapshot(&mut canvas3d_word_sync(), 60, 16, 2_500, "60x16_canvas3d");
+    snapshot(&mut canvas3d_word_sync(), 60, 16, 4_200, "60x16_canvas3d");
 }
 
 #[test]
 fn canvas3d_word_sync_80x24() {
-    snapshot(&mut canvas3d_word_sync(), 80, 24, 2_500, "80x24_canvas3d");
+    snapshot(&mut canvas3d_word_sync(), 80, 24, 4_200, "80x24_canvas3d");
 }
 
 #[test]
 fn canvas3d_word_sync_120x40() {
-    snapshot(&mut canvas3d_word_sync(), 120, 40, 2_500, "120x40_canvas3d");
+    snapshot(&mut canvas3d_word_sync(), 120, 40, 4_200, "120x40_canvas3d");
 }
 
 #[test]

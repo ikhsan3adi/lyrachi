@@ -13,9 +13,9 @@ use crate::ui::render::{ModeRenderer, RenderContext, centered_message};
 use crate::ui::word_style;
 
 use super::{
-    CANVAS3D_CROSS_SECONDS, CANVAS3D_DIM_DEPTH, CANVAS3D_FLIP_MS, CANVAS3D_GLYPH_GAP,
-    CANVAS3D_GLYPH_SCALE, CANVAS3D_MAX_VISIBLE_LINES, CANVAS3D_SPACE_ADVANCE, CANVAS3D_V_ENTER,
-    CANVAS3D_Y_STRETCH, CANVAS3D_ZPOP_SCALE, CanvasGlyph, camera::CrawlCamera, text_hash,
+    CANVAS3D_CROSS_SECONDS, CANVAS3D_FLIP_MS, CANVAS3D_GLYPH_GAP, CANVAS3D_GLYPH_SCALE,
+    CANVAS3D_MAX_VISIBLE_LINES, CANVAS3D_SPACE_ADVANCE, CANVAS3D_Y_STRETCH, CANVAS3D_ZPOP_SCALE,
+    CanvasGlyph, camera::CrawlCamera, dim_depth_for, spawn_v_for, text_hash,
 };
 
 pub(crate) struct Canvas3DRenderer;
@@ -37,15 +37,19 @@ impl ModeRenderer for Canvas3DRenderer {
         let cache = &mut ctx.cache.canvas;
         cache.prepare(timeline.context.options_hash());
         cache.prepare_canvas(area.width, area.height);
-        let camera = CrawlCamera::new(area.width, area.height);
+        let tilt_deg = f32::from(state.canvas3d_tilt_deg);
+        let camera = CrawlCamera::new(area.width, area.height, tilt_deg);
+        let v_enter = spawn_v_for(tilt_deg, state.canvas3d_spawn_y_pct);
+        let dim_depth = dim_depth_for(v_enter);
 
-        let lead = state.cylinder_entry_lead_ms;
-        let scan_until = effective_ms.saturating_add(lead);
+        let scan_lead = u64::from(state.canvas3d_flip) * CANVAS3D_FLIP_MS;
+        let scan_until = effective_ms.saturating_add(scan_lead);
         let start_index = timeline
             .lines
             .partition_point(|line| line.start_ms <= scan_until);
         let mut visible = Vec::new();
-        let speed_v = CANVAS3D_V_ENTER / CANVAS3D_CROSS_SECONDS;
+        let speed_v =
+            v_enter / CANVAS3D_CROSS_SECONDS * (f32::from(state.canvas3d_speed_pct) / 100.0);
 
         for (scanned, index) in (0..start_index).rev().enumerate() {
             if scanned >= CANVAS3D_MAX_VISIBLE_LINES {
@@ -64,8 +68,8 @@ impl ModeRenderer for Canvas3DRenderer {
             cache.ensure_line(index, text, ambiguous_width, || {
                 glyphs_for_text(text, ambiguous_width)
             });
-            let elapsed = (effective_ms.saturating_sub(compiled.start_ms) + lead) as f32;
-            let v_line = CANVAS3D_V_ENTER - elapsed / 1000.0 * speed_v;
+            let elapsed = effective_ms.saturating_sub(compiled.start_ms) as f32;
+            let v_line = v_enter - elapsed / 1000.0 * speed_v;
             if v_line > 1.0 {
                 visible.push((index, text, v_line));
             }
@@ -85,7 +89,11 @@ impl ModeRenderer for Canvas3DRenderer {
             let compiled = &timeline.lines[index];
             let active = cursor.active_line_idx == Some(index);
             let holding = active && effective_ms > compiled.end_ms;
-            let flip_angle = flip_angle_for(compiled, effective_ms);
+            let flip_angle = if state.canvas3d_flip {
+                flip_angle_for(compiled, effective_ms)
+            } else {
+                0.0
+            };
             if flip_angle >= FRAC_PI_2 {
                 continue;
             }
@@ -106,11 +114,7 @@ impl ModeRenderer for Canvas3DRenderer {
                     active,
                     holding,
                     effective_ms,
-                    if v_line > CANVAS3D_DIM_DEPTH {
-                        0.0
-                    } else {
-                        1.0
-                    },
+                    if v_line > dim_depth { 0.0 } else { 1.0 },
                     state.effective_word_highlight(),
                     &state.style,
                 );
@@ -125,7 +129,7 @@ impl ModeRenderer for Canvas3DRenderer {
                 for (px, py) in &glyph.points {
                     let sx = center_x + (f32::from(*px) - center_x) * scale;
                     let sy = 3.5 + (f32::from(*py) - 3.5) * scale;
-                    let u_rel = (glyph_x as f32 + sx) - half_width as f32;
+                    let u_rel = glyph_x as f32 + sx;
                     let u = u_rel * flip_angle.cos() * CANVAS3D_GLYPH_SCALE;
                     let w = u_rel * flip_angle.sin() * CANVAS3D_GLYPH_SCALE;
                     let v = v_line + (7.0 - sy) * CANVAS3D_Y_STRETCH * CANVAS3D_GLYPH_SCALE;
@@ -211,7 +215,10 @@ mod tests {
 
     use crate::ui::render::{WordState, word_state_style};
 
-    use super::super::{CANVAS3D_MIN_HEIGHT, CANVAS3D_MIN_WIDTH};
+    use super::super::{
+        CANVAS3D_DEFAULT_SPAWN_PCT, CANVAS3D_DEFAULT_TILT_DEG, CANVAS3D_MIN_HEIGHT,
+        CANVAS3D_MIN_WIDTH,
+    };
     use super::*;
     use crate::core::clock::PlaybackStatus;
     use crate::core::model::{LyricLine, SyncGranularity, WordToken};
@@ -244,7 +251,40 @@ mod tests {
     }
 
     fn render_canvas3d(track: SyncedTrack, effective_ms: u64, width: u16, height: u16) -> Buffer {
+        render_canvas3d_opts(track, effective_ms, width, height, Canvas3dTestOpts::new())
+    }
+
+    #[derive(Clone, Default)]
+    struct Canvas3dTestOpts {
+        flip: bool,
+        speed_pct: u16,
+        tilt_deg: u16,
+        spawn_pct: u16,
+    }
+
+    impl Canvas3dTestOpts {
+        fn new() -> Self {
+            Self {
+                speed_pct: 100,
+                tilt_deg: CANVAS3D_DEFAULT_TILT_DEG,
+                spawn_pct: CANVAS3D_DEFAULT_SPAWN_PCT,
+                ..Self::default()
+            }
+        }
+    }
+
+    fn render_canvas3d_opts(
+        track: SyncedTrack,
+        effective_ms: u64,
+        width: u16,
+        height: u16,
+        opts: Canvas3dTestOpts,
+    ) -> Buffer {
         let mut state = UiState::new();
+        state.set_canvas3d_flip(opts.flip);
+        state.set_canvas3d_speed_pct(opts.speed_pct);
+        state.set_canvas3d_tilt_deg(opts.tilt_deg);
+        state.set_canvas3d_spawn_y_pct(opts.spawn_pct);
         state.resize(width, height);
         state.playback = PlaybackStatus::Playing;
         let profile = StyleProfile::builtin("builtin:dark", width).unwrap();
@@ -315,7 +355,7 @@ mod tests {
     #[test]
     fn active_line_renders_braille_dots() {
         let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
-        let buffer = render_canvas3d(source, 5_000, 120, 40);
+        let buffer = render_canvas3d(source, 2_000, 120, 40);
         assert!(count_braille(&buffer) > 50, "expected braille dots");
     }
 
@@ -336,7 +376,7 @@ mod tests {
     #[test]
     fn narrow_viewport_falls_back_to_normal_rendering() {
         let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
-        let buffer = render_canvas3d(source, 5_000, CANVAS3D_MIN_WIDTH - 1, 40);
+        let buffer = render_canvas3d(source, 1_500, CANVAS3D_MIN_WIDTH - 1, 40);
         let text = buffer_text(&buffer).join("\n");
         assert!(
             text.contains("hold the line"),
@@ -347,7 +387,7 @@ mod tests {
     #[test]
     fn short_viewport_falls_back_to_normal_rendering() {
         let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
-        let buffer = render_canvas3d(source, 5_000, 120, CANVAS3D_MIN_HEIGHT - 1);
+        let buffer = render_canvas3d(source, 1_500, 120, CANVAS3D_MIN_HEIGHT - 1);
         let text = buffer_text(&buffer).join("\n");
         assert!(
             text.contains("hold the line"),
@@ -386,17 +426,139 @@ mod tests {
     #[test]
     fn line_is_hidden_until_its_flip_opens() {
         let source = track(vec![lyric_line(8_000, 16_000, "hold the line")]);
-        let before = render_canvas3d(source.clone(), 7_000, 120, 40);
+        let flip_opts = Canvas3dTestOpts {
+            flip: true,
+            ..Canvas3dTestOpts::new()
+        };
+        let before = render_canvas3d_opts(source.clone(), 7_000, 120, 40, flip_opts.clone());
         assert_eq!(count_braille(&before), 0, "edge-on flip must hide the line");
-        let mid = render_canvas3d(source.clone(), 7_800, 120, 40);
+        let mid = render_canvas3d_opts(source.clone(), 7_800, 120, 40, flip_opts.clone());
         assert!(
             count_braille(&mid) > 0,
             "mid-flip line must be partly visible"
         );
-        let open = render_canvas3d(source, 10_000, 120, 40);
+        let open = render_canvas3d_opts(source, 10_000, 120, 40, flip_opts);
         assert!(
             count_braille(&open) > count_braille(&mid),
             "open line shows more dots"
+        );
+    }
+
+    #[test]
+    fn flip_disabled_hides_the_line_before_its_start() {
+        let source = track(vec![lyric_line(8_000, 16_000, "hold the line")]);
+        let buffer = render_canvas3d_opts(source, 7_000, 120, 40, Canvas3dTestOpts::new());
+        assert_eq!(
+            count_braille(&buffer),
+            0,
+            "without flip and without lead the line must wait for its start"
+        );
+    }
+
+    #[test]
+    fn speed_pct_shifts_the_line_along_the_plane() {
+        let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
+        let slow = render_canvas3d_opts(
+            source.clone(),
+            2_000,
+            120,
+            40,
+            Canvas3dTestOpts {
+                speed_pct: 50,
+                ..Canvas3dTestOpts::new()
+            },
+        );
+        let fast = render_canvas3d_opts(
+            source,
+            2_000,
+            120,
+            40,
+            Canvas3dTestOpts {
+                speed_pct: 300,
+                ..Canvas3dTestOpts::new()
+            },
+        );
+        let v_enter = spawn_v_for(
+            f32::from(CANVAS3D_DEFAULT_TILT_DEG),
+            CANVAS3D_DEFAULT_SPAWN_PCT,
+        );
+        let base_speed = v_enter / CANVAS3D_CROSS_SECONDS;
+        let slow_v = v_enter - 2.0 * base_speed * 0.5;
+        let fast_v = v_enter - 2.0 * base_speed * 3.0;
+        assert!(
+            fast_v < 1.0,
+            "300% must push the line past the exit: {fast_v}"
+        );
+        assert_eq!(count_braille(&fast), 0, "fast line must have exited");
+        assert!(slow_v > 1.0, "slow line still on the plane: {slow_v}");
+        assert!(count_braille(&slow) > 0);
+    }
+
+    #[test]
+    fn shallower_tilt_renders_larger_entry_text() {
+        let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
+        let steep = render_canvas3d_opts(source.clone(), 1_500, 120, 40, Canvas3dTestOpts::new());
+        let shallow = render_canvas3d_opts(
+            source,
+            1_500,
+            120,
+            40,
+            Canvas3dTestOpts {
+                tilt_deg: 45,
+                ..Canvas3dTestOpts::new()
+            },
+        );
+        assert!(
+            count_braille(&shallow) > count_braille(&steep),
+            "shallower tilt must render more dots: {} vs {}",
+            count_braille(&shallow),
+            count_braille(&steep)
+        );
+    }
+
+    #[test]
+    fn lower_spawn_height_renders_larger_text() {
+        let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
+        let deep = render_canvas3d_opts(source.clone(), 1_500, 120, 40, Canvas3dTestOpts::new());
+        let low = render_canvas3d_opts(
+            source,
+            1_500,
+            120,
+            40,
+            Canvas3dTestOpts {
+                spawn_pct: 55,
+                ..Canvas3dTestOpts::new()
+            },
+        );
+        assert!(
+            count_braille(&low) > count_braille(&deep),
+            "lower spawn must render more dots: {} vs {}",
+            count_braille(&low),
+            count_braille(&deep)
+        );
+    }
+
+    #[test]
+    fn flat_lines_are_centered_horizontally() {
+        let source = track(vec![lyric_line(0, 60_000, "hold the line")]);
+        let buffer = render_canvas3d(source, 1_500, 120, 40);
+        let mut min_x = u16::MAX;
+        let mut max_x = 0u16;
+        for y in 0..buffer.area.height {
+            for x in 0..buffer.area.width {
+                let sym = buffer[(x, y)].symbol().chars().next().unwrap_or(' ');
+                if ('\u{2800}'..='\u{28FF}').contains(&sym) {
+                    min_x = min_x.min(x);
+                    max_x = max_x.max(x);
+                }
+            }
+        }
+        assert!(min_x != u16::MAX, "expected braille dots");
+        let center = (u32::from(min_x) + u32::from(max_x)) as f32 / 2.0;
+        let expected = f32::from(buffer.area.width) / 2.0;
+        assert!(
+            (center - expected).abs() < 4.0,
+            "dots span {min_x}..{max_x}, center {center} vs {expected}"
         );
     }
 

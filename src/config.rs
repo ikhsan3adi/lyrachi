@@ -43,6 +43,10 @@ pub struct RuntimeConfig {
     pub cylinder_speed_mode: CylinderSpeedMode,
     pub cylinder_speed_pct: u16,
     pub cylinder_entry_lead_ms: u64,
+    pub canvas3d_flip: bool,
+    pub canvas3d_speed_pct: u16,
+    pub canvas3d_tilt_deg: u16,
+    pub canvas3d_spawn_y_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: String,
@@ -72,6 +76,10 @@ impl Default for RuntimeConfig {
             cylinder_speed_mode: CylinderSpeedMode::Constant,
             cylinder_speed_pct: 100,
             cylinder_entry_lead_ms: crate::ui::cylinder::CYLINDER_DEFAULT_ENTRY_LEAD_MS,
+            canvas3d_flip: false,
+            canvas3d_speed_pct: 100,
+            canvas3d_tilt_deg: crate::ui::canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
+            canvas3d_spawn_y_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
             word_highlight: true,
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
@@ -223,6 +231,47 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
                 ));
             }
             config.cylinder_speed_pct = pct.clamp(50, 300);
+        }
+    }
+    if let Some(canvas3d) = file.ui.canvas3d {
+        if let Some(flip) = canvas3d.flip {
+            config.canvas3d_flip = flip;
+        }
+        if let Some(pct) = canvas3d.speed_pct {
+            if !(50..=300).contains(&pct) {
+                warnings.push(format!(
+                    "config: ui.canvas3d.speed_pct {pct} out of range 50..=300; clamped"
+                ));
+            }
+            config.canvas3d_speed_pct = pct.clamp(50, 300);
+        }
+        if let Some(tilt) = canvas3d.tilt_deg {
+            if !(crate::ui::canvas3d::CANVAS3D_MIN_TILT_DEG
+                ..=crate::ui::canvas3d::CANVAS3D_MAX_TILT_DEG)
+                .contains(&tilt)
+            {
+                warnings.push(format!(
+                    "config: ui.canvas3d.tilt_deg {tilt} out of range 35..=60; clamped"
+                ));
+            }
+            config.canvas3d_tilt_deg = tilt.clamp(
+                crate::ui::canvas3d::CANVAS3D_MIN_TILT_DEG,
+                crate::ui::canvas3d::CANVAS3D_MAX_TILT_DEG,
+            );
+        }
+        if let Some(pct) = canvas3d.spawn_y_pct {
+            if !(crate::ui::canvas3d::CANVAS3D_MIN_SPAWN_PCT
+                ..=crate::ui::canvas3d::CANVAS3D_MAX_SPAWN_PCT)
+                .contains(&pct)
+            {
+                warnings.push(format!(
+                    "config: ui.canvas3d.spawn_y_pct {pct} out of range 50..=95; clamped"
+                ));
+            }
+            config.canvas3d_spawn_y_pct = pct.clamp(
+                crate::ui::canvas3d::CANVAS3D_MIN_SPAWN_PCT,
+                crate::ui::canvas3d::CANVAS3D_MAX_SPAWN_PCT,
+            );
         }
     }
     if let Some(word_highlight) = file.ui.word_highlight {
@@ -559,6 +608,7 @@ pub struct UiSection {
     pub status_bar: Option<StatusBarMode>,
     pub display_mode: Option<String>,
     pub cylinder: Option<CylinderSection>,
+    pub canvas3d: Option<Canvas3dSection>,
     pub word_highlight: Option<bool>,
     pub fps_active: Option<u16>,
     pub style: Option<String>,
@@ -571,6 +621,15 @@ pub struct CylinderSection {
     pub speed: Option<String>,
     pub speed_pct: Option<u16>,
     pub entry_lead_ms: Option<u64>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct Canvas3dSection {
+    pub flip: Option<bool>,
+    pub speed_pct: Option<u16>,
+    pub tilt_deg: Option<u16>,
+    pub spawn_y_pct: Option<u16>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
@@ -670,7 +729,7 @@ fullscreen = false
 show_header = true
 # Status bar placement: "bottom", "top", "off", or "auto"
 status_bar = "bottom"
-# Display mode: "normal", "block", "kinetic", or "cylinder"
+# Display mode: "normal", "block", "kinetic", "cylinder", or "canvas3d"
 display_mode = "normal"
 # Enable word-level karaoke highlighting
 word_highlight = true
@@ -691,6 +750,21 @@ speed_pct = 100
 # How early a line starts entering from the right edge, in ms before its
 # first word is sung (0..=5000). Larger values give more reading lead.
 entry_lead_ms = 1000
+
+[ui.canvas3d]
+# Rotate each line in around its center during the last 400 ms before it
+# starts being sung. When false, lines appear directly at the horizon and
+# scroll toward the viewer without any rotation.
+flip = false
+# Crawl speed multiplier percent (50..=300); adjust at runtime with
+# "-" / "=" and reset with "0" while the canvas3d mode is active
+speed_pct = 100
+# Crawl plane tilt in degrees (35..=60). Lower values make the text at the
+# horizon larger and more readable; adjust at runtime with "{" / "}"
+tilt_deg = 60
+# Screen height (percent from the top, 50..=95) where new lines appear;
+# adjust at runtime with "," / "."
+spawn_y_pct = 82
 
 [terminal]
 # Ambiguous-width Unicode character width: 1 or 2
@@ -1097,6 +1171,83 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
     }
 
     #[test]
+    fn loads_canvas3d_flip() {
+        let path = temp_file("ui-canvas3d-flip", "[ui.canvas3d]\nflip = true\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert!(outcome.config.canvas3d_flip);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-canvas3d-flip-off", "[ui.canvas3d]\nflip = false\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert!(!outcome.config.canvas3d_flip);
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_and_clamps_canvas3d_tilt_deg() {
+        let path = temp_file("ui-canvas3d-tilt", "[ui.canvas3d]\ntilt_deg = 45\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_tilt_deg, 45);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-canvas3d-tilt-high", "[ui.canvas3d]\ntilt_deg = 90\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_tilt_deg, 60);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.canvas3d.tilt_deg"))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_and_clamps_canvas3d_spawn_y_pct() {
+        let path = temp_file("ui-canvas3d-spawn", "[ui.canvas3d]\nspawn_y_pct = 70\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_spawn_y_pct, 70);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file(
+            "ui-canvas3d-spawn-high",
+            "[ui.canvas3d]\nspawn_y_pct = 99\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_spawn_y_pct, 95);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.canvas3d.spawn_y_pct"))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_and_clamps_canvas3d_speed_pct() {
+        let path = temp_file("ui-canvas3d-speed", "[ui.canvas3d]\nspeed_pct = 180\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_speed_pct, 180);
+        assert!(outcome.warnings.is_empty());
+        fs::remove_file(path).unwrap();
+
+        let path = temp_file("ui-canvas3d-speed-high", "[ui.canvas3d]\nspeed_pct = 900\n");
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+        assert_eq!(outcome.config.canvas3d_speed_pct, 300);
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.canvas3d.speed_pct"))
+        );
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
     fn loads_and_clamps_cylinder_entry_lead() {
         let path = temp_file("ui-cylinder-lead", "[ui.cylinder]\nentry_lead_ms = 2500\n");
         let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
@@ -1190,6 +1341,7 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
     #[test]
     fn default_template_contains_cylinder_section() {
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("[ui.cylinder]"));
+        assert!(DEFAULT_CONFIG_TEMPLATE.contains("[ui.canvas3d]"));
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("annotations = \"auto\""));
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("speed = \"constant\""));
         assert!(DEFAULT_CONFIG_TEMPLATE.contains("display_mode = \"normal\""));

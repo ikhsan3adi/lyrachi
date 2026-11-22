@@ -177,6 +177,10 @@ pub struct UiState {
     pub cylinder_speed_mode: CylinderSpeedMode,
     pub cylinder_speed_pct: u16,
     pub cylinder_entry_lead_ms: u64,
+    pub canvas3d_flip: bool,
+    pub canvas3d_speed_pct: u16,
+    pub canvas3d_tilt_deg: u16,
+    pub canvas3d_spawn_y_pct: u16,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: ResolvedStyle,
@@ -225,6 +229,10 @@ impl UiState {
             cylinder_speed_mode: CylinderSpeedMode::Constant,
             cylinder_speed_pct: 100,
             cylinder_entry_lead_ms: cylinder::CYLINDER_DEFAULT_ENTRY_LEAD_MS,
+            canvas3d_flip: false,
+            canvas3d_speed_pct: 100,
+            canvas3d_tilt_deg: canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
+            canvas3d_spawn_y_pct: canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
             word_highlight: true,
             fps_active: 60,
             style: ResolvedStyle::default(),
@@ -500,6 +508,59 @@ impl UiState {
 
     pub fn set_cylinder_speed_mode(&mut self, mode: CylinderSpeedMode) {
         self.cylinder_speed_mode = mode;
+    }
+
+    pub fn set_canvas3d_flip(&mut self, flip: bool) {
+        self.canvas3d_flip = flip;
+    }
+
+    pub fn set_canvas3d_speed_pct(&mut self, pct: u16) {
+        self.canvas3d_speed_pct = pct.clamp(
+            canvas3d::CANVAS3D_MIN_SPEED_PCT,
+            canvas3d::CANVAS3D_MAX_SPEED_PCT,
+        );
+    }
+
+    pub fn adjust_canvas3d_speed(&mut self, delta_pct: i32) {
+        let next = i32::from(self.canvas3d_speed_pct) + delta_pct;
+        self.canvas3d_speed_pct = next.clamp(
+            i32::from(canvas3d::CANVAS3D_MIN_SPEED_PCT),
+            i32::from(canvas3d::CANVAS3D_MAX_SPEED_PCT),
+        ) as u16;
+    }
+
+    pub fn reset_canvas3d_speed(&mut self) {
+        self.canvas3d_speed_pct = 100;
+    }
+
+    pub fn set_canvas3d_tilt_deg(&mut self, tilt_deg: u16) {
+        self.canvas3d_tilt_deg = tilt_deg.clamp(
+            canvas3d::CANVAS3D_MIN_TILT_DEG,
+            canvas3d::CANVAS3D_MAX_TILT_DEG,
+        );
+    }
+
+    pub fn adjust_canvas3d_tilt_deg(&mut self, delta_deg: i32) {
+        let next = i32::from(self.canvas3d_tilt_deg) + delta_deg;
+        self.canvas3d_tilt_deg = next.clamp(
+            i32::from(canvas3d::CANVAS3D_MIN_TILT_DEG),
+            i32::from(canvas3d::CANVAS3D_MAX_TILT_DEG),
+        ) as u16;
+    }
+
+    pub fn set_canvas3d_spawn_y_pct(&mut self, spawn_pct: u16) {
+        self.canvas3d_spawn_y_pct = spawn_pct.clamp(
+            canvas3d::CANVAS3D_MIN_SPAWN_PCT,
+            canvas3d::CANVAS3D_MAX_SPAWN_PCT,
+        );
+    }
+
+    pub fn adjust_canvas3d_spawn_y_pct(&mut self, delta_pct: i32) {
+        let next = i32::from(self.canvas3d_spawn_y_pct) + delta_pct;
+        self.canvas3d_spawn_y_pct = next.clamp(
+            i32::from(canvas3d::CANVAS3D_MIN_SPAWN_PCT),
+            i32::from(canvas3d::CANVAS3D_MAX_SPAWN_PCT),
+        ) as u16;
     }
 
     pub fn set_cylinder_entry_lead_ms(&mut self, lead_ms: u64) {

@@ -16,6 +16,9 @@ pub struct UiPrefs {
     pub display_mode: DisplayMode,
     pub word_highlight: bool,
     pub cylinder_speed_pct: u16,
+    pub canvas3d_speed_pct: u16,
+    pub canvas3d_tilt_deg: u16,
+    pub canvas3d_spawn_y_pct: u16,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -89,6 +92,31 @@ pub fn save_ui_prefs(path: &Path, prefs: UiPrefs) -> Result<(), PrefsError> {
         .and_then(|item| item.as_table_like_mut())
     {
         set_value(cylinder, "speed_pct", i64::from(prefs.cylinder_speed_pct));
+    }
+
+    if ui
+        .get("canvas3d")
+        .is_some_and(|item| item.as_table_like().is_none())
+    {
+        return Err(PrefsError::InvalidToml {
+            path: path.display().to_string(),
+            message: "`ui.canvas3d` must be a table".to_string(),
+        });
+    }
+    if ui.get("canvas3d").is_none() {
+        ui.insert("canvas3d", toml_edit::Item::Table(toml_edit::Table::new()));
+    }
+    if let Some(canvas3d) = ui
+        .get_mut("canvas3d")
+        .and_then(|item| item.as_table_like_mut())
+    {
+        set_value(canvas3d, "speed_pct", i64::from(prefs.canvas3d_speed_pct));
+        set_value(canvas3d, "tilt_deg", i64::from(prefs.canvas3d_tilt_deg));
+        set_value(
+            canvas3d,
+            "spawn_y_pct",
+            i64::from(prefs.canvas3d_spawn_y_pct),
+        );
     }
 
     write_atomic(&target, document.to_string().as_bytes())
@@ -211,6 +239,9 @@ mod tests {
             display_mode: DisplayMode::Block,
             word_highlight: false,
             cylinder_speed_pct: 100,
+            canvas3d_speed_pct: 100,
+            canvas3d_tilt_deg: crate::ui::canvas3d::CANVAS3D_DEFAULT_TILT_DEG,
+            canvas3d_spawn_y_pct: crate::ui::canvas3d::CANVAS3D_DEFAULT_SPAWN_PCT,
         }
     }
 
@@ -313,6 +344,81 @@ mod tests {
 
         assert!(saved.contains("speed_pct = 140"), "{saved}");
         assert!(saved.contains("speed = \"line_length\""), "{saved}");
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
+            "{saved}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_canvas3d_speed_pct_into_canvas3d_table() {
+        let dir = temp_dir("prefs-canvas3d-speed");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\n\n[ui.canvas3d]\nflip = true\n",
+        )
+        .unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.canvas3d_speed_pct = 160;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("speed_pct = 160"), "{saved}");
+        assert!(saved.contains("flip = true"), "{saved}");
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
+            "{saved}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_canvas3d_tilt_deg_into_canvas3d_table() {
+        let dir = temp_dir("prefs-canvas3d-tilt");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\n\n[ui.canvas3d]\nflip = true\n",
+        )
+        .unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.canvas3d_tilt_deg = 45;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("tilt_deg = 45"), "{saved}");
+        assert!(saved.contains("flip = true"), "{saved}");
+        assert!(
+            saved.contains("display_mode = \"block\" # keep mode"),
+            "{saved}"
+        );
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn saves_canvas3d_spawn_y_pct_into_canvas3d_table() {
+        let dir = temp_dir("prefs-canvas3d-spawn");
+        let path = dir.join("config.toml");
+        fs::write(
+            &path,
+            "[ui]\ndisplay_mode = \"normal\" # keep mode\n\n[ui.canvas3d]\nflip = true\n",
+        )
+        .unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.canvas3d_spawn_y_pct = 70;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("spawn_y_pct = 70"), "{saved}");
+        assert!(saved.contains("flip = true"), "{saved}");
         assert!(
             saved.contains("display_mode = \"block\" # keep mode"),
             "{saved}"

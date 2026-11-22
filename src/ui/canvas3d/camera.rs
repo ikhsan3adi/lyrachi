@@ -1,7 +1,7 @@
 use glam::camera::rh::proj::opengl as proj;
 use glam::{Mat4, Vec3};
 
-use super::{CANVAS3D_FOV_Y_DEG, CANVAS3D_PLANE_Y_OFFSET, CANVAS3D_TILT_DEG};
+use super::{CANVAS3D_FOV_Y_DEG, CANVAS3D_PLANE_Y_OFFSET};
 
 /// Perspective camera over the tilted crawl plane.
 ///
@@ -18,12 +18,12 @@ pub struct CrawlCamera {
 }
 
 impl CrawlCamera {
-    pub fn new(width: u16, height: u16) -> Self {
+    pub fn new(width: u16, height: u16, tilt_deg: f32) -> Self {
         let width_px = f32::from(width) * 2.0;
         let height_px = f32::from(height) * 4.0;
         let aspect = width_px / height_px;
         let fov = CANVAS3D_FOV_Y_DEG.to_radians();
-        let tilt = CANVAS3D_TILT_DEG.to_radians();
+        let tilt = tilt_deg.to_radians();
         Self {
             width_px,
             height_px,
@@ -62,9 +62,10 @@ mod tests {
     use glam::Vec4;
 
     use super::*;
+    use crate::ui::canvas3d::CANVAS3D_DEFAULT_TILT_DEG;
 
     fn camera() -> CrawlCamera {
-        CrawlCamera::new(120, 40)
+        CrawlCamera::new(120, 40, f32::from(CANVAS3D_DEFAULT_TILT_DEG))
     }
 
     #[test]
@@ -78,6 +79,24 @@ mod tests {
         assert!(
             spread_near > spread_far * 1.5,
             "near text must be magnified: {spread_near} vs {spread_far}"
+        );
+    }
+
+    #[test]
+    fn shallower_tilt_sits_higher_and_magnifies() {
+        let steep = CrawlCamera::new(120, 40, 60.0);
+        let shallow = CrawlCamera::new(120, 40, 45.0);
+        let (_, steep_y, _) = steep.project(0.0, 8.0, 0.0).expect("visible");
+        let (_, shallow_y, _) = shallow.project(0.0, 8.0, 0.0).expect("visible");
+        assert!(
+            shallow_y < steep_y,
+            "shallower plane point sits higher on screen: {shallow_y} vs {steep_y}"
+        );
+        let steep_spread = steep.project(1.0, 8.0, 0.0).expect("visible").0;
+        let shallow_spread = shallow.project(1.0, 8.0, 0.0).expect("visible").0;
+        assert!(
+            shallow_spread > steep_spread,
+            "shallower plane magnifies: {shallow_spread} vs {steep_spread}"
         );
     }
 
@@ -100,7 +119,7 @@ mod tests {
 
     #[test]
     fn virtual_resolution_is_two_by_four_subpixels_per_cell() {
-        let camera = CrawlCamera::new(60, 16);
+        let camera = CrawlCamera::new(60, 16, f32::from(CANVAS3D_DEFAULT_TILT_DEG));
         assert_eq!(camera_width(&camera), 120.0);
         assert_eq!(camera_height(&camera), 64.0);
     }

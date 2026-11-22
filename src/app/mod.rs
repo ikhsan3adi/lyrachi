@@ -228,6 +228,10 @@ pub async fn run(
     state.set_cylinder_annotations(config.cylinder_annotations);
     state.set_cylinder_speed_mode(config.cylinder_speed_mode);
     state.set_cylinder_entry_lead_ms(config.cylinder_entry_lead_ms);
+    state.set_canvas3d_flip(config.canvas3d_flip);
+    state.set_canvas3d_speed_pct(config.canvas3d_speed_pct);
+    state.set_canvas3d_tilt_deg(config.canvas3d_tilt_deg);
+    state.set_canvas3d_spawn_y_pct(config.canvas3d_spawn_y_pct);
     state.cylinder_speed_pct = config.cylinder_speed_pct;
     state.word_highlight = config.word_highlight;
     state.fps_active = config.fps_active;
@@ -1338,19 +1342,51 @@ fn handle_input_with_runtime(
             record_offset(state, coordinator, offsets);
             InputOutcome::default()
         }
-        KeyAction::CylinderSpeedDown => {
-            state.adjust_cylinder_speed(-10);
+        KeyAction::StageSpeedDown => {
+            adjust_stage_speed(state, -10);
             persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
-        KeyAction::CylinderSpeedUp => {
-            state.adjust_cylinder_speed(10);
+        KeyAction::StageSpeedUp => {
+            adjust_stage_speed(state, 10);
             persist_preferences(state, config_file, now);
             InputOutcome::default()
         }
-        KeyAction::CylinderSpeedReset => {
-            state.reset_cylinder_speed();
+        KeyAction::StageSpeedReset => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.reset_canvas3d_speed();
+            } else {
+                state.reset_cylinder_speed();
+            }
             persist_preferences(state, config_file, now);
+            InputOutcome::default()
+        }
+        KeyAction::StageTiltDown => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_tilt_deg(-crate::ui::canvas3d::CANVAS3D_TILT_STEP_DEG);
+                persist_preferences(state, config_file, now);
+            }
+            InputOutcome::default()
+        }
+        KeyAction::StageTiltUp => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_tilt_deg(crate::ui::canvas3d::CANVAS3D_TILT_STEP_DEG);
+                persist_preferences(state, config_file, now);
+            }
+            InputOutcome::default()
+        }
+        KeyAction::StageSpawnHigher => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_spawn_y_pct(-crate::ui::canvas3d::CANVAS3D_SPAWN_STEP_PCT);
+                persist_preferences(state, config_file, now);
+            }
+            InputOutcome::default()
+        }
+        KeyAction::StageSpawnLower => {
+            if state.effective_display_mode() == DisplayMode::Canvas3D {
+                state.adjust_canvas3d_spawn_y_pct(crate::ui::canvas3d::CANVAS3D_SPAWN_STEP_PCT);
+                persist_preferences(state, config_file, now);
+            }
             InputOutcome::default()
         }
         KeyAction::ScrollUp => {
@@ -1708,6 +1744,9 @@ fn persist_preferences(state: &mut UiState, config_file: Option<&Path>, now: Ins
         display_mode: state.display_mode,
         word_highlight: state.word_highlight,
         cylinder_speed_pct: state.cylinder_speed_pct,
+        canvas3d_speed_pct: state.canvas3d_speed_pct,
+        canvas3d_tilt_deg: state.canvas3d_tilt_deg,
+        canvas3d_spawn_y_pct: state.canvas3d_spawn_y_pct,
     };
     if let Err(error) = prefs::save_ui_prefs(config_file, prefs) {
         let message = format!("Could not save preferences: {error}");
@@ -1793,6 +1832,14 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
         .evaluate_for_status(effective_ms, state.playback)
         .waiting
         .is_some()
+}
+
+fn adjust_stage_speed(state: &mut UiState, delta_pct: i32) {
+    if state.effective_display_mode() == DisplayMode::Canvas3D {
+        state.adjust_canvas3d_speed(delta_pct);
+    } else {
+        state.adjust_cylinder_speed(delta_pct);
+    }
 }
 
 fn is_stage_mode_active(state: &UiState, clock: &PlaybackClock, mode: DisplayMode) -> bool {
@@ -2569,6 +2616,193 @@ mod tests {
             .quit
         );
         assert_eq!(state.cylinder_speed_pct, 100);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn canvas3d_speed_keys_share_cylinder_bindings() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-canvas3d-speed-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
+        let mut state = UiState::new();
+        state.display_mode = DisplayMode::Canvas3D;
+        state.set_terminal_unicode(true);
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('='))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_speed_pct, 110);
+        assert_eq!(
+            state.cylinder_speed_pct, 100,
+            "cylinder must stay untouched"
+        );
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("speed_pct = 110"), "{saved}");
+        assert!(saved.contains("[ui.canvas3d]"), "{saved}");
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('0'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_speed_pct, 100);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn canvas3d_tilt_keys_adjust_and_persist() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-canvas3d-tilt-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
+        let mut state = UiState::new();
+        state.display_mode = DisplayMode::Canvas3D;
+        state.set_terminal_unicode(true);
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('{'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_tilt_deg, 55);
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("tilt_deg = 55"), "{saved}");
+        assert!(saved.contains("[ui.canvas3d]"), "{saved}");
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('}'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_tilt_deg, 60);
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn canvas3d_spawn_keys_adjust_and_persist() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "lyrachi-canvas3d-spawn-{}-{unique}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let config_file = dir.join("config.toml");
+
+        let mut state = UiState::new();
+        state.display_mode = DisplayMode::Canvas3D;
+        state.set_terminal_unicode(true);
+        let mut coordinator = ResolveCoordinator::new();
+        let mut offsets = DebouncedOffsetWriter::new(OffsetStore::in_memory());
+        let press = |code: KeyCode| {
+            Event::Key(KeyEvent {
+                code,
+                modifiers: KeyModifiers::NONE,
+                kind: KeyEventKind::Press,
+                state: crossterm::event::KeyEventState::NONE,
+            })
+        };
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char('.'))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_spawn_y_pct, 84);
+        let saved = std::fs::read_to_string(&config_file).unwrap();
+        assert!(saved.contains("spawn_y_pct = 84"), "{saved}");
+        assert!(saved.contains("[ui.canvas3d]"), "{saved}");
+
+        assert!(
+            !handle_input(
+                &mut state,
+                &mut coordinator,
+                &mut offsets,
+                Some(&config_file),
+                Instant::now(),
+                press(KeyCode::Char(','))
+            )
+            .quit
+        );
+        assert_eq!(state.canvas3d_spawn_y_pct, 82);
 
         std::fs::remove_dir_all(&dir).unwrap();
     }
