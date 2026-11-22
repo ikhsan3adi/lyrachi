@@ -1,4 +1,5 @@
 pub mod block;
+pub mod cylinder;
 pub mod effects;
 pub mod help;
 pub(crate) mod kinetic;
@@ -38,6 +39,7 @@ pub enum DisplayMode {
     Normal,
     Block,
     Kinetic,
+    Cylinder,
 }
 
 impl DisplayMode {
@@ -46,6 +48,7 @@ impl DisplayMode {
             Self::Normal => "normal",
             Self::Block => "block",
             Self::Kinetic => "kinetic",
+            Self::Cylinder => "cylinder",
         }
     }
 
@@ -54,6 +57,7 @@ impl DisplayMode {
             "normal" => Some(Self::Normal),
             "block" => Some(Self::Block),
             "kinetic" => Some(Self::Kinetic),
+            "cylinder" => Some(Self::Cylinder),
             _ => None,
         }
     }
@@ -62,7 +66,35 @@ impl DisplayMode {
         match self {
             Self::Normal => Self::Block,
             Self::Block => Self::Kinetic,
-            Self::Kinetic => Self::Normal,
+            Self::Kinetic => Self::Cylinder,
+            Self::Cylinder => Self::Normal,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum CylinderAnnotationMode {
+    #[default]
+    Auto,
+    Show,
+    Hide,
+}
+
+impl CylinderAnnotationMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Auto => "auto",
+            Self::Show => "show",
+            Self::Hide => "hide",
+        }
+    }
+
+    pub fn from_config_name(name: &str) -> Option<Self> {
+        match name {
+            "auto" => Some(Self::Auto),
+            "show" => Some(Self::Show),
+            "hide" => Some(Self::Hide),
+            _ => None,
         }
     }
 }
@@ -108,6 +140,7 @@ pub struct UiState {
     status_bar_last_visible: StatusBarMode,
     pub terminal_unicode: bool,
     pub display_mode: DisplayMode,
+    pub cylinder_annotations: CylinderAnnotationMode,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: ResolvedStyle,
@@ -152,6 +185,7 @@ impl UiState {
             status_bar_last_visible: StatusBarMode::default(),
             terminal_unicode: true,
             display_mode: DisplayMode::Normal,
+            cylinder_annotations: CylinderAnnotationMode::Auto,
             word_highlight: true,
             fps_active: 60,
             style: ResolvedStyle::default(),
@@ -403,11 +437,20 @@ impl UiState {
     }
 
     pub fn effective_display_mode(&self) -> DisplayMode {
-        if self.terminal_unicode {
-            self.display_mode
-        } else {
-            DisplayMode::Normal
+        if !self.terminal_unicode || self.style.reduced_motion {
+            return DisplayMode::Normal;
         }
+        if self.display_mode == DisplayMode::Cylinder
+            && (self.viewport_width < cylinder::CYLINDER_MIN_WIDTH
+                || self.viewport_height < cylinder::CYLINDER_MIN_HEIGHT)
+        {
+            return DisplayMode::Normal;
+        }
+        self.display_mode
+    }
+
+    pub fn set_cylinder_annotations(&mut self, mode: CylinderAnnotationMode) {
+        self.cylinder_annotations = mode;
     }
 
     pub fn toggle_display_mode(&mut self) {
@@ -861,6 +904,7 @@ impl UiState {
 mod tests {
     use super::*;
     use crate::core::model::{LineRole, LyricLine};
+    use cylinder::{CYLINDER_MIN_HEIGHT, CYLINDER_MIN_WIDTH};
 
     fn track(granularity: SyncGranularity) -> SyncedTrack {
         SyncedTrack {
@@ -970,10 +1014,64 @@ mod tests {
         state.set_terminal_unicode(true);
 
         state.toggle_display_mode();
+        assert_eq!(state.display_mode, DisplayMode::Cylinder);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Cylinder);
+
+        state.set_terminal_unicode(false);
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        state.set_terminal_unicode(true);
+
+        state.toggle_display_mode();
         assert_eq!(state.display_mode, DisplayMode::Normal);
 
         state.toggle_word_highlight();
         assert!(!state.word_highlight);
+    }
+
+    #[test]
+    fn cylinder_mode_falls_back_to_normal_on_narrow_or_reduced_motion() {
+        let mut state = UiState::new();
+        state.display_mode = DisplayMode::Cylinder;
+        state.viewport_width = 80;
+        state.viewport_height = 24;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Cylinder);
+
+        state.viewport_width = CYLINDER_MIN_WIDTH - 1;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        state.viewport_width = CYLINDER_MIN_WIDTH;
+        state.viewport_height = CYLINDER_MIN_HEIGHT - 1;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+
+        state.viewport_width = 80;
+        state.viewport_height = 24;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Cylinder);
+
+        state.style.reduced_motion = true;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Normal);
+        state.style.reduced_motion = false;
+        assert_eq!(state.effective_display_mode(), DisplayMode::Cylinder);
+        assert_eq!(state.display_mode, DisplayMode::Cylinder);
+    }
+
+    #[test]
+    fn cylinder_annotation_mode_names_are_stable() {
+        assert_eq!(
+            CylinderAnnotationMode::default(),
+            CylinderAnnotationMode::Auto
+        );
+        assert_eq!(CylinderAnnotationMode::Auto.as_str(), "auto");
+        assert_eq!(CylinderAnnotationMode::Show.as_str(), "show");
+        assert_eq!(CylinderAnnotationMode::Hide.as_str(), "hide");
+        assert_eq!(
+            CylinderAnnotationMode::from_config_name("show"),
+            Some(CylinderAnnotationMode::Show)
+        );
+        assert_eq!(CylinderAnnotationMode::from_config_name("bogus"), None);
+
+        let mut state = UiState::new();
+        assert_eq!(state.cylinder_annotations, CylinderAnnotationMode::Auto);
+        state.set_cylinder_annotations(CylinderAnnotationMode::Hide);
+        assert_eq!(state.cylinder_annotations, CylinderAnnotationMode::Hide);
     }
 
     #[test]
@@ -982,6 +1080,7 @@ mod tests {
         assert_eq!(DisplayMode::Normal.as_str(), "normal");
         assert_eq!(DisplayMode::Block.as_str(), "block");
         assert_eq!(DisplayMode::Kinetic.as_str(), "kinetic");
+        assert_eq!(DisplayMode::Cylinder.as_str(), "cylinder");
         assert_eq!(
             DisplayMode::from_config_name("block"),
             Some(DisplayMode::Block)
@@ -989,6 +1088,10 @@ mod tests {
         assert_eq!(
             DisplayMode::from_config_name("kinetic"),
             Some(DisplayMode::Kinetic)
+        );
+        assert_eq!(
+            DisplayMode::from_config_name("cylinder"),
+            Some(DisplayMode::Cylinder)
         );
     }
 

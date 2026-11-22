@@ -371,6 +371,12 @@ fn block_word_sync() -> UiState {
     state
 }
 
+fn cylinder_word_sync() -> UiState {
+    let mut state = word_sync();
+    state.display_mode = DisplayMode::Cylinder;
+    state
+}
+
 fn block_duet_ttml() -> UiState {
     let mut state = duet_ttml();
     state.display_mode = DisplayMode::Block;
@@ -601,6 +607,102 @@ fn block_word_sync_120x40() {
         40,
         9_500,
         "120x40_block_word_sync",
+    );
+}
+
+#[test]
+fn cylinder_word_sync_60x12() {
+    snapshot(&mut cylinder_word_sync(), 60, 12, 2_500, "60x12_cylinder");
+}
+
+#[test]
+fn cylinder_word_sync_80x24() {
+    snapshot(&mut cylinder_word_sync(), 80, 24, 2_500, "80x24_cylinder");
+}
+
+#[test]
+fn cylinder_word_sync_120x40() {
+    snapshot(&mut cylinder_word_sync(), 120, 40, 2_500, "120x40_cylinder");
+}
+
+#[test]
+fn cylinder_annotations_80x24() {
+    snapshot(
+        &mut cylinder_word_sync(),
+        80,
+        24,
+        9_500,
+        "80x24_cylinder_annotations",
+    );
+}
+
+fn cylinder_contiguous() -> UiState {
+    let mut state = base_state();
+    state.display_mode = DisplayMode::Cylinder;
+    state.set_lyrics(SyncedTrack {
+        source_provider: "lrclib".to_string(),
+        source_track_id: None,
+        parser_version: lyrachi::core::model::PARSER_VERSION,
+        granularity: SyncGranularity::Line,
+        is_instrumental: false,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 1.0,
+        lines: vec![
+            line(0, 3_000, "first line of the pair", Vec::new(), Vec::new()),
+            line(
+                600,
+                3_600,
+                "second line right behind",
+                Vec::new(),
+                Vec::new(),
+            ),
+        ],
+    });
+    state
+}
+
+fn cylinder_long_line() -> UiState {
+    let mut state = base_state();
+    state.display_mode = DisplayMode::Cylinder;
+    let long_text: String = "abcdefghijklmnopqrstuvwxyz"
+        .repeat(12)
+        .chars()
+        .take(300)
+        .collect();
+    state.set_lyrics(SyncedTrack {
+        source_provider: "lrclib".to_string(),
+        source_track_id: None,
+        parser_version: lyrachi::core::model::PARSER_VERSION,
+        granularity: SyncGranularity::Line,
+        is_instrumental: false,
+        intrinsic_offset_ms: 0,
+        user_offset_ms: 0,
+        match_confidence: 1.0,
+        lines: vec![line(0, 1_000, &long_text, Vec::new(), Vec::new())],
+    });
+    state
+}
+
+#[test]
+fn cylinder_contiguous_120x40() {
+    snapshot(
+        &mut cylinder_contiguous(),
+        120,
+        40,
+        2_950,
+        "120x40_cylinder_contiguous",
+    );
+}
+
+#[test]
+fn cylinder_long_line_120x40() {
+    snapshot(
+        &mut cylinder_long_line(),
+        120,
+        40,
+        10_000,
+        "120x40_cylinder_long_line",
     );
 }
 

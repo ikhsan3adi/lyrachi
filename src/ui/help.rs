@@ -32,13 +32,6 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
 
     let width = modal_width(area.width).min(available_width);
 
-    // Borders (2) + vertical padding (2)
-    let desired_height = u16::try_from(rows.len() + 4).unwrap_or(u16::MAX);
-    let height = desired_height.min(available_height);
-
-    let popup = centered_rect(area, width, height);
-    frame.render_widget(Clear, popup);
-
     let accent = style.accent.unwrap_or(Color::Cyan);
     let content_style = if let Some(surface) = style.surface {
         Style::default().bg(surface)
@@ -46,12 +39,21 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
         Style::default()
     };
 
+    // Borders (2) + vertical padding (2)
+    let content_width = width.saturating_sub(6);
+    let mut wrapped_rows = 0usize;
     let lines: Vec<Line<'static>> = rows
         .into_iter()
         .map(|(keys, description)| {
+            let keys = format!("{keys:<key_width$}");
+            wrapped_rows = wrapped_rows.saturating_add(
+                crate::core::text::wrap_text(&format!("{keys}  {description}"), content_width)
+                    .len()
+                    .max(1),
+            );
             Line::from(vec![
                 Span::styled(
-                    format!("{keys:<key_width$}"),
+                    keys,
                     Style::default().fg(accent).add_modifier(Modifier::BOLD),
                 ),
                 Span::raw("  "),
@@ -59,6 +61,11 @@ pub fn render(frame: &mut Frame, area: Rect, style: &ResolvedStyle) {
             ])
         })
         .collect();
+    let desired_height = u16::try_from(wrapped_rows.saturating_add(4)).unwrap_or(u16::MAX);
+    let height = desired_height.min(available_height);
+
+    let popup = centered_rect(area, width, height);
+    frame.render_widget(Clear, popup);
 
     let block = Block::default()
         .style(content_style)

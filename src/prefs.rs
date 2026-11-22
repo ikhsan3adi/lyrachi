@@ -255,6 +255,22 @@ mod tests {
         fs::remove_dir_all(dir).unwrap();
     }
 
+    #[test]
+    fn saves_cylinder_display_mode() {
+        let dir = temp_dir("prefs-cylinder");
+        let path = dir.join("config.toml");
+        fs::write(&path, "[ui]\ndisplay_mode = \"normal\"\n").unwrap();
+
+        let mut saved_prefs = prefs();
+        saved_prefs.display_mode = DisplayMode::Cylinder;
+        save_ui_prefs(&path, saved_prefs).unwrap();
+        let saved = fs::read_to_string(&path).unwrap();
+
+        assert!(saved.contains("display_mode = \"cylinder\""), "{saved}");
+
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[cfg(unix)]
     #[test]
     fn keeps_symlink_and_updates_target() {

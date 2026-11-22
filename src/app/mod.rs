@@ -28,7 +28,7 @@ use crate::{
         loader::load_style_name_or_default,
     },
     ui::{
-        CandidateMenuItem, ContextMenuAction, ContextMenuView, UiModal, UiState,
+        CandidateMenuItem, ContextMenuAction, ContextMenuView, DisplayMode, UiModal, UiState,
         effects::UiEffects,
         render::{self, RenderCache},
     },
@@ -57,11 +57,12 @@ pub struct AnimationStatus {
     pub effects_active: bool,
     pub wipe_active: bool,
     pub countdown_active: bool,
+    pub cylinder_active: bool,
 }
 
 impl AnimationStatus {
     pub fn needs_frame_tick(self) -> bool {
-        self.effects_active || self.wipe_active || self.countdown_active
+        self.effects_active || self.wipe_active || self.countdown_active || self.cylinder_active
     }
 }
 
@@ -219,6 +220,7 @@ pub async fn run(
     state.set_ambiguous_width(config.ambiguous_width);
     state.set_terminal_unicode(config.unicode.is_full());
     state.display_mode = config.display_mode;
+    state.set_cylinder_annotations(config.cylinder_annotations);
     state.word_highlight = config.word_highlight;
     state.fps_active = config.fps_active;
     refresh_hidden_status_banner(&mut state, Instant::now());
@@ -287,6 +289,7 @@ pub async fn run(
             runtime.animation.effects_active = runtime.effects.is_running();
             runtime.animation.wipe_active = is_wipe_active(&state, &clock, now);
             runtime.animation.countdown_active = is_countdown_active(&state, &clock, now);
+            runtime.animation.cylinder_active = is_cylinder_active(&state, &clock);
             let wait = next_wait(&state, &clock, now, runtime.animation);
             let wait = offsets
                 .time_until_flush(now)
@@ -1751,6 +1754,9 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
     {
         return false;
     }
+    if state.effective_display_mode() == DisplayMode::Cylinder {
+        return false;
+    }
     if state.is_unsynced() || state.is_instrumental() || !state.instrumental_countdown_enabled() {
         return false;
     }
@@ -1762,6 +1768,21 @@ fn is_countdown_active(state: &UiState, clock: &PlaybackClock, now: Instant) -> 
         .evaluate_for_status(effective_ms, state.playback)
         .waiting
         .is_some()
+}
+
+fn is_cylinder_active(state: &UiState, clock: &PlaybackClock) -> bool {
+    if state.is_modal_open()
+        || state.effective_display_mode() != DisplayMode::Cylinder
+        || !matches!(clock.state(), ClockState::Playing { .. })
+    {
+        return false;
+    }
+    if state.is_unsynced() || state.is_instrumental() {
+        return false;
+    }
+    state
+        .timeline()
+        .is_some_and(|timeline| !timeline.lines.is_empty())
 }
 
 fn next_wait(
@@ -1925,7 +1946,47 @@ mod tests {
             }
             .needs_frame_tick()
         );
+        assert!(
+            AnimationStatus {
+                cylinder_active: true,
+                ..AnimationStatus::default()
+            }
+            .needs_frame_tick()
+        );
         assert!(!AnimationStatus::default().needs_frame_tick());
+    }
+
+    #[test]
+    fn cylinder_animation_requires_playing_visible_cylinder_mode() {
+        let now = Instant::now();
+        let mut clock = PlaybackClock::new();
+        clock.on_status_changed(PlaybackStatus::Playing, now);
+        let mut state = UiState::new();
+        state.set_lyrics(track());
+        state.resize(80, 24);
+        state.display_mode = DisplayMode::Cylinder;
+
+        assert!(is_cylinder_active(&state, &clock));
+        assert!(!is_countdown_active(
+            &state,
+            &clock,
+            now + Duration::from_millis(1_500)
+        ));
+
+        clock.on_status_changed(PlaybackStatus::Paused, now);
+        assert!(!is_cylinder_active(&state, &clock));
+
+        clock.on_status_changed(PlaybackStatus::Playing, now);
+        state.style.reduced_motion = true;
+        assert!(!is_cylinder_active(&state, &clock));
+
+        state.style.reduced_motion = false;
+        state.resize(59, 24);
+        assert!(!is_cylinder_active(&state, &clock));
+
+        state.resize(80, 24);
+        state.display_mode = DisplayMode::Block;
+        assert!(!is_cylinder_active(&state, &clock));
     }
 
     #[test]
@@ -2689,6 +2750,7 @@ mod tests {
                     effects_active: true,
                     wipe_active: true,
                     countdown_active: true,
+                    cylinder_active: false,
                 }
             ),
             Duration::from_secs(1)

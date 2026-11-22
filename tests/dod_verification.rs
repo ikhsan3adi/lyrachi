@@ -328,6 +328,7 @@ pub enum BenchmarkMode {
     Block,
     Kinetic,
     WipeEffects,
+    Cylinder,
 }
 
 impl BenchmarkMode {
@@ -339,8 +340,53 @@ impl BenchmarkMode {
             Self::Block => "block",
             Self::Kinetic => "kinetic",
             Self::WipeEffects => "wipe+effects",
+            Self::Cylinder => "cylinder",
         }
     }
+}
+
+#[test]
+fn dod_6b_terminal_draw_cylinder_p99_under_1_5ms_on_120x40() {
+    let fixture = include_str!("fixtures/multilingual_cjk_emoji.lrc");
+    let parsed = parse_lrc(fixture, Some(60_000)).unwrap();
+    let track = normalize_track(parsed, "local", None, 1.0, Some(60_000), 0);
+
+    let backend = TestBackend::new(120, 40);
+    let mut terminal = Terminal::new(backend).unwrap();
+    let mut state = UiState::new();
+    state.set_player(Some("mpv".to_string()));
+    state.playback = PlaybackStatus::Playing;
+    state.set_lyrics(track);
+    state.resize(120, 40);
+
+    let now = Instant::now();
+    let mut clock = PlaybackClock::new();
+    clock.on_status_changed(PlaybackStatus::Playing, now);
+    clock.on_seeked(10_500, now);
+
+    let budget_us = if cfg!(debug_assertions) {
+        10_000
+    } else {
+        1_500
+    };
+
+    let stats = draw_stats_for_mode(
+        &mut terminal,
+        &mut state,
+        &clock,
+        BenchmarkMode::Cylinder,
+        50,
+        200,
+    );
+    println!(
+        "dod_6b_terminal_draw_cylinder_120x40: p50={}us p99={}us (budget={budget_us}us)",
+        stats.p50_us, stats.p99_us
+    );
+    assert!(
+        stats.p99_us < budget_us,
+        "DoD #6b violated: cylinder Terminal::draw p99 was {} us (>= {budget_us} us) on 120x40",
+        stats.p99_us
+    );
 }
 
 struct DrawStats {
@@ -380,6 +426,7 @@ fn draw_stats_for_mode<B: ratatui::backend::Backend>(
         BenchmarkMode::Block | BenchmarkMode::WipeEffects => DisplayMode::Block,
         BenchmarkMode::Normal => DisplayMode::Normal,
         BenchmarkMode::Kinetic => DisplayMode::Kinetic,
+        BenchmarkMode::Cylinder => DisplayMode::Cylinder,
     };
     let wipe = mode == BenchmarkMode::WipeEffects;
     if wipe {

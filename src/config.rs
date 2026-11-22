@@ -13,7 +13,7 @@ use crate::style::{
     DEFAULT_STYLE_NAME,
     color::{ColorMode, parse_rgb_hint},
 };
-use crate::ui::DisplayMode;
+use crate::ui::{CylinderAnnotationMode, DisplayMode};
 
 pub const DEFAULT_GLOBAL_OFFSET_MS: i64 = -300;
 const MIN_OFFSET_MS: i64 = -30_000;
@@ -39,6 +39,7 @@ pub struct RuntimeConfig {
     pub show_header_override: Option<bool>,
     pub status_bar: StatusBarMode,
     pub display_mode: DisplayMode,
+    pub cylinder_annotations: CylinderAnnotationMode,
     pub word_highlight: bool,
     pub fps_active: u16,
     pub style: String,
@@ -64,6 +65,7 @@ impl Default for RuntimeConfig {
             show_header_override: None,
             status_bar: StatusBarMode::default(),
             display_mode: DisplayMode::Normal,
+            cylinder_annotations: CylinderAnnotationMode::Auto,
             word_highlight: true,
             fps_active: 60,
             style: DEFAULT_STYLE_NAME.to_string(),
@@ -177,7 +179,15 @@ fn apply_file(config: &mut RuntimeConfig, file: FileConfig, warnings: &mut Vec<S
         match DisplayMode::from_config_name(&name) {
             Some(mode) => config.display_mode = mode,
             None => warnings.push(format!(
-                "config: unknown ui.display_mode `{name}`; valid values: normal, block, kinetic"
+                "config: unknown ui.display_mode `{name}`; valid values: normal, block, kinetic, cylinder"
+            )),
+        }
+    }
+    if let Some(annotations) = file.ui.cylinder.and_then(|cylinder| cylinder.annotations) {
+        match CylinderAnnotationMode::from_config_name(&annotations) {
+            Some(mode) => config.cylinder_annotations = mode,
+            None => warnings.push(format!(
+                "config: unknown ui.cylinder.annotations `{annotations}`; valid values: auto, show, hide"
             )),
         }
     }
@@ -514,9 +524,16 @@ pub struct UiSection {
     pub show_header: Option<bool>,
     pub status_bar: Option<StatusBarMode>,
     pub display_mode: Option<String>,
+    pub cylinder: Option<CylinderSection>,
     pub word_highlight: Option<bool>,
     pub fps_active: Option<u16>,
     pub style: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct CylinderSection {
+    pub annotations: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
@@ -616,7 +633,7 @@ fullscreen = false
 show_header = true
 # Status bar placement: "bottom", "top", "off", or "auto"
 status_bar = "bottom"
-# Display mode: "normal", "block", or "kinetic"
+# Display mode: "normal", "block", "kinetic", or "cylinder"
 display_mode = "normal"
 # Enable word-level karaoke highlighting
 word_highlight = true
@@ -624,6 +641,10 @@ word_highlight = true
 fps_active = 60
 # Active style name or preset (e.g. "builtin:default", "builtin:dark", "builtin:aurora", "builtin:minimal")
 style = "builtin:default"
+
+[ui.cylinder]
+# Cylinder annotation rows: "auto", "show", or "hide"
+annotations = "auto"
 
 [terminal]
 # Ambiguous-width Unicode character width: 1 or 2
@@ -986,6 +1007,58 @@ allowed_origins = ["http://localhost", "chrome-extension://*", "moz-extension://
         );
 
         fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn loads_cylinder_display_mode_and_annotations() {
+        for annotations in ["auto", "show", "hide"] {
+            let path = temp_file(
+                "ui-cylinder",
+                &format!(
+                    "[ui]\ndisplay_mode = \"cylinder\"\n\n[ui.cylinder]\nannotations = \"{annotations}\"\n"
+                ),
+            );
+            let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+            assert_eq!(outcome.config.display_mode, DisplayMode::Cylinder);
+            assert_eq!(
+                outcome.config.cylinder_annotations,
+                CylinderAnnotationMode::from_config_name(annotations).unwrap()
+            );
+            assert!(outcome.warnings.is_empty());
+
+            fs::remove_file(path).unwrap();
+        }
+    }
+
+    #[test]
+    fn warns_on_unknown_cylinder_annotation_mode_and_keeps_auto() {
+        let path = temp_file(
+            "ui-cylinder-invalid",
+            "[ui.cylinder]\nannotations = \"marquee\"\n",
+        );
+        let outcome = RuntimeConfig::resolve(&path, Vec::new(), &args(&[]));
+
+        assert_eq!(
+            outcome.config.cylinder_annotations,
+            CylinderAnnotationMode::Auto
+        );
+        assert!(
+            outcome
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("ui.cylinder.annotations")
+                    && warning.contains("marquee"))
+        );
+
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn default_template_contains_cylinder_section() {
+        assert!(DEFAULT_CONFIG_TEMPLATE.contains("[ui.cylinder]"));
+        assert!(DEFAULT_CONFIG_TEMPLATE.contains("annotations = \"auto\""));
+        assert!(DEFAULT_CONFIG_TEMPLATE.contains("display_mode = \"normal\""));
     }
 
     #[test]

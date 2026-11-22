@@ -3,7 +3,6 @@ source: tests/ui_snapshots.rs
 expression: "render_state(state, width, height, effective_ms)"
 ---
                                 Yellow  Coldplay
-
           ╭ Keybindings ─────────────────────────────────────────────╮
           │                                                          │
           │  ?           Toggle help overlay                         │
@@ -11,7 +10,8 @@ expression: "render_state(state, width, height, effective_ms)"
           │  f           Toggle fullscreen                           │
           │  t           Toggle title bar                            │
           │  s           Toggle status bar                           │
-          │  m           Toggle display mode (normal/block/kinetic)  │
+          │  m           Toggle display mode                         │
+          │  (normal/block/kinetic/cylinder)                         │
           │  w           Toggle word highlight                       │
           │  Tab         Peek at hidden status bar                   │
           │  S           Cycle style preset                          │
