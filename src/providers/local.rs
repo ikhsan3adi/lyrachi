@@ -18,8 +18,13 @@ use super::{
     Tier, TrackQuery,
 };
 use crate::core::normalize::normalize_track;
+use crate::core::parse::krc::parse_krc;
 use crate::core::parse::lrc::parse_lrc;
+use crate::core::parse::qrc::parse_qrc;
+use crate::core::parse::ttml::parse_ttml;
+use crate::core::parse::yrc::parse_yrc;
 
+const LYRIC_EXTENSIONS: [&str; 6] = ["elrc", "lrc", "ttml", "krc", "qrc", "yrc"];
 const MAX_SCAN_DEPTH: usize = 16;
 pub const MAX_LOCAL_LYRIC_BYTES: u64 = 256 * 1024;
 
@@ -28,7 +33,7 @@ struct IndexedLyricFile {
     path: PathBuf,
     stem_key: String,
     artist_title_key: Option<(String, String)>,
-    is_elrc: bool,
+    tier: Tier,
 }
 
 type IndexWatchSlot = Arc<Mutex<Option<watch::Receiver<Option<Arc<Vec<IndexedLyricFile>>>>>>>;
@@ -137,13 +142,18 @@ impl LocalProvider {
         if let Some(audio_path) = query.track_url.as_deref().and_then(file_url_path)
             && let Some(stem) = audio_path.file_stem().and_then(|stem| stem.to_str())
         {
-            for extension in ["elrc", "lrc"] {
+            for extension in LYRIC_EXTENSIONS {
                 if cancel.is_cancelled() {
                     return Err(ProviderError::Cancelled);
                 }
                 let path = audio_path.with_file_name(format!("{stem}.{extension}"));
                 if file_exists(&path, cancel).await? && seen.insert(path.clone()) {
-                    results.push(build_local_summary(path, query, extension == "elrc", 1.0));
+                    results.push(build_local_summary(
+                        path,
+                        query,
+                        extension_tier(extension),
+                        1.0,
+                    ));
                 }
             }
         }
@@ -159,7 +169,7 @@ impl LocalProvider {
                     results.push(build_local_summary(
                         file.path.clone(),
                         query,
-                        file.is_elrc,
+                        file.tier,
                         confidence,
                     ));
                 }
@@ -242,7 +252,7 @@ impl LocalProvider {
             return Ok(None);
         };
 
-        for extension in ["elrc", "lrc"] {
+        for extension in LYRIC_EXTENSIONS {
             let path = audio_path.with_file_name(format!("{stem}.{extension}"));
             if let Some(answer) =
                 read_and_parse_local(&path, query.duration_ms, query.user_offset_ms, 1.0, cancel)
@@ -321,7 +331,7 @@ fn collect_index_matches<'a>(
                 return None;
             };
 
-            let ext_rank = u8::from(!file.is_elrc);
+            let ext_rank = u8::from(file.tier != Tier::Word);
             Some((rank, ext_rank, file))
         })
         .collect::<Vec<_>>();
@@ -335,10 +345,17 @@ fn collect_index_matches<'a>(
     matches
 }
 
+fn extension_tier(extension: &str) -> Tier {
+    match extension.to_ascii_lowercase().as_str() {
+        "lrc" => Tier::Line,
+        _ => Tier::Word,
+    }
+}
+
 fn build_local_summary(
     path: PathBuf,
     query: &TrackQuery,
-    is_elrc: bool,
+    tier: Tier,
     confidence: f32,
 ) -> CandidateSummary {
     let stem = path
@@ -355,7 +372,7 @@ fn build_local_summary(
         artist: (!query.artist.is_empty()).then(|| query.artist.clone()),
         album: query.album.clone(),
         duration_ms: query.duration_ms,
-        tier: if is_elrc { Tier::Word } else { Tier::Line },
+        tier,
         confidence,
         local_path: Some(path),
         browse_hint: None,
@@ -387,7 +404,34 @@ async fn read_and_parse_local(
     let Some(content) = read_lyric_text(path, cancel).await? else {
         return Ok(None);
     };
-    match parse_lrc(&content, duration_ms) {
+    let extension = path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .map(|extension| extension.to_ascii_lowercase())
+        .unwrap_or_default();
+    let parsed = match extension.as_str() {
+        "ttml" => match parse_ttml(&content, Provider::Local.as_str()) {
+            Ok(mut track) => {
+                track.match_confidence = confidence;
+                track.user_offset_ms = user_offset_ms;
+                track.source_track_id = Some(path.to_string_lossy().into_owned());
+                if track.is_instrumental || !track.lines.is_empty() {
+                    return Ok(Some(ProviderAnswer::new(Provider::Local, track)));
+                }
+                warn!(path = %path.display(), "local lyric file produced no usable lines");
+                return Ok(None);
+            }
+            Err(error) => {
+                warn!(%error, path = %path.display(), "invalid local lyric file");
+                return Ok(None);
+            }
+        },
+        "krc" => parse_krc(&content, duration_ms),
+        "qrc" => parse_qrc(&content, duration_ms),
+        "yrc" => parse_yrc(&content, duration_ms),
+        _ => parse_lrc(&content, duration_ms),
+    };
+    match parsed {
         Ok(parsed) => {
             let track = normalize_track(
                 parsed,
@@ -601,16 +645,17 @@ fn build_indexed_file(path: PathBuf) -> Option<IndexedLyricFile> {
             )
         })
         .filter(|(artist, title)| !artist.is_empty() && !title.is_empty());
-    let is_elrc = path
+    let tier = path
         .extension()
         .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| extension.eq_ignore_ascii_case("elrc"));
+        .map(extension_tier)
+        .unwrap_or(Tier::Line);
 
     Some(IndexedLyricFile {
         path,
         stem_key,
         artist_title_key,
-        is_elrc,
+        tier,
     })
 }
 
@@ -641,7 +686,8 @@ fn is_lyric_file(path: &Path) -> bool {
     path.extension()
         .and_then(|extension| extension.to_str())
         .is_some_and(|extension| {
-            extension.eq_ignore_ascii_case("lrc") || extension.eq_ignore_ascii_case("elrc")
+            let extension = extension.to_ascii_lowercase();
+            LYRIC_EXTENSIONS.contains(&extension.as_str())
         })
 }
 
@@ -669,7 +715,7 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
-    use crate::core::model::SyncGranularity;
+    use crate::core::model::{AnnotationKind, LineRole, SyncGranularity};
     use crate::media::TrackMeta;
 
     fn temp_dir(name: &str) -> PathBuf {
@@ -784,6 +830,60 @@ mod tests {
 
         assert_eq!(track.track.granularity, SyncGranularity::Word);
         assert_eq!(track.track.lines[0].words.len(), 3);
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parses_ttml_sidecar_with_background_vocals() {
+        let dir = temp_dir("ttml-sidecar");
+        std::fs::write(
+            dir.join("Yellow.ttml"),
+            include_str!("../../tests/fixtures/sample_syllable.ttml"),
+        )
+        .unwrap();
+
+        let track = LocalProvider::with_dirs(vec![dir.clone()])
+            .find(&query("Yellow", "", None))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.track.source_provider, "local");
+        assert_eq!(track.track.granularity, SyncGranularity::Syllable);
+        assert!(
+            track
+                .track
+                .lines
+                .iter()
+                .any(|line| line.role == LineRole::BackgroundVocal)
+        );
+        assert!(track.track.lines.iter().any(|line| {
+            line.annotations
+                .iter()
+                .any(|annotation| annotation.kind == AnnotationKind::Background)
+        }));
+
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[tokio::test]
+    async fn parses_krc_sidecar() {
+        let dir = temp_dir("krc-sidecar");
+        std::fs::write(
+            dir.join("Yellow.krc"),
+            "[1000,2000]<0,500,0>Hel<500,500,0>lo <1000,1000,0>you\n",
+        )
+        .unwrap();
+
+        let track = LocalProvider::with_dirs(vec![dir.clone()])
+            .find(&query("Yellow", "", None))
+            .await
+            .unwrap()
+            .unwrap();
+
+        assert_eq!(track.track.granularity, SyncGranularity::Syllable);
+        assert_eq!(track.track.lines[0].text, "Hello you");
 
         std::fs::remove_dir_all(dir).unwrap();
     }
