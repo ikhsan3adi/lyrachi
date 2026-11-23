@@ -187,7 +187,7 @@ fn backup_corrupt(path: &Path) -> Result<PathBuf, CacheError> {
         .map_or(0, |duration| duration.as_millis());
     let file_name = path
         .file_name()
-        .map_or_else(|| "lyrics.db".into(), |name| name.to_os_string());
+        .map_or_else(|| "lyrics.db".into(), std::ffi::OsStr::to_os_string);
     let backup_name = format!("{}.corrupt.{stamp}", file_name.to_string_lossy());
     let backup = path.with_file_name(backup_name);
 
@@ -229,7 +229,7 @@ fn remove_old_backups(path: &Path) -> Result<(), CacheError> {
 fn sidecar_path(path: &Path, suffix: &str) -> PathBuf {
     let mut name = path
         .file_name()
-        .map_or_else(|| "lyrics.db".into(), |name| name.to_os_string());
+        .map_or_else(|| "lyrics.db".into(), std::ffi::OsStr::to_os_string);
     name.push(suffix);
     path.with_file_name(name)
 }

@@ -77,7 +77,7 @@ const HIGHLIGHT_TRAIL_MAX: u16 = 32;
 const ANIMATION_EFFECTS_MAX: usize = 8;
 const ANIMATION_EFFECT_DURATION_MAX_MS: u32 = 5_000;
 
-const PRESET_DEFAULT_TOML: &str = r##"
+const PRESET_DEFAULT_TOML: &str = r#"
 schema_version = 1
 
 [meta]
@@ -136,7 +136,7 @@ show = true
 [big_text]
 max_size = "auto"
 overflow = "shrink"
-"##;
+"#;
 
 const PRESET_DARK_TOML: &str = r##"
 schema_version = 1

@@ -80,7 +80,7 @@ pub struct AppRuntime {
     pub styles_dir: Option<PathBuf>,
     pub color_capability: ColorCapability,
     pub bg_blend_hint: Option<(u8, u8, u8)>,
-    pub _watcher: Option<notify::RecommendedWatcher>,
+    pub watcher: Option<notify::RecommendedWatcher>,
     menu_cancel: Option<CancellationToken>,
     menu_request_id: u64,
     preference_revision: u64,
@@ -110,7 +110,7 @@ impl Default for AppRuntime {
             styles_dir: None,
             color_capability: ColorCapability::TrueColor,
             bg_blend_hint: None,
-            _watcher: None,
+            watcher: None,
             menu_cancel: None,
             menu_request_id: 0,
             preference_revision: 0,
@@ -262,7 +262,7 @@ pub async fn run(
                 (None, None)
             }
         };
-    runtime._watcher = watcher;
+    runtime.watcher = watcher;
     let cancel = CancellationToken::new();
     let player_filter = config.player_filter.clone();
     let monitor_cancel = cancel.clone();
@@ -1311,16 +1311,15 @@ fn handle_input_with_runtime(
 
     match action {
         KeyAction::Quit => InputOutcome::quit(),
-        KeyAction::Refetch => match coordinator.force_refetch_current_track() {
-            Some(plan) => {
+        KeyAction::Refetch => {
+            if let Some(plan) = coordinator.force_refetch_current_track() {
                 state.refetching = true;
                 InputOutcome::refetch(plan)
-            }
-            None => {
+            } else {
                 state.show_banner_as("No track to refetch", BannerSeverity::Warning, now);
                 InputOutcome::default()
             }
-        },
+        }
         KeyAction::ToggleFullscreen => {
             state.toggle_fullscreen();
             persist_preferences(state, config_file, now);
@@ -1645,16 +1644,13 @@ fn handle_menu_select(
         Selection::Action(ContextMenuAction::ResetPreferredSource) => {
             state.pinned_source_label = None;
             state.close_modal_at(now);
-            match coordinator.force_refetch_current_track() {
-                Some(plan) => {
-                    state.refetching = true;
-                    state.show_banner("Preferred source reset", now);
-                    InputOutcome::menu(MenuCommand::ClearPinAndRefetch(plan))
-                }
-                None => {
-                    state.show_banner_as("No track to reset", BannerSeverity::Warning, now);
-                    InputOutcome::menu(MenuCommand::CancelMenu)
-                }
+            if let Some(plan) = coordinator.force_refetch_current_track() {
+                state.refetching = true;
+                state.show_banner("Preferred source reset", now);
+                InputOutcome::menu(MenuCommand::ClearPinAndRefetch(plan))
+            } else {
+                state.show_banner_as("No track to reset", BannerSeverity::Warning, now);
+                InputOutcome::menu(MenuCommand::CancelMenu)
             }
         }
         Selection::Action(ContextMenuAction::TogglePinStyle) => {
@@ -4240,7 +4236,7 @@ prefix = "> "
         let mut runtime = AppRuntime {
             base_style_name: "live".to_string(),
             styles_dir: Some(dir.clone()),
-            _watcher: watcher,
+            watcher,
             ..AppRuntime::default()
         };
         apply_active_style(&mut state, &runtime);

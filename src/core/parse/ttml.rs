@@ -285,7 +285,7 @@ fn append_normalized(output: &mut String, raw: &str) {
 fn collect_text(node: Node<'_, '_>) -> Option<String> {
     let mut text = String::new();
 
-    for child in node.descendants().filter(|node| node.is_text()) {
+    for child in node.descendants().filter(Node::is_text) {
         if let Some(raw) = child.text() {
             append_normalized(&mut text, raw);
         }

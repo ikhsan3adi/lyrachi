@@ -235,153 +235,16 @@ impl Worker {
     }
 
     fn lookup(&mut self, track_key: &TrackKey, now: i64) -> Result<CacheLookup, CacheError> {
-        let negative_providers = {
-            let mut statement = self.connection.prepare(
-                "SELECT provider FROM negative_cache
-                 WHERE track_key = ?1 AND expires_at > ?2",
-            )?;
-            let rows = statement.query_map(params![track_key.as_slice(), now], |row| {
-                row.get::<_, String>(0)
-            })?;
-            let mut providers = HashSet::new();
-            for row in rows {
-                let provider_name = match row {
-                    Ok(name) => name,
-                    Err(error) => {
-                        warn!(%error, "failed to read negative cache row");
-                        continue;
-                    }
-                };
-                if let Some(provider) = ProviderId::from_cache_name(&provider_name) {
-                    providers.insert(provider);
-                }
-            }
-            providers
-        };
+        let negative_providers = self.negative_providers(track_key, now)?;
 
         let preference = self.get_track_preference(track_key)?;
-        if let Some(ref pref) = preference
-            && let Some(ref payload) = pref.pinned_payload_json
-        {
-            match serde_json::from_slice::<SyncedTrack>(payload) {
-                Ok(mut track) if track.parser_version == PARSER_VERSION => {
-                    track.user_offset_ms = 0;
-                    let provider = pref
-                        .provider()
-                        .or_else(|| ProviderId::from_cache_name(&track.source_provider))
-                        .unwrap_or(ProviderId::Lrclib);
-                    let tier = Tier::from_track(&track);
-                    let confidence = finite_confidence(track.match_confidence);
-                    let answer = ProviderAnswer {
-                        provider,
-                        tier,
-                        confidence,
-                        track,
-                    };
-                    return Ok(CacheLookup {
-                        answer: Some(answer),
-                        needs_upgrade: false,
-                        negative_providers,
-                        is_pinned: true,
-                        preference,
-                    });
-                }
-                Ok(_) => {
-                    warn!("ignoring pinned lyric payload with incompatible parser version");
-                }
-                Err(error) => {
-                    warn!(%error, "ignoring invalid pinned lyric payload");
-                }
-            }
+        if let Some(lookup) = self.pinned_lookup(&preference, &negative_providers) {
+            return Ok(lookup);
         }
 
         let preferred_provider = preference.as_ref().and_then(TrackPreference::provider);
         let cutoff = now.saturating_sub(CACHE_MAX_ENTRY_AGE_SECS);
-        let best = {
-            let mut statement = self.connection.prepare(
-                "SELECT provider, parser_version, confidence, payload_json, last_accessed_at, upgrade_after
-                 FROM lyric_entries
-                 WHERE track_key = ?1",
-            )?;
-            let rows = statement.query_map(params![track_key.as_slice()], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, i64>(1)?,
-                    row.get::<_, f64>(2)?,
-                    row.get::<_, Vec<u8>>(3)?,
-                    row.get::<_, i64>(4)?,
-                    row.get::<_, Option<i64>>(5)?,
-                ))
-            })?;
-
-            let mut best: Option<(ProviderAnswer, i64, Option<i64>)> = None;
-            for row in rows {
-                let (
-                    provider_name,
-                    parser_version,
-                    confidence,
-                    payload,
-                    last_accessed_at,
-                    upgrade_after,
-                ) = match row {
-                    Ok(row) => row,
-                    Err(error) => {
-                        warn!(%error, "failed to read cached lyric row");
-                        continue;
-                    }
-                };
-
-                if parser_version != i64::from(PARSER_VERSION) || last_accessed_at < cutoff {
-                    continue;
-                }
-
-                let Some(provider) = ProviderId::from_cache_name(&provider_name) else {
-                    warn!(%provider_name, "ignoring cached lyric with empty provider");
-                    continue;
-                };
-                let mut track: SyncedTrack = match serde_json::from_slice(&payload) {
-                    Ok(track) => track,
-                    Err(error) => {
-                        warn!(%provider_name, %error, "ignoring invalid cached lyric payload");
-                        continue;
-                    }
-                };
-                if track.parser_version != PARSER_VERSION {
-                    continue;
-                }
-                track.user_offset_ms = 0;
-
-                let confidence = finite_confidence(confidence as f32);
-                let answer = ProviderAnswer {
-                    provider,
-                    tier: Tier::from_track(&track),
-                    confidence,
-                    track,
-                };
-
-                let should_replace = match best.as_ref() {
-                    None => true,
-                    Some((current_best, _, _)) => {
-                        if preferred_provider.as_ref() == Some(&answer.provider)
-                            && preferred_provider.as_ref() != Some(&current_best.provider)
-                        {
-                            true
-                        } else if preferred_provider.as_ref() == Some(&current_best.provider)
-                            && preferred_provider.as_ref() != Some(&answer.provider)
-                        {
-                            false
-                        } else {
-                            is_better(&answer, Some(current_best))
-                        }
-                    }
-                };
-
-                if should_replace {
-                    best = Some((answer, last_accessed_at, upgrade_after));
-                }
-            }
-            best
-        };
+        let best = self.best_answer(track_key, cutoff, preferred_provider)?;
 
         let Some((answer, last_accessed_at, upgrade_after)) = best else {
             return Ok(CacheLookup {
@@ -402,6 +265,169 @@ impl Worker {
             is_pinned: false,
             preference,
         })
+    }
+
+    fn negative_providers(
+        &mut self,
+        track_key: &TrackKey,
+        now: i64,
+    ) -> Result<HashSet<ProviderId>, CacheError> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider FROM negative_cache
+             WHERE track_key = ?1 AND expires_at > ?2",
+        )?;
+        let rows = statement.query_map(params![track_key.as_slice(), now], |row| {
+            row.get::<_, String>(0)
+        })?;
+        let mut providers = HashSet::new();
+        for row in rows {
+            let provider_name = match row {
+                Ok(name) => name,
+                Err(error) => {
+                    warn!(%error, "failed to read negative cache row");
+                    continue;
+                }
+            };
+            if let Some(provider) = ProviderId::from_cache_name(&provider_name) {
+                providers.insert(provider);
+            }
+        }
+        Ok(providers)
+    }
+
+    /// A pinned payload short-circuits the race: parse it and hand it back as
+    /// the answer, or fall through to the normal lookup when it is stale or
+    /// unreadable.
+    fn pinned_lookup(
+        &self,
+        preference: &Option<TrackPreference>,
+        negative_providers: &HashSet<ProviderId>,
+    ) -> Option<CacheLookup> {
+        let pref = preference.as_ref()?;
+        let payload = pref.pinned_payload_json.as_ref()?;
+        match serde_json::from_slice::<SyncedTrack>(payload) {
+            Ok(mut track) if track.parser_version == PARSER_VERSION => {
+                track.user_offset_ms = 0;
+                let provider = pref
+                    .provider()
+                    .or_else(|| ProviderId::from_cache_name(&track.source_provider))
+                    .unwrap_or(ProviderId::Lrclib);
+                let tier = Tier::from_track(&track);
+                let confidence = finite_confidence(track.match_confidence);
+                let answer = ProviderAnswer {
+                    provider,
+                    track,
+                    tier,
+                    confidence,
+                };
+                Some(CacheLookup {
+                    answer: Some(answer),
+                    needs_upgrade: false,
+                    negative_providers: negative_providers.clone(),
+                    is_pinned: true,
+                    preference: preference.clone(),
+                })
+            }
+            Ok(_) => {
+                warn!("ignoring pinned lyric payload with incompatible parser version");
+                None
+            }
+            Err(error) => {
+                warn!(%error, "ignoring invalid pinned lyric payload");
+                None
+            }
+        }
+    }
+
+    fn best_answer(
+        &self,
+        track_key: &TrackKey,
+        cutoff: i64,
+        preferred_provider: Option<Provider>,
+    ) -> Result<Option<(ProviderAnswer, i64, Option<i64>)>, CacheError> {
+        let mut statement = self.connection.prepare(
+            "SELECT provider, parser_version, confidence, payload_json, last_accessed_at, upgrade_after
+             FROM lyric_entries
+             WHERE track_key = ?1",
+        )?;
+        let rows = statement.query_map(params![track_key.as_slice()], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, f64>(2)?,
+                row.get::<_, Vec<u8>>(3)?,
+                row.get::<_, i64>(4)?,
+                row.get::<_, Option<i64>>(5)?,
+            ))
+        })?;
+
+        let mut best: Option<(ProviderAnswer, i64, Option<i64>)> = None;
+        for row in rows {
+            let (
+                provider_name,
+                parser_version,
+                confidence,
+                payload,
+                last_accessed_at,
+                upgrade_after,
+            ) = match row {
+                Ok(row) => row,
+                Err(error) => {
+                    warn!(%error, "failed to read cached lyric row");
+                    continue;
+                }
+            };
+
+            if parser_version != i64::from(PARSER_VERSION) || last_accessed_at < cutoff {
+                continue;
+            }
+
+            let Some(provider) = ProviderId::from_cache_name(&provider_name) else {
+                warn!(%provider_name, "ignoring cached lyric with empty provider");
+                continue;
+            };
+            let mut track: SyncedTrack = match serde_json::from_slice(&payload) {
+                Ok(track) => track,
+                Err(error) => {
+                    warn!(%provider_name, %error, "ignoring invalid cached lyric payload");
+                    continue;
+                }
+            };
+            if track.parser_version != PARSER_VERSION {
+                continue;
+            }
+            track.user_offset_ms = 0;
+
+            let confidence = finite_confidence(confidence as f32);
+            let answer = ProviderAnswer {
+                provider,
+                tier: Tier::from_track(&track),
+                confidence,
+                track,
+            };
+
+            let should_replace = match best.as_ref() {
+                None => true,
+                Some((current_best, _, _)) => {
+                    if preferred_provider.as_ref() == Some(&answer.provider)
+                        && preferred_provider.as_ref() != Some(&current_best.provider)
+                    {
+                        true
+                    } else if preferred_provider.as_ref() == Some(&current_best.provider)
+                        && preferred_provider.as_ref() != Some(&answer.provider)
+                    {
+                        false
+                    } else {
+                        is_better(&answer, Some(current_best))
+                    }
+                }
+            };
+
+            if should_replace {
+                best = Some((answer, last_accessed_at, upgrade_after));
+            }
+        }
+        Ok(best)
     }
 
     fn store(
