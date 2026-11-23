@@ -169,9 +169,17 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Roadmap
 
-- **Windows**: a System Media Transport Controls backend and Windows CI.
-- **macOS**: a Music.app and Spotify backend with permission fallbacks, plus macOS CI.
-- **After that**: more visual work: richer effects, new display modes, and broader font and block-character coverage for CJK and other scripts. Artwork-driven theming and a beat-synced visualizer are also on the list. The final stretch is benchmark and snapshot polish for a stable release.
+- **Windows**: a native media backend with accurate clock-drift correction,
+  plus a Windows CI runner.
+- **macOS**: a Music.app and Spotify backend with adaptive polling and
+  graceful permission fallbacks, plus a macOS CI runner.
+- **Stable release**: render benchmarks and UI snapshots finalized for every
+  display mode.
+
+After that, the visual era: full bitmap font coverage for CJK and other
+scripts in the block and cylinder modes, broader visual and UI polish, more
+built-in color schemes, and album artwork with dynamic accent colors. A
+spectrum visualizer and beat-synced animation are planned further out.
 
 ## Credits
 
