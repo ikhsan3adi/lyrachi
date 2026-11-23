@@ -176,11 +176,16 @@ impl PlaybackClock {
             ClockState::Playing {
                 anchor_pos_ms,
                 anchor_instant,
+                last_polled_ms,
                 stale_poll_count,
                 ..
             } => {
                 *anchor_pos_ms = new_pos_ms;
                 *anchor_instant = now;
+                // A seek invalidates the stale-poll baseline: the next poll
+                // must be trusted even if it repeats the pre-seek value, or a
+                // player with a frozen timeline could never re-anchor us.
+                *last_polled_ms = None;
                 *stale_poll_count = 0;
             }
             ClockState::Paused { position_ms } => *position_ms = new_pos_ms,
@@ -280,6 +285,26 @@ mod tests {
             } => (*anchor_pos_ms, *anchor_instant),
             _ => panic!("clock is not playing"),
         }
+    }
+
+    #[test]
+    fn a_poll_repeating_the_pre_seek_value_still_reanchors() {
+        let base = Instant::now();
+        let mut clock = playing_clock(base, 90_000);
+
+        // Confirm the extrapolated position once, arming the stale baseline.
+        clock.on_position_poll_with_sample_age(92_242, Duration::ZERO, None, at(base, 2_242));
+        assert_eq!(clock.raw_position_at(at(base, 2_242)), 92_242);
+
+        // A spurious reset (e.g. a track metadata glitch) throws the clock
+        // back to the start of the track.
+        clock.on_seeked(0, at(base, 3_000));
+
+        // The player's timeline is frozen at the pre-seek value. The poll
+        // must be trusted after the seek instead of being swallowed as stale.
+        clock.on_position_poll_with_sample_age(92_242, Duration::ZERO, None, at(base, 3_500));
+        assert_eq!(clock.raw_position_at(at(base, 3_500)), 92_242);
+        assert_eq!(clock.raw_position_at(at(base, 4_000)), 92_742);
     }
 
     #[test]

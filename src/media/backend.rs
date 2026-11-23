@@ -8,6 +8,8 @@ use tokio_util::sync::CancellationToken;
 
 use crate::media::composite::CompositeBackend;
 use crate::media::mpd::MpdBackend;
+#[cfg(target_os = "windows")]
+use crate::media::smtc::SmtcBackend;
 use crate::media::webnowplaying::WebNowPlayingBackend;
 use crate::media::{BackendKind, MediaConfig, MediaError, MediaEvent, MediaSnapshot};
 
@@ -115,6 +117,11 @@ pub fn default_backend(media: &MediaConfig) -> Arc<dyn MediaBackend> {
     ))]
     if selected(BackendKind::Mpris) {
         backends.push(Arc::new(MprisBackend));
+    }
+
+    #[cfg(target_os = "windows")]
+    if selected(BackendKind::Smtc) {
+        backends.push(Arc::new(SmtcBackend));
     }
 
     if selected(BackendKind::Mpd) && media.mpd.enabled {

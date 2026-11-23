@@ -465,6 +465,48 @@ pub async fn run_dump_events(
     Ok(())
 }
 
+/// `lyrachi debug smtc`: dump every live SMTC session for debugging and for
+/// collecting verified AUMIDs.
+#[cfg(target_os = "windows")]
+pub async fn run_debug_smtc() -> color_eyre::Result<()> {
+    let sessions = crate::media::smtc::dump_sessions().await?;
+    if sessions.is_empty() {
+        println!("no SMTC session");
+        return Ok(());
+    }
+    for session in sessions {
+        println!("{}", session.aumid);
+        println!("  status:       {}", session.status);
+        match &session.title {
+            Some(title) => println!("  title:        {title}"),
+            None => println!("  title:        -"),
+        }
+        match session.position_ms {
+            Some(position_ms) => println!("  position:     {position_ms} ms"),
+            None => println!("  position:     -"),
+        }
+        match session.end_ms {
+            Some(end_ms) => println!("  end:          {end_ms} ms"),
+            None => println!("  end:          -"),
+        }
+        match session.last_updated_age {
+            Some(age) => println!("  last update:  {:.1}s ago", age.as_secs_f64()),
+            None => println!("  last update:  -"),
+        }
+        if !session.timeline_reported {
+            println!("  timeline:     not reported by this player");
+        }
+        println!();
+    }
+    Ok(())
+}
+
+/// `lyrachi debug smtc` on platforms without SMTC.
+#[cfg(not(target_os = "windows"))]
+pub async fn run_debug_smtc() -> color_eyre::Result<()> {
+    Err(color_eyre::eyre::eyre!("smtc is only available on Windows"))
+}
+
 pub fn draw_frame<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,

@@ -370,6 +370,7 @@ mod tests {
     #[test]
     fn status_bar_merges_playback_mode_source_and_system() {
         let mut state = UiState::new();
+        state.backend = crate::media::BackendKind::Mpris;
         state.set_player(Some("mpv".to_string()));
         state.playback = PlaybackStatus::Playing;
         state.set_lyrics(sample_track(SyncGranularity::Word, false));

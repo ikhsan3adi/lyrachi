@@ -73,6 +73,17 @@ pub enum Command {
         #[command(subcommand)]
         action: ConfigAction,
     },
+    /// Inspect live media sessions for debugging.
+    Debug {
+        #[command(subcommand)]
+        target: DebugTarget,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]
+pub enum DebugTarget {
+    /// Dump every System Media Transport Controls session (Windows).
+    Smtc,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]

@@ -15,6 +15,8 @@ pub mod mpd;
     target_os = "dragonfly"
 ))]
 pub mod mpris;
+#[cfg(any(target_os = "windows", test))]
+pub mod smtc;
 pub mod webnowplaying;
 
 pub use backend::{BoxFuture, MediaBackend};
@@ -127,7 +129,26 @@ impl MediaError {
     }
 }
 
+// Only verified AUMIDs; collect more with `lyrachi debug smtc` before adding entries.
+fn aumid_friendly_name(aumid: &str) -> Option<&'static str> {
+    const FRIENDLY: &[(&str, &str)] = &[
+        ("Microsoft.ZuneMusic", "media-player"),
+        ("SpotifyMusic", "spotify"),
+    ];
+    let (package, app_id) = aumid.split_once('!')?;
+    // Package family is "Name_PublisherHash"; the PRAID after '!' may differ from the name.
+    let package_name = package.rsplit_once('_').map_or(package, |(name, _)| name);
+    FRIENDLY
+        .iter()
+        .find(|(key, _)| app_id.eq_ignore_ascii_case(key) || package_name.eq_ignore_ascii_case(key))
+        .map(|(_, name)| *name)
+}
+
 pub fn player_short_name(id: &str) -> &str {
+    if let Some((_, app_id)) = id.split_once('!') {
+        // Packaged AppId may contain dots (Microsoft.ZuneMusic), so no dot split here.
+        return aumid_friendly_name(id).unwrap_or(app_id);
+    }
     let short = id.strip_prefix(MPRIS_BUS_PREFIX).unwrap_or(id);
     short.split('.').next().unwrap_or(short)
 }
@@ -202,6 +223,7 @@ impl PlayerKind {
                 | "harmonoid"
                 | "supersonic"
                 | "music"
+                | "media-player"
                 | "apple-music"
                 | "foobar2000"
                 | "cantata"
@@ -312,17 +334,32 @@ mod tests {
     }
 
     #[test]
+    fn packaged_aumids_map_to_friendly_names() {
+        assert_eq!(
+            player_short_name("SpotifyAB.SpotifyMusic_zpdnkdrmxy60w!SpotifyMusic"),
+            "spotify"
+        );
+        assert_eq!(
+            player_short_name("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"),
+            "media-player"
+        );
+        assert_eq!(
+            PlayerKind::from_id("Microsoft.ZuneMusic_8wekyb3d8bbwe!Microsoft.ZuneMusic"),
+            PlayerKind::Native
+        );
+        // Unmapped packaged apps keep their PRAID without a dot split.
+        assert_eq!(
+            player_short_name("SomeApp_abc123!SomeApp.Player"),
+            "SomeApp.Player"
+        );
+    }
+
+    #[test]
     fn backend_kind_reports_platform_support() {
         let backend = BackendKind::current();
-        assert_eq!(backend.is_supported(), backend == BackendKind::Mpris);
-        assert_eq!(
-            backend.as_str(),
-            if backend.is_supported() {
-                "mpris"
-            } else {
-                "unsupported"
-            }
-        );
+        assert!(backend.is_supported(), "{}", backend.as_str());
+        assert_ne!(backend.as_str(), "unsupported");
+        assert_eq!(backend, BackendKind::from_name(backend.as_str()).unwrap());
         assert_eq!(BackendKind::from_name("mpris"), Some(BackendKind::Mpris));
         assert_eq!(BackendKind::from_name("mpd"), Some(BackendKind::Mpd));
         assert_eq!(

@@ -21,6 +21,17 @@ jobs:
       - run: cargo test --all-features
       - run: cargo test --no-default-features
 
+  # Dormant until the two Windows-failing providers::local tests are fixed.
+  test-windows:
+    if: false
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          toolchain: 1.89.0
+      - run: cargo test --all-features
+
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}

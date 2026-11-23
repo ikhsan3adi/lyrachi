@@ -1,6 +1,6 @@
 //! Lyrachi: terminal lyrics for active media players.
 
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 pub mod app;
 pub mod cache;

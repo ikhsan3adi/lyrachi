@@ -5,7 +5,7 @@ use color_eyre::Result;
 use lyrachi::{
     app,
     cache::CacheHandle,
-    cli::{Args, Command},
+    cli::{Args, Command, DebugTarget},
     config::RuntimeConfig,
     logging,
     paths::{AppPaths, PathOverrides},
@@ -34,6 +34,13 @@ async fn main() -> Result<()> {
             Some(&paths.styles_dir),
         )
         .map_err(|err| color_eyre::eyre::eyre!(err));
+    }
+
+    if let Some(Command::Debug {
+        target: DebugTarget::Smtc,
+    }) = args.command
+    {
+        return app::run_debug_smtc().await;
     }
 
     let outcome =

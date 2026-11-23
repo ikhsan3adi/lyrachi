@@ -52,10 +52,11 @@ It listens to your media player through standard interfaces, resolves lyrics fro
 Playback comes from the player, not from Lyrachi. Supported today:
 
 - **MPRIS** on Linux and the BSDs: any player that implements the standard (mpv, Spotify desktop, Firefox, Chromium, Strawberry, and most others).
+- **SMTC** on Windows 10 (1809+) and Windows 11: any app that reports to System Media Transport Controls — Spotify desktop, Media Player, browsers, and most native players. Run `lyrachi debug smtc` to list the sessions Lyrachi can see.
 - **MPD** over TCP, disabled by default and enabled under `[media.mpd]`.
 - **WebNowPlaying**: a local WebSocket bridge for the browser extension, enabled under `[media.webnowplaying]`.
 
-Windows (System Media Transport Controls) and macOS support is planned; see the roadmap below.
+macOS support is planned; see the roadmap below.
 
 ## Lyrics sources
 
@@ -161,7 +162,16 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Limitations
 
-- Windows and macOS have no media backend yet; the TUI reports no player there.
+- macOS has no media backend yet; the TUI reports no player there.
+- On Windows, Lyrachi follows whole SMTC sessions: it cannot tell two browser
+  tabs apart, and players that never refresh their timeline report a stale
+  sample age.
+- On Windows, browsers only carry a playback position when the website pushes
+  one (`mediaSession.setPositionState`). Sites that set it once at play start
+  leave the position frozen, and sites that never set it report zero, so
+  Lyrachi starts from that stale value instead of the real one. Seek or
+  pause-resume once to re-anchor, or use the WebNowPlaying extension, which
+  reports the position live.
 - Online providers need network access. `--offline` or `[providers] network = false` restricts Lyrachi to local files.
 - Input is bounded rather than truncated: lyric files up to 256 KiB, HTTP bodies up to 512 KiB, 2,000 lines, and 16,000 word tokens per track.
 - The per-track and global offsets are clamped to ±30 seconds.
@@ -169,8 +179,7 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Roadmap
 
-- **Windows**: a native media backend with accurate clock-drift correction,
-  plus a Windows CI runner.
+- **Windows**: a Windows CI runner to keep the SMTC backend green.
 - **macOS**: a Music.app and Spotify backend with adaptive polling and
   graceful permission fallbacks, plus a macOS CI runner.
 - **Stable release**: render benchmarks and UI snapshots finalized for every
