@@ -152,6 +152,7 @@ Where your files live:
 | log            | `~/.local/state/lyrachi/lyrachi.log`  | `%LOCALAPPDATA%\lyrachi\lyrachi.log`        | `~/Library/Application Support/lyrachi/lyrachi.log`  |
 
 On Linux and BSD, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` override the `~/.config`, `~/.local/share`, `~/.cache`, and `~/.local/state` prefixes when set.
+On every platform, setting `LYRACHI_HOME` redirects everything into one tree — `config/`, `data/`, `cache/`, `state/`, and `Music` all live under it — which is also how portable installs work.
 The `--config <path>` flag moves the config file anywhere; the styles directory always becomes a `styles/` folder next to whatever config file you point at.
 `lyrachi paths` prints the real resolved locations on your machine.
 (Windows and macOS paths follow the same convention, but no media backend exists there yet.)

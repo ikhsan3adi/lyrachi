@@ -237,6 +237,13 @@ Subcommands:
 | `lyrachi config schema [--kind config\|style]`        | Print a JSON Schema (draft 2020-12) for the config or for a style profile.                                            |
 | `lyrachi debug smtc`                                  | Dump every Windows SMTC session (AUMID, status, position, timeline age) for debugging.                                |
 
+Setting `LYRACHI_HOME` redirects the whole base directory into one tree:
+`config/config.toml`, `data/offsets.json`, `cache/lyrics_v1.db`,
+`state/lyrachi.log`, and the `Music` folder all live under it. `--config`
+still overrides the config file, and the styles directory stays a sibling of
+whatever config file is in effect. An empty value is ignored. This is also
+how portable installs work.
+
 ## Quick reference: clamps and whole-file discards
 
 Clamped with a warning (value applied at the nearest limit):

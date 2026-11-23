@@ -26,6 +26,29 @@ pub struct AppPaths {
 
 impl AppPaths {
     pub fn resolve(overrides: PathOverrides) -> Self {
+        Self::resolve_with_base(overrides, base_dir_override().as_deref())
+    }
+
+    fn resolve_with_base(overrides: PathOverrides, base: Option<&Path>) -> Self {
+        if let Some(base) = base {
+            let config_file = overrides
+                .config_file
+                .unwrap_or_else(|| base.join("config").join(CONFIG_FILE));
+            return Self {
+                styles_dir: config_file
+                    .parent()
+                    .map(|dir| dir.join("styles"))
+                    .unwrap_or_else(|| base.join("config").join("styles")),
+                config_file,
+                offsets_file: base.join("data").join(OFFSETS_FILE),
+                cache_db_file: base.join("cache").join(CACHE_FILE),
+                log_file: overrides
+                    .log_file
+                    .unwrap_or_else(|| base.join("state").join(LOG_FILE)),
+                default_music_dirs: vec![base.join("Music")],
+            };
+        }
+
         let project = ProjectDirs::from("", "", APP_NAME);
         let base = BaseDirs::new();
         let home = base
@@ -95,6 +118,16 @@ fn fallback_path(home: Option<&Path>, relative: &str, file: &str) -> PathBuf {
     )
 }
 
+/// `LYRACHI_HOME` replaces the platform base directory with one tree:
+/// `config/`, `data/`, `cache/`, `state/`, and `Music`. This is the seam that
+/// keeps spawned-binary tests hermetic on every platform, and doubles as the
+/// portable-install story. `--config` still wins for the config file.
+fn base_dir_override() -> Option<PathBuf> {
+    std::env::var_os("LYRACHI_HOME")
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 pub fn default_music_dirs() -> Vec<PathBuf> {
     let user_dirs = UserDirs::new();
     let home = BaseDirs::new().map(|base| base.home_dir().to_path_buf());
@@ -119,6 +152,36 @@ fn home_dir() -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn base_override_redirects_every_directory() {
+        let base = Path::new("/base");
+        let paths = AppPaths::resolve_with_base(PathOverrides::default(), Some(base));
+
+        assert_eq!(paths.config_file, Path::new("/base/config/config.toml"));
+        assert_eq!(paths.styles_dir, Path::new("/base/config/styles"));
+        assert_eq!(paths.offsets_file, Path::new("/base/data/offsets.json"));
+        assert_eq!(paths.cache_db_file, Path::new("/base/cache/lyrics_v1.db"));
+        assert_eq!(paths.log_file, Path::new("/base/state/lyrachi.log"));
+        assert_eq!(paths.default_music_dirs, vec![Path::new("/base/Music")]);
+    }
+
+    #[test]
+    fn base_override_keeps_explicit_config_and_log() {
+        let base = Path::new("/base");
+        let paths = AppPaths::resolve_with_base(
+            PathOverrides {
+                config_file: Some(PathBuf::from("/base/elsewhere/my.toml")),
+                log_file: Some(PathBuf::from("/base/elsewhere/my.log")),
+            },
+            Some(base),
+        );
+
+        assert_eq!(paths.config_file, Path::new("/base/elsewhere/my.toml"));
+        assert_eq!(paths.styles_dir, Path::new("/base/elsewhere/styles"));
+        assert_eq!(paths.log_file, Path::new("/base/elsewhere/my.log"));
+        assert_eq!(paths.offsets_file, Path::new("/base/data/offsets.json"));
+    }
 
     #[test]
     fn builds_fallback_paths_without_project_dirs() {
