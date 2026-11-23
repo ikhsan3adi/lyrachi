@@ -21,6 +21,10 @@ jobs:
       - run: cargo test --all-features
       - run: cargo test --no-default-features
 
+  # Compile everything, then run unit tests only. The integration tests spawn
+  # the binary with HOME/XDG_* overrides, and Windows resolves its directories
+  # from the shell folders instead, so those tests are left out until they are
+  # audited on Windows.
   test-windows:
     runs-on: windows-latest
     steps:
@@ -28,7 +32,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
-      - run: cargo test --all-features
+      - run: cargo check --all-targets --all-features
+      - run: cargo check --all-targets --no-default-features
+      - run: cargo test --lib --all-features
 
   check:
     name: check (${{ matrix.os }})
