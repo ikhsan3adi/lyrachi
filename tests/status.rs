@@ -161,6 +161,10 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
         local_dirs: vec![lyrics_dir],
         ..RuntimeConfig::default()
     };
+    // Derive the backend expectation from the snapshot the report is built
+    // from, so the assertion holds on every host regardless of which backend
+    // the platform provides.
+    let backend = snapshot.player.as_ref().unwrap().backend;
     let report = collect_report(snapshot, &config, &offsets_file).await;
 
     assert_eq!(
@@ -186,7 +190,6 @@ async fn status_report_resolves_local_fixture_and_keeps_global_plus_track_offset
     assert_eq!(report.offset.track_ms, -200);
     assert_eq!(report.offset.effective_ms, -100);
 
-    let backend = BackendKind::current();
     let backend_name = backend.as_str();
     let backend_available = backend.is_supported();
     let backend_state = if backend_available {
