@@ -1,7 +1,39 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use clap::Parser;
 use lyrachi::cli::{Args, Command, PipeFormat};
+
+/// A temp base directory that removes itself on drop, retrying while Windows
+/// still holds file locks from the spawned binary.
+struct BaseDirGuard(PathBuf);
+
+impl Drop for BaseDirGuard {
+    fn drop(&mut self) {
+        for _ in 0..20 {
+            match std::fs::remove_dir_all(&self.0) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        }
+    }
+}
+
+/// Create `$BASE/{config,data,cache,state}` and return the root; tests point
+/// `LYRACHI_HOME` at it so every platform resolves the same tree.
+fn base_dir(name: &str) -> (std::path::PathBuf, BaseDirGuard) {
+    let stamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let root =
+        std::env::temp_dir().join(format!("lyrachi-cli-{name}-{}-{stamp}", std::process::id()));
+    for dir in ["config", "data", "cache", "state"] {
+        std::fs::create_dir_all(root.join(dir)).unwrap();
+    }
+    (root.clone(), BaseDirGuard(root))
+}
 
 #[test]
 fn defaults_are_empty_and_unset() {
@@ -61,33 +93,15 @@ fn parses_paths_with_global_config_after_subcommand() {
 
 #[test]
 fn paths_command_prints_resolved_paths_without_tui() {
-    let root = std::env::temp_dir().join(format!("lyrachi-paths-{}", std::process::id()));
-    let config_home = root.join("config");
-    let data_home = root.join("data");
-    let cache_home = root.join("cache");
-    let state_home = root.join("state");
-    let home = root.join("home");
-    for dir in [&config_home, &data_home, &cache_home, &state_home, &home] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    std::fs::write(
-        config_home.join("user-dirs.dirs"),
-        "XDG_MUSIC_DIR=\"$HOME/Music\"\n",
-    )
-    .unwrap();
-    let custom = root.join("custom.toml");
+    let (base, _guard) = base_dir("paths");
+    let custom = base.join("config").join("custom.toml");
     std::fs::write(&custom, "").unwrap();
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
         .arg("paths")
         .arg("--config")
         .arg(&custom)
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_DATA_HOME", &data_home)
-        .env("XDG_CACHE_HOME", &cache_home)
-        .env("XDG_STATE_HOME", &state_home)
-        .env_remove("XDG_MUSIC_DIR")
+        .env("LYRACHI_HOME", &base)
         .output()
         .unwrap();
 
@@ -100,23 +114,21 @@ fn paths_command_prints_resolved_paths_without_tui() {
     assert!(stdout.contains(&format!("config: {}", custom.display())));
     assert!(stdout.contains(&format!(
         "styles: {}",
-        custom.parent().unwrap().join("styles").display()
+        base.join("config").join("styles").display()
     )));
     assert!(stdout.contains(&format!(
         "offsets: {}",
-        data_home.join("lyrachi/offsets.json").display()
+        base.join("data").join("offsets.json").display()
     )));
     assert!(stdout.contains(&format!(
         "cache: {}",
-        cache_home.join("lyrachi/lyrics_v1.db").display()
+        base.join("cache").join("lyrics_v1.db").display()
     )));
     assert!(stdout.contains(&format!(
         "log: {}",
-        state_home.join("lyrachi/lyrachi.log").display()
+        base.join("state").join("lyrachi.log").display()
     )));
-    assert!(stdout.contains(&format!("music: {}", home.join("Music").display())));
-
-    std::fs::remove_dir_all(root).unwrap();
+    assert!(stdout.contains(&format!("music: {}", base.join("Music").display())));
 }
 
 #[test]
@@ -150,30 +162,20 @@ fn parses_status_with_offline_after_subcommand() {
 }
 
 #[test]
-fn status_json_prints_one_object_without_tui_or_dbus() {
-    let root = std::env::temp_dir().join(format!("lyrachi-status-cli-{}", std::process::id()));
-    let config_home = root.join("config");
-    let data_home = root.join("data");
-    let cache_home = root.join("cache");
-    let state_home = root.join("state");
-    let home = root.join("home");
-    for dir in [&config_home, &data_home, &cache_home, &state_home, &home] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
-    let bus = root.join("no-bus");
+fn status_json_prints_one_object_without_tui_or_backend() {
+    let (base, _guard) = base_dir("status");
+    // The allowlist selects only MPD, which is disabled by default, so no
+    // backend exists on any platform and the probe fails deterministically.
+    std::fs::write(
+        base.join("config").join("config.toml"),
+        "[media]\nbackends = [\"mpd\"]\n",
+    )
+    .unwrap();
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
-        .args(["status", "--json"])
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_DATA_HOME", &data_home)
-        .env("XDG_CACHE_HOME", &cache_home)
-        .env("XDG_STATE_HOME", &state_home)
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", bus.display()),
-        )
-        .env_remove("XDG_MUSIC_DIR")
+        .args(["status", "--json", "--config"])
+        .arg(base.join("config").join("config.toml"))
+        .env("LYRACHI_HOME", &base)
         .output()
         .unwrap();
 
@@ -189,34 +191,16 @@ fn status_json_prints_one_object_without_tui_or_dbus() {
     assert!(value["player"].is_null());
     assert_eq!(value["playback"], "stopped");
     assert_eq!(value["offset"]["effective_ms"], -300);
-
-    std::fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn no_cache_status_does_not_create_the_database() {
-    let root = std::env::temp_dir().join(format!("lyrachi-status-nocache-{}", std::process::id()));
-    let config_home = root.join("config");
-    let data_home = root.join("data");
-    let cache_home = root.join("cache");
-    let state_home = root.join("state");
-    let home = root.join("home");
-    for dir in [&config_home, &data_home, &cache_home, &state_home, &home] {
-        std::fs::create_dir_all(dir).unwrap();
-    }
+fn status_creates_the_cache_database_by_default() {
+    let (base, _guard) = base_dir("cached");
+    let db = base.join("cache").join("lyrics_v1.db");
 
     let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
-        .args(["status", "--json", "--no-cache"])
-        .env("HOME", &home)
-        .env("XDG_CONFIG_HOME", &config_home)
-        .env("XDG_DATA_HOME", &data_home)
-        .env("XDG_CACHE_HOME", &cache_home)
-        .env("XDG_STATE_HOME", &state_home)
-        .env(
-            "DBUS_SESSION_BUS_ADDRESS",
-            format!("unix:path={}", root.join("no-bus").display()),
-        )
-        .env_remove("XDG_MUSIC_DIR")
+        .args(["status", "--json"])
+        .env("LYRACHI_HOME", &base)
         .output()
         .unwrap();
 
@@ -225,9 +209,30 @@ fn no_cache_status_does_not_create_the_database() {
         "stderr: {}",
         String::from_utf8_lossy(&output.stderr)
     );
-    assert!(!cache_home.join("lyrachi").join("lyrics_v1.db").exists());
+    assert!(
+        db.exists(),
+        "expected the cache database at {}",
+        db.display()
+    );
+}
 
-    std::fs::remove_dir_all(root).unwrap();
+#[test]
+fn no_cache_status_does_not_create_the_database() {
+    let (base, _guard) = base_dir("nocache");
+    let db = base.join("cache").join("lyrics_v1.db");
+
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_lyrachi"))
+        .args(["status", "--json", "--no-cache"])
+        .env("LYRACHI_HOME", &base)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "stderr: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(!db.exists(), "--no-cache must not create {}", db.display());
 }
 
 #[test]
