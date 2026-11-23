@@ -143,19 +143,19 @@ lyrachi paths                  # print your actual resolved paths
 
 Where your files live:
 
-| File           | Linux / BSD                           | Windows                                     | macOS                                                |
-| -------------- | ------------------------------------- | ------------------------------------------- | ---------------------------------------------------- |
-| `config.toml`  | `~/.config/lyrachi/config.toml`       | `%APPDATA%\lyrachi\config\config.toml`      | `~/Library/Application Support/lyrachi/config.toml`  |
-| `styles/`      | `~/.config/lyrachi/styles/`           | `%APPDATA%\lyrachi\config\styles\`          | `~/Library/Application Support/lyrachi/styles/`      |
-| `offsets.json` | `~/.local/share/lyrachi/offsets.json` | `%APPDATA%\lyrachi\offsets.json`            | `~/Library/Application Support/lyrachi/offsets.json` |
-| lyric cache    | `~/.cache/lyrachi/lyrics_v1.db`       | `%LOCALAPPDATA%\lyrachi\cache\lyrics_v1.db` | `~/Library/Caches/lyrachi/lyrics_v1.db`              |
-| log            | `~/.local/state/lyrachi/lyrachi.log`  | `%LOCALAPPDATA%\lyrachi\lyrachi.log`        | `~/Library/Application Support/lyrachi/lyrachi.log`  |
+| File           | Linux / BSD                           | Windows                                          | macOS                                                |
+| -------------- | ------------------------------------- | ------------------------------------------------ | ---------------------------------------------------- |
+| `config.toml`  | `~/.config/lyrachi/config.toml`       | `%APPDATA%\lyrachi\config\config.toml`           | `~/Library/Application Support/lyrachi/config.toml`  |
+| `styles/`      | `~/.config/lyrachi/styles/`           | `%APPDATA%\lyrachi\config\styles\`               | `~/Library/Application Support/lyrachi/styles/`      |
+| `offsets.json` | `~/.local/share/lyrachi/offsets.json` | `%APPDATA%\lyrachi\data\offsets.json`            | `~/Library/Application Support/lyrachi/offsets.json` |
+| lyric cache    | `~/.cache/lyrachi/lyrics_v1.db`       | `%LOCALAPPDATA%\lyrachi\cache\lyrics_v1.db`      | `~/Library/Caches/lyrachi/lyrics_v1.db`              |
+| log            | `~/.local/state/lyrachi/lyrachi.log`  | `%USERPROFILE%\.local\state\lyrachi\lyrachi.log` | `~/.local/state/lyrachi/lyrachi.log`                 |
 
 On Linux and BSD, `XDG_CONFIG_HOME`, `XDG_DATA_HOME`, `XDG_CACHE_HOME`, and `XDG_STATE_HOME` override the `~/.config`, `~/.local/share`, `~/.cache`, and `~/.local/state` prefixes when set.
+Windows and macOS have no platform state directory, so the log uses the `~/.local/state` fallback there.
 On every platform, setting `LYRACHI_HOME` redirects everything into one tree — `config/`, `data/`, `cache/`, `state/`, and `Music` all live under it — which is also how portable installs work.
 The `--config <path>` flag moves the config file anywhere; the styles directory always becomes a `styles/` folder next to whatever config file you point at.
 `lyrachi paths` prints the real resolved locations on your machine.
-(Windows and macOS paths follow the same convention, but no media backend exists there yet.)
 
 Styles are TOML profiles in the `styles/` directory next to your config file, with `extends` inheritance and hot reload.
 Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, and `builtin:minimal`.
@@ -172,7 +172,6 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Roadmap
 
-- **Windows**: a Windows CI runner to keep the SMTC backend green.
 - **macOS**: a Music.app and Spotify backend with adaptive polling and graceful permission fallbacks, plus a macOS CI runner.
 - **Stable release**: render benchmarks and UI snapshots finalized for every display mode.
 
@@ -182,7 +181,7 @@ A spectrum visualizer and beat-synced animation are planned further out.
 ## Credits
 
 - The QRC singer-prefix rules follow the behavior of the braccato parsers (`@braccato/parsers`).
-- Built with ratatui, crossterm, tachyonfx, zbus, rusqlite, notify, toml_edit, glam, and font8x8, among the dependencies listed in [Cargo.toml](Cargo.toml).
+- Built with ratatui, crossterm, tachyonfx, zbus, the `windows` crate, rusqlite, notify, toml_edit, glam, and font8x8, among the dependencies listed in [Cargo.toml](Cargo.toml).
 
 ## License
 
