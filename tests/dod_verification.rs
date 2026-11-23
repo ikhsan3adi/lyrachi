@@ -262,6 +262,10 @@ fn dod_5_cjk_combining_marks_emoji_and_annotations_render_without_panic_or_overf
     }
 }
 
+// The budgets are release-mode product requirements; unoptimized builds run
+// several times slower and their timings are not stable across machines, so
+// the perf checks only run under `--release` (see the DoD gate).
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn dod_6_terminal_draw_p99_under_2ms_on_120x40() {
     let fixture = include_str!("fixtures/multilingual_cjk_emoji.lrc");
@@ -290,11 +294,7 @@ fn dod_6_terminal_draw_p99_under_2ms_on_120x40() {
         0,
     );
 
-    let budget_us = if cfg!(debug_assertions) {
-        10_000
-    } else {
-        2_000
-    };
+    let budget_us = 2_000;
 
     for mode in BenchmarkMode::ALL {
         let mut bench_clock = clock.clone();
@@ -347,6 +347,7 @@ impl BenchmarkMode {
     }
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn dod_6b_terminal_draw_cylinder_p99_under_1_5ms_on_120x40() {
     let fixture = include_str!("fixtures/multilingual_cjk_emoji.lrc");
@@ -366,11 +367,7 @@ fn dod_6b_terminal_draw_cylinder_p99_under_1_5ms_on_120x40() {
     clock.on_status_changed(PlaybackStatus::Playing, now);
     clock.on_seeked(10_500, now);
 
-    let budget_us = if cfg!(debug_assertions) {
-        10_000
-    } else {
-        1_500
-    };
+    let budget_us = 1_500;
 
     let stats = draw_stats_for_mode(
         &mut terminal,
@@ -391,6 +388,7 @@ fn dod_6b_terminal_draw_cylinder_p99_under_1_5ms_on_120x40() {
     );
 }
 
+#[cfg_attr(debug_assertions, ignore)]
 #[test]
 fn dod_6c_terminal_draw_canvas3d_p99_under_2ms_on_120x40() {
     let fixture = include_str!("fixtures/multilingual_cjk_emoji.lrc");
@@ -410,11 +408,7 @@ fn dod_6c_terminal_draw_canvas3d_p99_under_2ms_on_120x40() {
     clock.on_status_changed(PlaybackStatus::Playing, now);
     clock.on_seeked(10_500, now);
 
-    let budget_us = if cfg!(debug_assertions) {
-        10_000
-    } else {
-        2_000
-    };
+    let budget_us = 2_000;
 
     let stats = draw_stats_for_mode(
         &mut terminal,
