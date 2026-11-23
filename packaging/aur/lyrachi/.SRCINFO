@@ -1,0 +1,15 @@
+pkgbase = lyrachi
+	pkgdesc = Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal
+	pkgver = 0.2.0
+	pkgrel = 1
+	url = https://github.com/ikhsan3adi/lyrachi
+	arch = x86_64
+	license = GPL3
+	makedepends = rust
+	depends = gcc-libs
+	optdepends = mpd: MPD media backend
+	options = !debug
+	source = lyrachi-0.2.0.tar.gz::https://github.com/ikhsan3adi/lyrachi/archive/refs/tags/v0.2.0.tar.gz
+	sha256sums = SKIP
+
+pkgname = lyrachi

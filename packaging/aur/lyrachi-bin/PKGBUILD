@@ -1,0 +1,26 @@
+# Maintainer: Ikhsan Satriadi <ikhsan3adi@proton.me>
+pkgname=lyrachi-bin
+pkgver=0.2.0
+pkgrel=1
+pkgdesc="Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal"
+arch=('x86_64')
+url="https://github.com/ikhsan3adi/lyrachi"
+license=('GPL3')
+depends=('gcc-libs')
+optdepends=('mpd: MPD media backend')
+provides=('lyrachi')
+conflicts=('lyrachi')
+source=("$pkgname-$pkgver.tar.gz::$url/releases/download/v$pkgver/lyrachi-v$pkgver-x86_64-unknown-linux-gnu.tar.gz")
+# TODO(release): fill from packaging/build-release-asset.sh output
+# (`*.tar.gz.sha256`) after the GitHub release exists.
+sha256sums=('REPLACE_WITH_SHA256_AFTER_RELEASE')
+
+# The release asset is a prebuilt glibc binary; no build step applies and
+# check() is skipped for the same reason as the source package.
+
+package() {
+  cd "$srcdir"
+  install -Dm0755 -t "$pkgdir/usr/bin/" lyrachi
+  install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
+  install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
+}
