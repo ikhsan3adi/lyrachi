@@ -1,5 +1,5 @@
 use std::collections::HashSet;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
@@ -540,12 +540,17 @@ fn file_url_path(raw: &str) -> Option<PathBuf> {
     if decoded.contains('\0') {
         return None;
     }
-    let path = PathBuf::from(strip_windows_drive_slash(&decoded));
-    if !path.is_absolute()
-        || path
-            .components()
-            .any(|component| matches!(component, Component::ParentDir | Component::CurDir))
+    let decoded = strip_windows_drive_slash(&decoded);
+    // Check the raw segments: `Path::components` drops `.` segments before a
+    // components walk could see them, and the result differed per platform.
+    if decoded
+        .split(['/', '\\'])
+        .any(|segment| matches!(segment, "." | ".."))
     {
+        return None;
+    }
+    let path = PathBuf::from(decoded);
+    if !path.is_absolute() {
         return None;
     }
 
