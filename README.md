@@ -19,7 +19,7 @@
 [![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
 <!-- [![AUR Last Modified](https://img.shields.io/aur/last-modified/lyrachi?style=flat-square&logo=arch-linux)](https://aur.archlinux.org/packages/lyrachi) -->
 [![rust](https://img.shields.io/badge/rust-1.89%2B-orange?style=flat-square)](#building-and-installing)
-[![platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20BSD-red?style=flat-square)](#media-players)
+[![platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows-red?style=flat-square)](#media-players)
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
 </div>
@@ -62,8 +62,7 @@ macOS support is planned; see the roadmap below.
 
 Local files are checked first: a local hit ends the lookup before any network request.
 Otherwise the network providers race in parallel and the most precise answer wins: syllable-timed over word-timed over line-timed over plain text.
-The configured `order` only breaks ties.
-Results are cached in SQLite; provider errors are never cached.
+The configured `order` only breaks ties. Results are cached in SQLite; provider errors are never cached.
 
 - **Local**: `.lrc`, `.elrc`, `.ttml`, `.krc`, `.qrc`, and `.yrc` files next to your audio files or in your music directories. See [`examples/lyrics`](examples/lyrics) for sample files that exercise every annotation type.
 - **LRCLIB**: synced, plain, and word-synced lyrics.
@@ -119,7 +118,7 @@ Lyrachi can report lyrics without starting the TUI, which makes it usable from s
   - `--format plain` (default) prints the lyric text.
   - `--format json` prints `{"text", "alt", "class", "progress", "backend"}`, shaped for waybar's custom module.
   - `--max-width N` truncates output to a display width.
-- `lyrachi --dump-events` prints raw media events for debugging backend integrations.
+- `lyrachi --dump-events` prints raw media events, each prefixed with a monotonic timestamp in seconds, for debugging backend integrations.
 
 All flags work after a subcommand, for example `lyrachi pipe --offline`.
 Set `LYRACHI_LOG=<filter>` to control log verbosity, and `--log-file <path>` to write logs somewhere other than the default state directory.
@@ -163,15 +162,8 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 ## Limitations
 
 - macOS has no media backend yet; the TUI reports no player there.
-- On Windows, Lyrachi follows whole SMTC sessions: it cannot tell two browser
-  tabs apart, and players that never refresh their timeline report a stale
-  sample age.
-- On Windows, browsers only carry a playback position when the website pushes
-  one (`mediaSession.setPositionState`). Sites that set it once at play start
-  leave the position frozen, and sites that never set it report zero, so
-  Lyrachi starts from that stale value instead of the real one. Seek or
-  pause-resume once to re-anchor, or use the WebNowPlaying extension, which
-  reports the position live.
+- On Windows, Lyrachi follows whole SMTC sessions: it cannot tell two browser tabs apart, and players that never refresh their timeline report a stale sample age.
+- On Windows, browsers only carry a playback position when the website pushes one (`mediaSession.setPositionState`). Sites that set it once at play start leave the position frozen, and sites that never set it report zero, so Lyrachi starts from that stale value instead of the real one. Seek or pause-resume once to re-anchor, or use the WebNowPlaying extension, which reports the position live.
 - Online providers need network access. `--offline` or `[providers] network = false` restricts Lyrachi to local files.
 - Input is bounded rather than truncated: lyric files up to 256 KiB, HTTP bodies up to 512 KiB, 2,000 lines, and 16,000 word tokens per track.
 - The per-track and global offsets are clamped to ±30 seconds.
@@ -180,15 +172,11 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 ## Roadmap
 
 - **Windows**: a Windows CI runner to keep the SMTC backend green.
-- **macOS**: a Music.app and Spotify backend with adaptive polling and
-  graceful permission fallbacks, plus a macOS CI runner.
-- **Stable release**: render benchmarks and UI snapshots finalized for every
-  display mode.
+- **macOS**: a Music.app and Spotify backend with adaptive polling and graceful permission fallbacks, plus a macOS CI runner.
+- **Stable release**: render benchmarks and UI snapshots finalized for every display mode.
 
-After that, the visual era: full bitmap font coverage for CJK and other
-scripts in the block and cylinder modes, broader visual and UI polish, more
-built-in color schemes, and album artwork with dynamic accent colors. A
-spectrum visualizer and beat-synced animation are planned further out.
+After that, the visual era: full bitmap font coverage for CJK and other scripts in the block and cylinder modes, broader visual and UI polish, more built-in color schemes, and album artwork with dynamic accent colors.
+A spectrum visualizer and beat-synced animation are planned further out.
 
 ## Credits
 

@@ -93,9 +93,9 @@ over plain), and `order` breaks ties within the same tier.
 
 ## `[media]`
 
-| Key        | Type             | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| ---------- | ---------------- | ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `backends` | array of strings | `[]`    | Backend allowlist. Empty means the platform native backend plus any enabled network backend below. Valid names (matched case-insensitively): `mpris`, `mpd`, `webnowplaying`, and, parsed everywhere but only usable on their platforms, `smtc` (Windows) and `applescript` (macOS). The literal name `unsupported` is rejected with a warning. Unknown names and platform-unsupported names each warn and are skipped. When the list is non-empty, Lyrachi also cross-checks it against the `enabled` flags: listing `mpd` or `webnowplaying` without enabling it, or enabling one without listing it, each warns. Duplicates are dropped silently. |
+| Key        | Type             | Default | Description                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| ---------- | ---------------- | ------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `backends` | array of strings | `[]`    | Backend allowlist. Empty means the platform native backend plus any enabled network backend below. Valid names (matched case-insensitively): `mpris`, `mpd`, `webnowplaying`, and, parsed everywhere but only usable on their platforms, `smtc` (Windows 10 1809 or newer) and `applescript` (macOS). The literal name `unsupported` is rejected with a warning. Unknown names and platform-unsupported names each warn and are skipped. When the list is non-empty, Lyrachi also cross-checks it against the `enabled` flags: listing `mpd` or `webnowplaying` without enabling it, or enabling one without listing it, each warns. Duplicates are dropped silently. |
 
 ### `[media.mpd]`
 
@@ -220,7 +220,7 @@ Flags (override the config file for one run):
 | `--offline`           | Forces `providers.network` off.                                                                                      |
 | `--no-cache`          | Disables the SQLite cache for this run.                                                                              |
 | `--log-file <path>`   | Write tracing output to a file.                                                                                      |
-| `--dump-events`       | Print media events to stdout without starting the TUI.                                                               |
+| `--dump-events`       | Print media events to stdout, prefixed with a monotonic timestamp in seconds, without starting the TUI.              |
 
 All flags are global: they work after a subcommand too, for example
 `lyrachi status --offline`.
@@ -235,6 +235,7 @@ Subcommands:
 | `lyrachi config check`                                | Validate the config file and active style; print warnings.                                                            |
 | `lyrachi config print-default`                        | Print the commented default `config.toml`.                                                                            |
 | `lyrachi config schema [--kind config\|style]`        | Print a JSON Schema (draft 2020-12) for the config or for a style profile.                                            |
+| `lyrachi debug smtc`                                  | Dump every Windows SMTC session (AUMID, status, position, timeline age) for debugging.                                |
 
 ## Quick reference: clamps and whole-file discards
 
