@@ -432,6 +432,9 @@ pub async fn run_dump_events(
     let cancel = CancellationToken::new();
     let monitor_cancel = cancel.clone();
     let mut monitor = backend::start_monitor(media, player_filter, tx, monitor_cancel).await?;
+    // Monotonic per-line stamps let a capture be analyzed for poll drift:
+    // position delta versus elapsed time between fresh timeline pushes.
+    let started = Instant::now();
     let ctrl_c = tokio::signal::ctrl_c();
     tokio::pin!(ctrl_c);
 
@@ -444,7 +447,7 @@ pub async fn run_dump_events(
             event = rx.recv() => {
                 match event {
                     Some(event) => {
-                        println!("{event:?}");
+                        println!("[{:>8.3}] {event:?}", started.elapsed().as_secs_f64());
                         let _ = std::io::stdout().flush();
                     }
                     None => break,

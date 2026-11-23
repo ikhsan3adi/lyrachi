@@ -70,6 +70,20 @@ pub struct PlaybackClock {
     rate: f64,
 }
 
+/// Poll drift inside this band is measurement noise; the anchor is left alone.
+const DRIFT_DEADBAND_MS: i64 = 45;
+
+/// Backward drift beyond this band re-anchors instantly: a lagging sample that
+/// far behind prediction is treated as a real seek back.
+const BACKWARD_SLEW_MS: u64 = 300;
+
+/// Forward drift up to this band is spread across the next samples instead of
+/// snapping the anchor. Players whose timeline push phase beats against the
+/// poll interval accumulate sample staleness over many cycles and then catch
+/// up in one fresh sample; a full re-anchor there shows up as a visible lyric
+/// jump of nearly half a second every few tens of seconds.
+const FORWARD_SLEW_MS: u64 = 600;
+
 impl Default for PlaybackClock {
     fn default() -> Self {
         Self::new()
@@ -240,11 +254,16 @@ impl PlaybackClock {
         let drift_ms = to_i64(compensated_ms).saturating_sub(to_i64(predicted_ms));
         let drift_abs = drift_ms.unsigned_abs();
 
-        if drift_abs <= 45 {
+        if drift_abs <= DRIFT_DEADBAND_MS as u64 {
             return;
         }
 
-        if drift_abs <= 300 {
+        let slew_limit = if drift_ms > 0 {
+            FORWARD_SLEW_MS
+        } else {
+            BACKWARD_SLEW_MS
+        };
+        if drift_abs <= slew_limit {
             let adjusted_ms = to_i64(predicted_ms).saturating_add(drift_ms / 2).max(0) as u64;
             *anchor_pos_ms = adjusted_ms;
             *anchor_instant = now;
@@ -423,7 +442,8 @@ mod tests {
             (1_046, 1_000, 1_023),
             (1_299, 1_000, 1_149),
             (1_300, 1_000, 1_150),
-            (1_301, 1_000, 1_301),
+            (1_600, 1_000, 1_300),
+            (1_601, 1_000, 1_601),
             (956, 1_000, 1_000),
             (955, 1_000, 1_000),
             (954, 1_000, 977),
@@ -446,12 +466,37 @@ mod tests {
     }
 
     #[test]
+    fn push_phase_wrap_slews_forward_instead_of_snapping() {
+        let base = Instant::now();
+        let mut clock = playing_clock(base, 10_000);
+
+        // Live-measured pattern from a player pushing its timeline every
+        // ~3.05 s against a 500 ms poll: sample staleness grows ~50 ms per
+        // cycle, then a push lands almost fresh and the drift snaps positive
+        // by nearly half a second. Each correction applies half the drift, so
+        // the wrap converges over a few cycles instead of jumping.
+        clock.on_position_poll(14_500, Duration::ZERO, at(base, 4_050));
+        assert_eq!(clock.raw_position_at(at(base, 4_050)), 14_275);
+
+        clock.on_position_poll(17_500, Duration::ZERO, at(base, 7_050));
+        assert_eq!(clock.raw_position_at(at(base, 7_050)), 17_387);
+
+        clock.on_position_poll(20_500, Duration::ZERO, at(base, 10_100));
+        assert_eq!(clock.raw_position_at(at(base, 10_100)), 20_468);
+
+        // Converged: the next cycle sits inside the deadband.
+        clock.on_position_poll(23_500, Duration::ZERO, at(base, 13_100));
+        assert_eq!(clock.raw_position_at(at(base, 13_100)), 23_468);
+    }
+
+    #[test]
     fn position_poll_compensates_half_rtt() {
         let base = Instant::now();
         let mut clock = playing_clock(base, 0);
 
-        clock.on_position_poll(1_200, Duration::from_millis(400), at(base, 1_000));
-        assert_eq!(clock.raw_position_at(at(base, 1_000)), 1_400);
+        // Drift past the slew zone so the compensated sample is trusted fully.
+        clock.on_position_poll(1_500, Duration::from_millis(400), at(base, 1_000));
+        assert_eq!(clock.raw_position_at(at(base, 1_000)), 1_700);
     }
 
     #[test]
@@ -468,19 +513,19 @@ mod tests {
         clock.on_position_poll(1_046, Duration::ZERO, at(base, 1_200));
         assert_eq!(clock.raw_position_at(at(base, 1_200)), 1_223);
 
-        clock.on_position_poll(1_700, Duration::ZERO, at(base, 1_300));
-        assert_eq!(clock.raw_position_at(at(base, 1_300)), 1_700);
+        clock.on_position_poll(2_000, Duration::ZERO, at(base, 1_300));
+        assert_eq!(clock.raw_position_at(at(base, 1_300)), 2_000);
         assert!(matches!(
             clock.state(),
             ClockState::Playing {
-                last_polled_ms: Some(1_700),
+                last_polled_ms: Some(2_000),
                 stale_poll_count: 0,
                 ..
             }
         ));
 
-        clock.on_position_poll(1_700, Duration::ZERO, at(base, 1_400));
-        assert_eq!(clock.raw_position_at(at(base, 1_400)), 1_800);
+        clock.on_position_poll(2_000, Duration::ZERO, at(base, 1_400));
+        assert_eq!(clock.raw_position_at(at(base, 1_400)), 2_100);
 
         let mut stepped = playing_clock(base, 178_025);
         stepped.on_position_poll(178_025, Duration::ZERO, at(base, 0));
@@ -546,11 +591,11 @@ mod tests {
 
         let now2 = now + Duration::from_millis(1_000);
         clock.on_position_poll_with_sample_age(
-            2_200,
+            2_600,
             Duration::from_millis(100),
             Some(Duration::from_millis(400)),
             now2,
         );
-        assert_eq!(clock.raw_position_at(now2), 2_600);
+        assert_eq!(clock.raw_position_at(now2), 3_000);
     }
 }
