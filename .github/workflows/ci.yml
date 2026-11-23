@@ -20,11 +20,10 @@ jobs:
       - run: cargo clippy --all-targets --all-features -- -D warnings
       - run: cargo test --all-features
       - run: cargo test --no-default-features
+      # The draw-performance checks are ignored in debug builds; their
+      # budgets are release-mode product requirements.
+      - run: cargo test --release --all-features --test dod_verification
 
-  # Compile everything, then run unit tests only. The integration tests spawn
-  # the binary with HOME/XDG_* overrides, and Windows resolves its directories
-  # from the shell folders instead, so those tests are left out until they are
-  # audited on Windows.
   test-windows:
     runs-on: windows-latest
     steps:
@@ -32,9 +31,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
-      - run: cargo check --all-targets --all-features
-      - run: cargo check --all-targets --no-default-features
-      - run: cargo test --lib --all-features
+      - run: cargo test --all-features
+      - run: cargo test --no-default-features
+      - run: cargo test --release --all-features --test dod_verification
 
   check:
     name: check (${{ matrix.os }})
