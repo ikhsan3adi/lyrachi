@@ -14,7 +14,7 @@
 
 <div align="center">
 
-[![version](https://img.shields.io/badge/version-0.3.0-blue?style=flat-square)](#building-and-installing)
+[![version](https://img.shields.io/badge/version-0.3.1-blue?style=flat-square)](#building-and-installing)
 <!-- [![crates.io downloads](https://img.shields.io/crates/d/lyrachi?style=flat-square&label=crates.io%20downloads&color=B7410E&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi) -->
 [![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
 <!-- [![AUR Last Modified](https://img.shields.io/aur/last-modified/lyrachi?style=flat-square&logo=arch-linux)](https://aur.archlinux.org/packages/lyrachi) -->
@@ -33,9 +33,15 @@ It listens to your media player through standard interfaces, resolves lyrics fro
 
 ## Preview
 
-> A preview GIF of the cylinder and canvas3d modes is coming here. No
-> screenshot has been recorded yet, so this slot stays empty rather than
-> showing a mock-up.
+All five display modes, recorded against a local demo track in a 120x40 terminal.
+The same lyric line is used throughout so the rendering differences are the only thing that changes.
+
+|  **normal** ![normal mode](art/modes/normal.gif)   |                    Lyrachi Preview                    |     **block** ![block mode](art/modes/block.gif)      |
+| :------------------------------------------------: | :---------------------------------------------------: | :---------------------------------------------------: |
+| **kinetic** ![kinetic mode](art/modes/kinetic.gif) | **cylinder** ![cylinder mode](art/modes/cylinder.gif) | **canvas3d** ![canvas3d mode](art/modes/canvas3d.gif) |
+
+The clips are scripted with [vhs](https://github.com/charmbracelet/vhs);
+`art/tapes/record-all.sh` regenerates them against a throwaway MPD instance and a synthetic demo track.
 
 ## What it does
 

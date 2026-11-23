@@ -1,0 +1,58 @@
+schema_version = 1
+
+[meta]
+name = "demo"
+author = "lyrachi"
+description = "Banner palette for the README preview recordings"
+
+[palette]
+bg = "#161718"
+fg = "#FAFAFA"
+accent = "#FA2560"
+dim = "#FAFAFA"
+duet = "#CBA6F7"
+backing = "#EE4580"
+backing_active = "#FA2560"
+
+[layout]
+align = "center"
+padding = [0, 2]
+line_spacing = 0
+visible_prev = 2
+visible_next = 3
+
+[lines.active]
+fg = "$fg"
+modifiers = []
+prefix = ""
+
+[lines.inactive]
+fg = "$dim"
+modifiers = ["dim"]
+prefix = ""
+
+[lines.fade]
+curve = "linear"
+falloff = 0.0
+
+[highlight]
+mode = "word"
+active_fg = "$accent"
+
+[instrumental]
+style = "dots"
+marker = "♫"
+min_gap_ms = 4000
+
+[annotations]
+show = true
+position = "below"
+fg = "reset"
+modifiers = ["dim", "italic"]
+
+[header]
+show = true
+
+[big_text]
+max_size = "auto"
+overflow = "single_line"

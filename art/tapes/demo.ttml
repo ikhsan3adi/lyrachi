@@ -1,0 +1,70 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Demo lyric sidecar for the README mode recordings: latin main text with
+     word-level timing, and two stacked translations per line rotating
+     through Japanese, Korean, Chinese, Russian, and Indonesian. Translations
+     render as plain terminal text in every display mode, so the wider
+     scripts stay readable; Arabic is left out on purpose because most
+     terminals do not shape Arabic. -->
+<tt xmlns="http://www.w3.org/ns/ttml"
+    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+    xml:lang="en">
+  <head>
+    <metadata>
+      <ttm:agent xml:id="v1" type="person"/>
+    </metadata>
+  </head>
+  <body>
+    <div>
+      <p begin="00:00:02.000" end="00:00:05.500" ttm:agent="v1">
+        <span begin="2.000s" end="2.600s">Paper</span> <span begin="2.600s" end="3.300s">lanterns</span> <span begin="3.300s" end="3.900s">drift</span> <span begin="3.900s" end="4.600s">across</span> <span begin="4.600s" end="4.900s">the</span> <span begin="4.900s" end="5.500s">night</span>
+        <span ttm:role="x-translation">紙の灯籠が夜を流れる</span>
+        <span ttm:role="x-translation">종이 등불이 밤을 떠다니네</span>
+      </p>
+      <p begin="00:00:07.000" end="00:00:10.500" ttm:agent="v1">
+        <span begin="7.000s" end="7.600s">Rivers</span> <span begin="7.600s" end="8.400s">carry</span> <span begin="8.400s" end="8.900s">every</span> <span begin="8.900s" end="9.500s">light</span> <span begin="9.500s" end="9.900s">we</span> <span begin="9.900s" end="10.500s">lose</span>
+        <span ttm:role="x-translation">강물은 사라진 빛을 실어 보내네</span>
+        <span ttm:role="x-translation">Реки уносят каждый потерянный свет</span>
+      </p>
+      <p begin="00:00:12.000" end="00:00:15.500" ttm:agent="v1">
+        <span begin="12.000s" end="12.700s">Slow</span> <span begin="12.700s" end="13.400s">water</span> <span begin="13.400s" end="14.200s">remembers</span> <span begin="14.200s" end="14.800s">where</span> <span begin="14.800s" end="15.100s">we</span> <span begin="15.100s" end="15.500s">walked</span>
+        <span ttm:role="x-translation">缓慢的水记得我们走过的地方</span>
+        <span ttm:role="x-translation">Медленная вода помнит наши шаги</span>
+      </p>
+      <p begin="00:00:17.000" end="00:00:21.000" ttm:agent="v1">
+        <span begin="17.000s" end="17.800s">Hold</span> <span begin="17.800s" end="18.300s">the</span> <span begin="18.300s" end="19.100s">evening</span> <span begin="19.100s" end="19.800s">open</span> <span begin="19.800s" end="20.200s">a</span> <span begin="20.200s" end="20.600s">while</span> <span begin="20.600s" end="21.000s">longer</span>
+        <span ttm:role="x-translation">夜をもう少し開けておいて</span>
+        <span ttm:role="x-translation">Tahan senja sedikit lebih lama</span>
+      </p>
+      <p begin="00:00:22.500" end="00:00:26.000" ttm:agent="v1">
+        <span begin="22.500s" end="23.200s">Every</span> <span begin="23.200s" end="23.900s">window</span> <span begin="23.900s" end="24.500s">borrows</span> <span begin="24.500s" end="24.900s">a</span> <span begin="24.900s" end="25.400s">small</span> <span begin="25.400s" end="26.000s">sun</span>
+        <span ttm:role="x-translation">每扇窗都借来一轮小太阳</span>
+        <span ttm:role="x-translation">Каждое окно одалживает маленькое солнце</span>
+      </p>
+      <p begin="00:00:27.500" end="00:00:31.000" ttm:agent="v1">
+        <span begin="27.500s" end="28.100s">We</span> <span begin="28.100s" end="28.800s">counted</span> <span begin="28.800s" end="29.500s">echoes</span> <span begin="29.500s" end="30.100s">instead</span> <span begin="30.100s" end="30.400s">of</span> <span begin="30.400s" end="31.000s">hours</span>
+        <span ttm:role="x-translation">우리는 시간 대신 메아리를 세었지</span>
+        <span ttm:role="x-translation">Kita menghitung gema, bukan jam</span>
+      </p>
+      <p begin="00:00:32.500" end="00:00:36.500" ttm:agent="v1">
+        <span begin="32.500s" end="33.300s">The</span> <span begin="33.300s" end="33.900s">bridge</span> <span begin="33.900s" end="34.500s">hums</span> <span begin="34.500s" end="34.900s">a</span> <span begin="34.900s" end="35.600s">half-remembered</span> <span begin="35.600s" end="36.500s">song</span>
+        <span ttm:role="x-translation">橋が遠い歌を口ずさむ</span>
+        <span ttm:role="x-translation">Мост напевает полузабытую песню</span>
+      </p>
+      <p begin="00:00:38.000" end="00:00:41.500" ttm:agent="v1">
+        <span begin="38.000s" end="38.700s">Rain</span> <span begin="38.700s" end="39.400s">rewrites</span> <span begin="39.400s" end="40.000s">the</span> <span begin="40.000s" end="40.500s">names</span> <span begin="40.500s" end="40.900s">on</span> <span begin="40.900s" end="41.500s">stone</span>
+        <span ttm:role="x-translation">雨在石上重写名字</span>
+        <span ttm:role="x-translation">Hujan menulis ulang nama di atas batu</span>
+      </p>
+      <p begin="00:00:43.000" end="00:00:47.000" ttm:agent="v1">
+        <span begin="43.000s" end="43.900s">Morning</span> <span begin="43.900s" end="44.600s">arrives</span> <span begin="44.600s" end="45.300s">without</span> <span begin="45.300s" end="46.000s">asking</span> <span begin="46.000s" end="47.000s">permission</span>
+        <span ttm:role="x-translation">Утро приходит без разрешения</span>
+        <span ttm:role="x-translation">朝は許可を求めずにやってくる</span>
+      </p>
+      <p begin="00:00:48.500" end="00:00:52.000" ttm:agent="v1">
+        <span begin="48.500s" end="49.200s">Still</span> <span begin="49.200s" end="49.700s">the</span> <span begin="49.700s" end="50.400s">lanterns</span> <span begin="50.400s" end="50.900s">keep</span> <span begin="50.900s" end="51.400s">drifting</span> <span begin="51.400s" end="52.000s">on</span>
+        <span ttm:role="x-translation">Lentera itu tetap hanyut pergi</span>
+        <span ttm:role="x-translation">灯笼依旧漂向远方</span>
+      </p>
+    </div>
+  </body>
+</tt>

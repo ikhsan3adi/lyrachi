@@ -2,4 +2,6 @@
 /.ignore
 /.agents
 /.opencode
+/art/modes/raw
+/art/tapes/$LYRACHI_RAW
 AGENTS.md
