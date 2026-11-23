@@ -400,7 +400,17 @@ mod tests {
     }
 
     fn cleanup(path: &Path) {
-        let _ = fs::remove_file(path);
+        // The cache worker drops its connection only after replying to the
+        // shutdown command, so on Windows the file can still be locked when a
+        // test's guard runs. Retry briefly instead of leaking the database
+        // into the working directory.
+        for _ in 0..20 {
+            match fs::remove_file(path) {
+                Ok(()) => break,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => break,
+                Err(_) => std::thread::sleep(std::time::Duration::from_millis(25)),
+            }
+        }
         for suffix in ["-wal", "-shm"] {
             let mut name = path.file_name().unwrap().to_os_string();
             name.push(suffix);
