@@ -1039,6 +1039,8 @@ pub enum BigTextOverflow {
     Shrink,
     Wrap,
     FallbackNormal,
+    /// Keep the phrase on one big-text row, shrinking the font until it fits.
+    SingleLine,
 }
 
 /// Block mode typography limits (`[big_text]`).

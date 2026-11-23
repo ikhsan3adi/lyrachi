@@ -74,7 +74,7 @@ impl BlockLayout {
         };
 
         let sizes_to_try = match overflow {
-            BigTextOverflow::Shrink => candidates,
+            BigTextOverflow::Shrink | BigTextOverflow::SingleLine => candidates,
             BigTextOverflow::FallbackNormal | BigTextOverflow::Wrap => {
                 if candidates.is_empty() {
                     &[]
@@ -83,7 +83,6 @@ impl BlockLayout {
                 }
             }
         };
-        let allow_split = overflow == BigTextOverflow::Wrap;
 
         for &size in sizes_to_try {
             let (glyphs, unsupported, non_space) = glyphs_for(&clusters, size, ambiguous_width);
@@ -98,7 +97,7 @@ impl BlockLayout {
                 unsupported,
                 max_width,
                 max_height,
-                allow_split,
+                overflow,
             ) {
                 return layout;
             }
@@ -307,8 +306,10 @@ fn try_layout(
     unsupported: usize,
     max_width: u16,
     max_height: u16,
-    allow_split: bool,
+    overflow: BigTextOverflow,
 ) -> Option<BlockLayout> {
+    let allow_split = overflow == BigTextOverflow::Wrap;
+    let single_line = overflow == BigTextOverflow::SingleLine;
     if !allow_split {
         for unit in units.iter().filter(|unit| !unit.is_space) {
             if unit_width(unit, glyphs) > max_width {
@@ -318,7 +319,7 @@ fn try_layout(
     }
 
     let (lines, overflow) = wrap_units(units, glyphs, allow_split, max_width);
-    if overflow {
+    if overflow || (single_line && lines.len() > 1) {
         return None;
     }
 
@@ -575,6 +576,46 @@ mod tests {
             BigTextOverflow::FallbackNormal,
         );
         assert_eq!(fallback_plain.font_size, BlockFontSize::Plain);
+    }
+
+    #[test]
+    fn single_line_overflow_keeps_one_row_or_falls_back_to_plain() {
+        // Wide viewport: a large size fits on one row and is kept.
+        let wide = layout_text_with_options(
+            "Hi there",
+            120,
+            24,
+            1,
+            BigTextMaxSize::Auto,
+            BigTextOverflow::SingleLine,
+        );
+        assert_ne!(wide.font_size, BlockFontSize::Plain);
+        assert_eq!(wide.lines.len(), 1);
+
+        // Narrow viewport: no big size fits on one row, so the text falls
+        // back to plain rendering instead of wrapping the big glyphs.
+        let narrow = layout_text_with_options(
+            "A somewhat longer phrase",
+            30,
+            24,
+            1,
+            BigTextMaxSize::Auto,
+            BigTextOverflow::SingleLine,
+        );
+        assert_eq!(narrow.font_size, BlockFontSize::Plain);
+
+        // The default shrink strategy still accepts a wrapped big layout
+        // once every word fits the width on its own.
+        let wrapped = layout_text_with_options(
+            "A somewhat longer phrase",
+            80,
+            24,
+            1,
+            BigTextMaxSize::Auto,
+            BigTextOverflow::Shrink,
+        );
+        assert_ne!(wrapped.font_size, BlockFontSize::Plain);
+        assert!(wrapped.lines.len() > 1);
     }
 
     #[test]

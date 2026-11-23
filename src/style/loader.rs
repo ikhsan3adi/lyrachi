@@ -576,6 +576,7 @@ mod tests {
     use ratatui::style::Color;
 
     use super::*;
+    use crate::style::BigTextOverflow;
     use crate::style::color::FadeCurve;
     use crate::style::{AnimationColorSpace, HighlightMode, LineChangeEffectKind};
 
@@ -844,6 +845,34 @@ duration_ms = 400
             outcome.profile.animation.on_line_change[0].effect,
             LineChangeEffectKind::Sweep
         );
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn parses_big_text_overflow_modes() {
+        let dir = temp_styles_dir("big_text_overflow");
+        for (value, expected) in [
+            ("shrink", BigTextOverflow::Shrink),
+            ("wrap", BigTextOverflow::Wrap),
+            ("fallback_normal", BigTextOverflow::FallbackNormal),
+            ("single_line", BigTextOverflow::SingleLine),
+        ] {
+            fs::write(
+                dir.join("overflow.toml"),
+                format!(
+                    r#"
+[big_text]
+overflow = "{value}"
+"#
+                ),
+            )
+            .unwrap();
+
+            let outcome = load_style("overflow", Some(&dir), 80).unwrap();
+            assert!(outcome.warnings.is_empty(), "{:?}", outcome.warnings);
+            assert_eq!(outcome.profile.big_text.overflow, expected);
+        }
 
         let _ = fs::remove_dir_all(&dir);
     }
