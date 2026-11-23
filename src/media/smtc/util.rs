@@ -26,6 +26,9 @@ pub enum RawPlaybackStatus {
 }
 
 impl RawPlaybackStatus {
+    // Read by the `debug smtc` dump, which only exists on Windows; off Windows
+    // the module still compiles for the unit tests.
+    #[cfg_attr(not(target_os = "windows"), allow(dead_code))]
     pub const fn as_str(self) -> &'static str {
         match self {
             Self::Closed => "closed",
