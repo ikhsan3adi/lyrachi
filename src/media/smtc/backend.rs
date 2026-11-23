@@ -654,16 +654,20 @@ mod tests {
 
     #[test]
     fn normal_advance_is_always_accepted() {
-        let mut state = MonitorState::default();
-        state.last_position_ms = 90_000;
+        let mut state = MonitorState {
+            last_position_ms: 90_000,
+            ..MonitorState::default()
+        };
         assert_eq!(accept_position(&mut state, 90_500, false), Some(90_500));
         assert_eq!(state.held_position, None);
     }
 
     #[test]
     fn backward_jump_is_held_then_confirmed() {
-        let mut state = MonitorState::default();
-        state.last_position_ms = 90_000;
+        let mut state = MonitorState {
+            last_position_ms: 90_000,
+            ..MonitorState::default()
+        };
 
         // First suspicious sample: held, nothing emitted.
         assert_eq!(accept_position(&mut state, 30_000, false), None);
@@ -676,8 +680,10 @@ mod tests {
 
     #[test]
     fn recovered_sample_discards_the_hold() {
-        let mut state = MonitorState::default();
-        state.last_position_ms = 90_000;
+        let mut state = MonitorState {
+            last_position_ms: 90_000,
+            ..MonitorState::default()
+        };
 
         assert_eq!(accept_position(&mut state, 0, false), None);
         // The glitch is gone and the timeline is back at the frozen value.
@@ -687,8 +693,10 @@ mod tests {
 
     #[test]
     fn a_track_change_bypasses_the_guard() {
-        let mut state = MonitorState::default();
-        state.last_position_ms = 90_000;
+        let mut state = MonitorState {
+            last_position_ms: 90_000,
+            ..MonitorState::default()
+        };
         // A new track legitimately starts near zero.
         assert_eq!(accept_position(&mut state, 400, true), Some(400));
         assert_eq!(state.held_position, None);
@@ -696,8 +704,10 @@ mod tests {
 
     #[test]
     fn a_still_suspicious_sample_updates_the_hold() {
-        let mut state = MonitorState::default();
-        state.last_position_ms = 90_000;
+        let mut state = MonitorState {
+            last_position_ms: 90_000,
+            ..MonitorState::default()
+        };
 
         assert_eq!(accept_position(&mut state, 0, false), None);
         // A different far-behind value outside the confirm window: keep

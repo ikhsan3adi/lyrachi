@@ -7,7 +7,9 @@ use color_eyre::Result;
 use serde::Serialize;
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, warn};
+#[cfg(unix)]
+use tracing::debug;
+use tracing::warn;
 
 use crate::cache::CacheHandle;
 use crate::cli::PipeFormat;

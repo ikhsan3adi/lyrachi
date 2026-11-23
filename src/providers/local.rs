@@ -540,7 +540,7 @@ fn file_url_path(raw: &str) -> Option<PathBuf> {
     if decoded.contains('\0') {
         return None;
     }
-    let path = PathBuf::from(decoded);
+    let path = PathBuf::from(strip_windows_drive_slash(&decoded));
     if !path.is_absolute()
         || path
             .components()
@@ -550,6 +550,20 @@ fn file_url_path(raw: &str) -> Option<PathBuf> {
     }
 
     Some(path)
+}
+
+/// Windows file URLs keep the drive behind the root slash (`file:///D:/...`),
+/// while the absolute form on this platform is `D:/...`. Applied everywhere so
+/// the parser behaves identically on every platform; the only casualty is a
+/// Unix directory literally named `D:`, which no real library has.
+fn strip_windows_drive_slash(decoded: &str) -> &str {
+    if let Some(rest) = decoded.strip_prefix('/') {
+        let bytes = rest.as_bytes();
+        if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+            return rest;
+        }
+    }
+    decoded
 }
 
 fn percent_decode(raw: &str) -> Option<String> {
@@ -750,6 +764,63 @@ mod tests {
             },
             0,
         )
+    }
+
+    /// Build a spec-correct `file://` URL for `path` on every platform:
+    /// forward slashes, percent-encoded, and the drive behind the root slash
+    /// (`file:///D:/...`). Hand-rolled so the fixtures need no URL crate.
+    fn file_url(path: &std::path::Path) -> String {
+        let text = path.to_string_lossy().replace('\\', "/");
+        let encoded: String = text
+            .bytes()
+            .map(|byte| match byte {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' => {
+                    (byte as char).to_string()
+                }
+                other => format!("%{other:02X}"),
+            })
+            .collect();
+        let slashed = if encoded.starts_with('/') {
+            encoded
+        } else {
+            format!("/{encoded}")
+        };
+        format!("file://{slashed}")
+    }
+
+    #[test]
+    fn rejects_non_local_authorities() {
+        assert_eq!(file_url_path("file://D:/Music/Song.flac"), None);
+        assert_eq!(file_url_path("file://server/share/Song.flac"), None);
+    }
+
+    #[test]
+    fn rejects_traversal_in_file_urls() {
+        assert_eq!(file_url_path("file:///music/./Song.flac"), None);
+        assert_eq!(file_url_path("file:///music/../etc/Song.flac"), None);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn parses_windows_drive_file_urls() {
+        assert_eq!(
+            file_url_path("file:///D:/Music/Coldplay/Song.flac"),
+            Some(PathBuf::from("D:/Music/Coldplay/Song.flac"))
+        );
+        // Encoded spaces survive the drive rewrite.
+        assert_eq!(
+            file_url_path("file:///D:/My%20Music/Song.flac"),
+            Some(PathBuf::from("D:/My Music/Song.flac"))
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parses_unix_file_urls() {
+        assert_eq!(
+            file_url_path("file:///music/Coldplay/Song.flac"),
+            Some(PathBuf::from("/music/Coldplay/Song.flac"))
+        );
     }
 
     #[tokio::test]
@@ -973,7 +1044,7 @@ mod tests {
         )
         .unwrap();
 
-        let url = format!("file://{}", audio.display().to_string().replace(' ', "%20"));
+        let url = file_url(&audio);
         let track = LocalProvider::with_dirs(vec![music_dir.clone()])
             .find(&query_with_url("Yellow", "Coldplay", None, Some(url)))
             .await
@@ -1010,8 +1081,8 @@ mod tests {
             "rtsp://example.com/Song.flac".to_string(),
             "Song.flac".to_string(),
             format!(
-                "file://{}/../{}/Song.flac",
-                audio_dir.display(),
+                "{}/../{}/Song.flac",
+                file_url(&audio_dir),
                 outside_dir.file_name().unwrap().to_string_lossy()
             ),
         ] {
@@ -1041,12 +1112,7 @@ mod tests {
         std::fs::write(&artist_lrc, "[00:01.00]Artist LRC\n").unwrap();
 
         let provider = LocalProvider::with_dirs(vec![dir.clone()]);
-        let q = query_with_url(
-            "Song",
-            "Artist",
-            None,
-            Some(format!("file://{}", audio_path.display())),
-        );
+        let q = query_with_url("Song", "Artist", None, Some(file_url(&audio_path)));
         let cancel = CancellationToken::new();
 
         let candidates = provider.search_candidates(&q, &cancel).await.unwrap();

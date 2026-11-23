@@ -422,6 +422,16 @@ mod tests {
         }
     }
 
+    /// Deletes a test database when dropped, so a panicking assertion cannot
+    /// leak files into the working directory.
+    struct TempDb(PathBuf);
+
+    impl Drop for TempDb {
+        fn drop(&mut self) {
+            cleanup(&self.0);
+        }
+    }
+
     #[tokio::test]
     async fn positive_entry_survives_across_cache_handles() {
         let path = temp_path("roundtrip");
@@ -520,13 +530,12 @@ mod tests {
             .as_nanos();
         let bare_name = format!("lyrachi-bare-corrupt-{}-{stamp}.db", std::process::id());
         let bare_path = PathBuf::from(&bare_name);
+        let _guard = TempDb(bare_path.clone());
         fs::write(&bare_path, b"garbage data").unwrap();
 
         let handle = CacheHandle::open(&bare_path).expect("bare relative path should recover");
         assert!(handle.lookup(&sample_key()).await.unwrap().answer.is_none());
         handle.shutdown().await.unwrap();
-
-        cleanup(&bare_path);
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]

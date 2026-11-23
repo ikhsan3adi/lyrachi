@@ -21,9 +21,7 @@ jobs:
       - run: cargo test --all-features
       - run: cargo test --no-default-features
 
-  # Dormant until the two Windows-failing providers::local tests are fixed.
   test-windows:
-    if: false
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
