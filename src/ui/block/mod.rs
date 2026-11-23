@@ -11,6 +11,7 @@ pub(crate) mod stage;
 pub use font::{BlockFontSize, GlyphBitmap};
 pub use layout::{
     BlockCell, BlockLayout, Glyph, VisualLine, layout_text, layout_text_with_options,
+    single_line_chunks,
 };
 
 use crate::style::{BigTextMaxSize, BigTextOverflow};

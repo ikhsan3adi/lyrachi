@@ -163,6 +163,57 @@ pub fn layout_text_with_options(
     )
 }
 
+/// Byte ranges of `text` split at word boundaries so every chunk fits one
+/// Block-size row within `max_width`. Returns a single range when the text
+/// already fits. A unit wider than `max_width` on its own becomes its own
+/// chunk and still falls back to plain rendering.
+pub fn single_line_chunks(text: &str, max_width: u16, ambiguous_width: u8) -> Vec<(usize, usize)> {
+    if text.is_empty() || max_width == 0 {
+        return vec![(0, text.len())];
+    }
+    let clusters = clusters(text);
+    let units = build_units(&clusters);
+    let (glyphs, _, _) = glyphs_for(&clusters, BlockFontSize::Block, ambiguous_width);
+
+    let mut ranges: Vec<(usize, usize)> = Vec::new();
+    let mut chunk: Vec<usize> = Vec::new();
+    let mut last_non_space: Option<usize> = None;
+    let mut width: u16 = 0;
+
+    for (index, unit) in units.iter().enumerate() {
+        let unit_width = unit_width(unit, &glyphs);
+        if !chunk.is_empty() && width.saturating_add(unit_width) > max_width {
+            let start = clusters[units[chunk[0]].clusters[0]].byte_range.0;
+            let end = clusters[last_non_space.expect("chunks start with a non-space unit")]
+                .byte_range
+                .1;
+            ranges.push((start, end));
+            chunk.clear();
+            last_non_space = None;
+            width = 0;
+        }
+        if chunk.is_empty() && unit.is_space {
+            continue;
+        }
+        if !unit.is_space {
+            last_non_space = Some(*unit.clusters.last().expect("units are non-empty"));
+        }
+        chunk.push(index);
+        width = width.saturating_add(unit_width);
+    }
+
+    if let Some(last) = last_non_space {
+        ranges.push((
+            clusters[units[chunk[0]].clusters[0]].byte_range.0,
+            clusters[last].byte_range.1,
+        ));
+    }
+    if ranges.is_empty() {
+        return vec![(0, text.len())];
+    }
+    ranges
+}
+
 #[derive(Debug, Clone)]
 struct Cluster<'a> {
     text: &'a str,
@@ -576,6 +627,42 @@ mod tests {
             BigTextOverflow::FallbackNormal,
         );
         assert_eq!(fallback_plain.font_size, BlockFontSize::Plain);
+    }
+
+    #[test]
+    fn single_line_chunks_split_at_word_boundaries() {
+        // Fits: a single range covering the text.
+        assert_eq!(single_line_chunks("Hi there", 120, 1), vec![(0, 8)]);
+
+        // Too wide: chunks break at spaces, carry no leading or trailing
+        // spaces, and each chunk renders big on one row.
+        let text = "Rivers carry every light";
+        let ranges = single_line_chunks(text, 60, 1);
+        assert!(ranges.len() > 1);
+        let mut rebuilt = String::new();
+        for (index, (start, end)) in ranges.iter().enumerate() {
+            let chunk = &text[*start..*end];
+            assert!(!chunk.starts_with(' '), "chunk {index} starts with a space");
+            assert!(!chunk.ends_with(' '), "chunk {index} ends with a space");
+            if index > 0 {
+                rebuilt.push(' ');
+            }
+            rebuilt.push_str(chunk);
+            let layout = layout_text_with_options(
+                chunk,
+                60,
+                24,
+                1,
+                BigTextMaxSize::Auto,
+                BigTextOverflow::SingleLine,
+            );
+            assert_ne!(
+                layout.font_size,
+                BlockFontSize::Plain,
+                "chunk {index:?} does not fit one row"
+            );
+        }
+        assert_eq!(rebuilt, text);
     }
 
     #[test]
