@@ -14,7 +14,7 @@
 
 <div align="center">
 
-[![version](https://img.shields.io/badge/version-0.2.0-blue?style=flat-square)](#building-and-installing)
+[![version](https://img.shields.io/badge/version-0.3.0-blue?style=flat-square)](#building-and-installing)
 <!-- [![crates.io downloads](https://img.shields.io/crates/d/lyrachi?style=flat-square&label=crates.io%20downloads&color=B7410E&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi) -->
 [![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
 <!-- [![AUR Last Modified](https://img.shields.io/aur/last-modified/lyrachi?style=flat-square&logo=arch-linux)](https://aur.archlinux.org/packages/lyrachi) -->
