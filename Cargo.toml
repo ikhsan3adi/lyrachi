@@ -4,6 +4,12 @@ version = "0.2.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal"
+license = "GPL-3.0-only"
+authors = ["Ikhsan Satriadi <ikhsan3adi@proton.me>"]
+repository = "https://github.com/ikhsan3adi/lyrachi"
+readme = "README.md"
+keywords = ["lyrics", "karaoke", "tui", "mpris", "music"]
+categories = ["multimedia::audio", "command-line-utilities"]
 
 [dependencies]
 ratatui = { version = "0.30.2", features = ["crossterm_0_29"] }
