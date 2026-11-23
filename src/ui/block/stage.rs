@@ -6,7 +6,7 @@ use ratatui::{
 
 use crate::compiler::timeline::{CompiledLine, CompiledTimeline, WaitKind};
 use crate::core::model::{LineRole, SyncedTrack};
-use crate::style::{BigTextMaxSize, HighlightMode, ResolvedStyle};
+use crate::style::{BigTextMaxSize, BigTextOverflow, HighlightMode, ResolvedStyle};
 use crate::ui::UiState;
 use crate::ui::render::{
     BLOCK_COUNTDOWN_ROWS, CountdownSize, ModeRenderer, RenderContext, WordState, centered_message,
@@ -108,7 +108,7 @@ fn render_block_synced(
                 max_height,
                 timeline.context.ambiguous_width,
                 state.style.big_text_max_size,
-                state.style.big_text_overflow,
+                block_overflow(state.style.big_text_overflow),
             );
             context_needs_plain |= layout.font_size == BlockFontSize::Plain;
         }
@@ -159,7 +159,7 @@ fn render_block_synced(
                 meta.max_height,
                 timeline.context.ambiguous_width,
                 meta.layout_max_size,
-                state.style.big_text_overflow,
+                block_overflow(state.style.big_text_overflow),
             );
             usize::from(layout.height).saturating_add(annotation_rows)
         };
@@ -240,7 +240,7 @@ fn render_block_synced(
             meta.max_height,
             timeline.context.ambiguous_width,
             meta.layout_max_size,
-            style.big_text_overflow,
+            block_overflow(style.big_text_overflow),
         );
         let distance = meta.index.abs_diff(anchor);
         let alignment = style.alignment(compiled.role, viewport_width);
@@ -356,8 +356,35 @@ pub(crate) fn block_styles(
     }
 }
 
+/// Block stages whole lines as a wall, so the phrase-stage `single_line`
+/// overflow cannot be honored and behaves like `shrink` here.
+fn block_overflow(overflow: BigTextOverflow) -> BigTextOverflow {
+    match overflow {
+        BigTextOverflow::SingleLine => BigTextOverflow::Shrink,
+        other => other,
+    }
+}
+
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn single_line_overflow_behaves_like_shrink_in_block_stages() {
+        assert_eq!(
+            block_overflow(BigTextOverflow::SingleLine),
+            BigTextOverflow::Shrink
+        );
+        assert_eq!(
+            block_overflow(BigTextOverflow::Shrink),
+            BigTextOverflow::Shrink
+        );
+        assert_eq!(block_overflow(BigTextOverflow::Wrap), BigTextOverflow::Wrap);
+        assert_eq!(
+            block_overflow(BigTextOverflow::FallbackNormal),
+            BigTextOverflow::FallbackNormal
+        );
+    }
+
     use super::*;
 
     #[test]
