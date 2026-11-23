@@ -2,42 +2,52 @@ name: CI
 
 on:
   push:
+    branches: ["master"]
   pull_request:
 
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
           components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
       - run: cargo fmt --all --check
-      - run: cargo clippy --all-targets --all-features -- -D warnings
-      - run: cargo test --all-features
-      - run: cargo test --no-default-features
+      - run: cargo clippy --locked --all-targets --all-features -- -D warnings
+      - run: cargo test --locked --all-features
+      - run: cargo test --locked --no-default-features
       # The draw-performance checks are ignored in debug builds; their
       # budgets are release-mode product requirements.
-      - run: cargo test --release --all-features --test dod_verification
+      - run: cargo test --locked --release --all-features --test dod_verification
 
   test-windows:
     runs-on: windows-latest
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
-      - run: cargo test --all-features
-      - run: cargo test --no-default-features
-      - run: cargo test --release --all-features --test dod_verification
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo test --locked --all-features
+      - run: cargo test --locked --no-default-features
+      - run: cargo test --locked --release --all-features --test dod_verification
 
   check:
     name: check (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
@@ -47,5 +57,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: 1.89.0
-      - run: cargo check --all-targets --all-features
-      - run: cargo check --all-targets --no-default-features
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo check --locked --all-targets --all-features
+      - run: cargo check --locked --all-targets --no-default-features
