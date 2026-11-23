@@ -1,0 +1,75 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Showcase TTML for Lyrachi: one file exercising every annotation kind
+  and line role the semantic model supports.
+
+  AnnotationKind  where
+  Translation     p1  span ttm:role="x-translation"
+  Romanization    p1  span ttm:role="x-roman"
+  Secondary       p4 + p5 (two same-script lines whose starts are within 20 ms;
+                          produced by the normalizer, not by TTML syntax)
+  Background      p3  inline span ttm:role="x-bg" inside a line that has main text
+
+  LineRole        where
+  Primary         p1, p4 (first ttm:agent in the document, v1)
+  DuetSecondary   p2, p7 (agent v2)
+  BackgroundVocal p6  (ttm:role="x-bg" on the p itself)
+  InstrumentalBreak synthesized: the 9 s gap between p6 (ends 14.000)
+                    and p7 (begins 23.000) becomes a [Instrumental] line
+
+  Granularity: p1 syllable-level (adjacent spans, no whitespace between them),
+  p2/p3/p7 word-level (spaced spans).
+-->
+<tt xmlns="http://www.w3.org/ns/ttml"
+    xmlns:ttm="http://www.w3.org/ns/ttml#metadata"
+    xml:lang="ja">
+  <head>
+    <metadata>
+      <ttm:agent xml:id="v1" type="person"/>
+      <ttm:agent xml:id="v2" type="person"/>
+    </metadata>
+  </head>
+  <body>
+    <div>
+
+      <!-- p1: Primary, syllable-level, Translation + Romanization -->
+      <p begin="00:00:01.000" end="00:00:04.000" ttm:agent="v1">
+        <span begin="1.000s" end="1.400s">灯</span><span begin="1.400s" end="1.800s">り</span><span begin="1.800s" end="2.300s">が</span><span begin="2.300s" end="2.800s">川</span><span begin="2.800s" end="3.200s">を</span><span begin="3.200s" end="3.500s">照</span><span begin="3.500s" end="3.750s">ら</span><span begin="3.750s" end="4.000s">す</span>
+        <span ttm:role="x-roman">Hi ga kawa o terasu</span>
+        <span ttm:role="x-translation">Lantern light on the river</span>
+      </p>
+
+      <!-- p2: DuetSecondary (agent v2), word-level -->
+      <p begin="00:00:04.200" end="00:00:07.000" ttm:agent="v2">
+        <span begin="4.200s" end="4.900s">Counting</span> <span begin="5.000s" end="5.600s">waves</span> <span begin="5.700s" end="6.200s">with</span> <span begin="6.300s" end="7.000s">you</span>
+      </p>
+
+      <!-- p3: Primary with an inline Background annotation -->
+      <p begin="00:00:07.200" end="00:00:10.000" ttm:agent="v1">
+        <span begin="7.200s" end="7.700s">Every</span> <span begin="7.800s" end="8.400s">window</span> <span begin="8.500s" end="9.000s">glows</span>
+        <span ttm:role="x-bg" begin="9.000s" end="10.000s">(over and over)</span>
+      </p>
+
+      <!-- p4 + p5: duplicate pair within 20 ms -> Secondary annotation -->
+      <p begin="00:00:10.500" end="00:00:11.800" ttm:agent="v1">
+        <span begin="10.500s" end="11.000s">Golden</span> <span begin="11.100s" end="11.800s">hour</span>
+      </p>
+      <p begin="00:00:10.510" end="00:00:11.800" ttm:agent="v1">
+        <span begin="10.510s" end="11.000s">Golden</span> <span begin="11.100s" end="11.800s">hour</span>
+      </p>
+
+      <!-- p6: BackgroundVocal line (x-bg on the p, no main content) -->
+      <p begin="00:00:12.000" end="00:00:14.000" ttm:role="x-bg">
+        <span begin="12.000s" end="14.000s">Ooh</span>
+      </p>
+
+      <!-- 9 s gap here: the normalizer inserts an InstrumentalBreak line -->
+
+      <!-- p7: DuetSecondary closing line, word-level -->
+      <p begin="00:00:23.000" end="00:00:25.000" ttm:agent="v2">
+        <span begin="23.000s" end="23.600s">Harbor</span> <span begin="23.700s" end="24.200s">lights</span> <span begin="24.300s" end="25.000s">coming home</span>
+      </p>
+
+    </div>
+  </body>
+</tt>

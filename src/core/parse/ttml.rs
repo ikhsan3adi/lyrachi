@@ -593,6 +593,7 @@ mod tests {
     use crate::core::model::{SyncGranularity, is_intra_word_join};
 
     const SAMPLE: &str = include_str!("../../../tests/fixtures/sample_syllable.ttml");
+    const SHOWCASE: &str = include_str!("../../../examples/lyrics/showcase.ttml");
 
     fn assert_track_invariants(track: &SyncedTrack) {
         for line in &track.lines {
@@ -651,6 +652,39 @@ mod tests {
         }));
         assert_eq!(track.lines[3].role, LineRole::BackgroundVocal);
         assert_eq!(track.lines[3].text, "Echo");
+    }
+
+    #[test]
+    fn parses_showcase_ttml_with_every_annotation_kind_and_role() {
+        let track = parse_ttml(SHOWCASE, "ttml-showcase").unwrap();
+
+        assert_track_invariants(&track);
+        assert_eq!(track.granularity, SyncGranularity::Syllable);
+
+        let mut kinds = Vec::new();
+        let mut roles = Vec::new();
+        for line in &track.lines {
+            roles.push(line.role);
+            for annotation in &line.annotations {
+                kinds.push(annotation.kind);
+            }
+        }
+        for kind in [
+            AnnotationKind::Translation,
+            AnnotationKind::Romanization,
+            AnnotationKind::Secondary,
+            AnnotationKind::Background,
+        ] {
+            assert!(kinds.contains(&kind), "missing annotation kind {kind:?}");
+        }
+        for role in [
+            LineRole::Primary,
+            LineRole::DuetSecondary,
+            LineRole::BackgroundVocal,
+            LineRole::InstrumentalBreak,
+        ] {
+            assert!(roles.contains(&role), "missing line role {role:?}");
+        }
     }
 
     #[test]

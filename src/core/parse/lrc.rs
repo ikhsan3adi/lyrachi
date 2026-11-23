@@ -288,6 +288,57 @@ fn parse_seconds(value: &str) -> Option<(u64, u64)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::core::model::{AnnotationKind, LineRole, SyncGranularity, is_intra_word_join};
+    use crate::core::normalize::normalize_track;
+
+    const SHOWCASE: &str = include_str!("../../../examples/lyrics/showcase.elrc");
+
+    #[test]
+    fn normalizes_showcase_elrc_annotations_break_and_granularity() {
+        let parsed = parse_lrc(SHOWCASE, None).unwrap();
+        let track = normalize_track(parsed, "local", None, 1.0, None, 0);
+
+        assert_eq!(track.granularity, SyncGranularity::Syllable);
+
+        let mut kinds = Vec::new();
+        let mut roles = Vec::new();
+        for line in &track.lines {
+            roles.push(line.role);
+            for annotation in &line.annotations {
+                kinds.push((annotation.kind, annotation.text.clone()));
+            }
+        }
+        assert!(
+            kinds.iter().any(
+                |(kind, text)| *kind == AnnotationKind::Secondary && text == "Faroles de papel"
+            ),
+            "missing Secondary annotation, got {kinds:?}"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(kind, text)| *kind == AnnotationKind::Translation && text == "月光"),
+            "missing Translation annotation, got {kinds:?}"
+        );
+        assert!(
+            kinds
+                .iter()
+                .any(|(kind, text)| *kind == AnnotationKind::Romanization && text == "Yakou"),
+            "missing Romanization annotation, got {kinds:?}"
+        );
+        assert!(roles.contains(&LineRole::InstrumentalBreak));
+
+        let neon = track
+            .lines
+            .iter()
+            .find(|line| line.text.contains("neon"))
+            .expect("syllable-joined line");
+        assert!(is_intra_word_join(
+            &neon.text,
+            &neon.words[0],
+            &neon.words[1]
+        ));
+    }
 
     #[test]
     fn parses_timestamps() {
