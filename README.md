@@ -60,7 +60,8 @@ Playback comes from the player, not from Lyrachi. Supported today:
 
 - **MPRIS** on Linux and the BSDs: any player that implements the standard (mpv, Spotify desktop, Firefox, Chromium, Strawberry, and most others).
 - **SMTC** on Windows 10 (1809+) and Windows 11: any app that reports to System Media Transport Controls — Spotify desktop, Media Player, browsers, and most native players. Run `lyrachi debug smtc` to list the sessions Lyrachi can see.
-- **AppleScript** on macOS: Music.app and Spotify desktop through one-shot `osascript` polls. The first call may raise the macOS Automation consent dialog, and the permission is attributed to the terminal app you run Lyrachi from, not to Lyrachi itself. Run `lyrachi debug applescript` to dump what Lyrachi sees. Compile-tested; runtime verification on real hardware is still pending.
+- **MediaRemote** on macOS: whatever macOS reports as Now Playing (Music.app, Spotify desktop, browsers, native players) through the optional [`media-control`](https://formulae.brew.sh/formula/media-control) CLI. Install it with `brew install media-control`; updates arrive as an event stream and the adapter supplies its own sample timestamps. Run `lyrachi debug mediaremote` to dump the payload and raw frames. Compile-tested; runtime verification on real hardware is still pending.
+- **AppleScript** on macOS, used when MediaRemote is unavailable: Music.app and Spotify desktop through one-shot `osascript` polls. The first call may raise the macOS Automation consent dialog, and the permission is attributed to the terminal app you run Lyrachi from, not to Lyrachi itself. Run `lyrachi debug applescript` to dump what Lyrachi sees. Compile-tested; runtime verification on real hardware is still pending.
 - **MPD** over TCP, disabled by default and enabled under `[media.mpd]`.
 - **WebNowPlaying**: a local WebSocket bridge for the browser extension, enabled under `[media.webnowplaying]`.
 
@@ -168,7 +169,9 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Limitations
 
-- The macOS backend is compile-tested only; it has not been verified on real hardware yet. Spotify's position can freeze during crossfade, and its seconds-versus-milliseconds reporting is decided by a heuristic that real-world dumps may correct.
+- The macOS backends are compile-tested only; they have not been verified on real hardware yet.
+- The MediaRemote path follows only the single source macOS selects as Now Playing, and it depends on `media-control`, whose adapter API may change between minor releases. When the binary is missing or the stream fails, Lyrachi falls back to AppleScript.
+- Spotify's position can freeze during crossfade, and its seconds-versus-milliseconds reporting is decided by a heuristic that real-world dumps may correct.
 - Selecting `media.backends = ["applescript"]` on a non-macOS platform warns and drops the entry, which leaves the backend allowlist empty (every supported backend enabled).
 - On Windows, Lyrachi follows whole SMTC sessions: it cannot tell two browser tabs apart, and players that never refresh their timeline report a stale sample age.
 - On Windows, browsers only carry a playback position when the website pushes one (`mediaSession.setPositionState`). Sites that set it once at play start leave the position frozen, and sites that never set it report zero, so Lyrachi starts from that stale value instead of the real one. Seek or pause-resume once to re-anchor, or use the WebNowPlaying extension, which reports the position live.
@@ -179,7 +182,7 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 
 ## Roadmap
 
-- **macOS**: runtime verification of the AppleScript backend on real hardware, then an event-driven MediaRemote adapter covering every Now Playing source.
+- **macOS**: runtime verification of the MediaRemote and AppleScript backends on real hardware.
 - **Stable release**: render benchmarks and UI snapshots finalized for every display mode.
 
 After that, the visual era: full bitmap font coverage for CJK and other scripts in the block and cylinder modes, broader visual and UI polish, more built-in color schemes, and album artwork with dynamic accent colors.
