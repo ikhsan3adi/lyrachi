@@ -109,7 +109,7 @@ async fn pipe_prints_once_per_active_line_despite_position_polls() {
     };
     let positions = (0..=99).map(|index| index * 100).collect::<Vec<_>>();
     let mut schedule = start_events();
-    schedule.extend(poll_events(300, 2, &positions));
+    schedule.extend(poll_events(300, 20, &positions));
 
     let output = run_pipe(
         schedule,
@@ -144,7 +144,11 @@ async fn pipe_json_output_is_one_valid_object_per_line() {
         ..RuntimeConfig::default()
     };
     let mut schedule = start_events();
-    schedule.extend(poll_events(300, 2, &[0, 5_000]));
+    schedule.extend(poll_events(
+        300,
+        200,
+        &[0, 5_000, 0, 5_000, 0, 5_000, 0, 5_000, 0, 5_000],
+    ));
 
     let output = run_pipe(
         schedule,
@@ -189,7 +193,7 @@ async fn pipe_json_emits_when_playback_status_changes_on_the_same_line() {
         ..RuntimeConfig::default()
     };
     let mut schedule = start_events();
-    schedule.extend(poll_events(300, 2, &[0, 100]));
+    schedule.extend(poll_events(300, 200, &[100; 10]));
     schedule.push((
         Duration::from_millis(500),
         MediaEvent::Status(PlaybackStatus::Paused),
