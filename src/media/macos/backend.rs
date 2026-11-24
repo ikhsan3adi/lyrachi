@@ -1074,6 +1074,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_process_times_out_and_kills_the_child() {
         let cancel = CancellationToken::new();
         let result = run_process("/bin/sleep", &["30"], Duration::from_millis(150), &cancel);
@@ -1087,6 +1088,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_process_honours_cancellation() {
         let cancel = CancellationToken::new();
         let killer = cancel.clone();
@@ -1123,6 +1125,7 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
     fn run_process_collects_stdout_and_stderr() {
         let cancel = CancellationToken::new();
         let output = run_process(
