@@ -209,6 +209,9 @@ pub(crate) fn capture_frames(binary: &Path, max: usize, deadline: Duration) -> V
 
 #[cfg(test)]
 mod tests {
+    // Every test in this module spawns a Unix shell, so on Windows nothing
+    // from the parent module is referenced and the glob would be unused.
+    #[cfg(unix)]
     use super::*;
 
     #[cfg(unix)]
