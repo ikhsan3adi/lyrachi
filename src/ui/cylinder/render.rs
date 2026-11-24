@@ -277,7 +277,7 @@ fn background_strip_allowed(state: &crate::ui::UiState) -> bool {
     if state.cylinder_annotations == CylinderAnnotationMode::Hide {
         return false;
     }
-    !(state.cylinder_annotations == CylinderAnnotationMode::Auto && !state.style.annotations_show)
+    state.cylinder_annotations != CylinderAnnotationMode::Auto || state.style.annotations_show
 }
 
 /// Renders background vocals as a single row of normal characters beneath
