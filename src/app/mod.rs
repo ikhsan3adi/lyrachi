@@ -584,6 +584,54 @@ pub async fn run_debug_applescript() -> color_eyre::Result<()> {
     ))
 }
 
+/// `lyrachi debug mediaremote`: dump the `get` payload and a few raw stream
+/// frames so fixtures and unit assumptions can be checked on real hardware.
+#[cfg(target_os = "macos")]
+pub async fn run_debug_mediaremote() -> color_eyre::Result<()> {
+    use crate::media::mediaremote::parse;
+
+    let dump = tokio::task::spawn_blocking(crate::media::mediaremote::backend::debug_dump).await?;
+    match &dump.binary {
+        Some(binary) => println!("binary: {}", binary.display()),
+        None => println!("binary: media-control not found in PATH"),
+    }
+    if let Some(error) = &dump.get_error {
+        println!("get error: {error}");
+    }
+    if let Some(get) = &dump.get {
+        println!("get: {get}");
+        match parse::parse_line(get) {
+            parse::Outcome::Poll(poll) => println!(
+                "parsed: {} {:?} position={} ms duration={:?} ms sample_age={:?}",
+                poll.player.id,
+                poll.playback,
+                poll.position_ms,
+                poll.track.duration_ms,
+                poll.sample_age
+            ),
+            parse::Outcome::NoPlayer => println!("parsed: no player"),
+            parse::Outcome::Skip => println!("parsed: skipped"),
+        }
+    }
+    if dump.frames.is_empty() {
+        println!("stream: no frames captured");
+    } else {
+        println!("stream frames:");
+        for frame in &dump.frames {
+            println!("  {frame}");
+        }
+    }
+    Ok(())
+}
+
+/// `lyrachi debug mediaremote` on platforms without MediaRemote.
+#[cfg(not(target_os = "macos"))]
+pub async fn run_debug_mediaremote() -> color_eyre::Result<()> {
+    Err(color_eyre::eyre::eyre!(
+        "mediaremote is only available on macOS"
+    ))
+}
+
 pub fn draw_frame<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,

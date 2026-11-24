@@ -9,6 +9,8 @@ pub mod diff;
 pub mod fake;
 #[cfg(any(target_os = "macos", test))]
 pub mod macos;
+#[cfg(any(target_os = "macos", test))]
+pub mod mediaremote;
 pub mod mpd;
 #[cfg(any(
     target_os = "linux",
@@ -36,6 +38,7 @@ pub enum BackendKind {
     WebNowPlaying,
     Smtc,
     AppleScript,
+    MediaRemote,
     Unsupported,
 }
 
@@ -65,6 +68,7 @@ impl BackendKind {
             Self::WebNowPlaying => "webnowplaying",
             Self::Smtc => "smtc",
             Self::AppleScript => "applescript",
+            Self::MediaRemote => "mediaremote",
             Self::Unsupported => "unsupported",
         }
     }
@@ -76,6 +80,7 @@ impl BackendKind {
             "webnowplaying" => Some(Self::WebNowPlaying),
             "smtc" => Some(Self::Smtc),
             "applescript" => Some(Self::AppleScript),
+            "mediaremote" => Some(Self::MediaRemote),
             "unsupported" => Some(Self::Unsupported),
             _ => None,
         }
@@ -92,16 +97,17 @@ impl BackendKind {
             )),
             Self::Mpd | Self::WebNowPlaying => true,
             Self::Smtc => cfg!(target_os = "windows"),
-            Self::AppleScript => cfg!(target_os = "macos"),
+            Self::AppleScript | Self::MediaRemote => cfg!(target_os = "macos"),
             Self::Unsupported => false,
         }
     }
 
     pub fn priority_rank(self) -> u8 {
         match self {
-            Self::Mpris | Self::Smtc | Self::AppleScript => 0,
-            Self::Mpd => 1,
-            Self::WebNowPlaying => 2,
+            Self::Mpris | Self::Smtc | Self::MediaRemote => 0,
+            Self::AppleScript => 1,
+            Self::Mpd => 2,
+            Self::WebNowPlaying => 3,
             Self::Unsupported => 255,
         }
     }
@@ -375,6 +381,10 @@ mod tests {
             Some(BackendKind::AppleScript)
         );
         assert_eq!(
+            BackendKind::from_name("mediaremote"),
+            Some(BackendKind::MediaRemote)
+        );
+        assert_eq!(
             BackendKind::from_name("unsupported"),
             Some(BackendKind::Unsupported)
         );
@@ -382,9 +392,10 @@ mod tests {
 
         assert_eq!(BackendKind::Mpris.priority_rank(), 0);
         assert_eq!(BackendKind::Smtc.priority_rank(), 0);
-        assert_eq!(BackendKind::AppleScript.priority_rank(), 0);
-        assert_eq!(BackendKind::Mpd.priority_rank(), 1);
-        assert_eq!(BackendKind::WebNowPlaying.priority_rank(), 2);
+        assert_eq!(BackendKind::MediaRemote.priority_rank(), 0);
+        assert_eq!(BackendKind::AppleScript.priority_rank(), 1);
+        assert_eq!(BackendKind::Mpd.priority_rank(), 2);
+        assert_eq!(BackendKind::WebNowPlaying.priority_rank(), 3);
     }
 
     #[test]

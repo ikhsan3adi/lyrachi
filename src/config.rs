@@ -332,7 +332,7 @@ fn apply_media(config: &mut MediaConfig, section: MediaSection, warnings: &mut V
         for name in backends {
             let Some(kind) = BackendKind::from_name(name.trim()) else {
                 warnings.push(format!(
-                    "config: unknown media backend `{name}`; valid values: mpris, mpd, webnowplaying, smtc, applescript"
+                    "config: unknown media backend `{name}`; valid values: mpris, mpd, webnowplaying, smtc, applescript, mediaremote"
                 ));
                 continue;
             };

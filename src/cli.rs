@@ -86,6 +86,8 @@ pub enum DebugTarget {
     Smtc,
     /// Dump raw per-player AppleScript output for debugging (macOS).
     Applescript,
+    /// Dump `media-control` get output and raw stream frames (macOS).
+    Mediaremote,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]

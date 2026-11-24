@@ -9,6 +9,8 @@ use tokio_util::sync::CancellationToken;
 use crate::media::composite::CompositeBackend;
 #[cfg(target_os = "macos")]
 use crate::media::macos::MacosBackend;
+#[cfg(target_os = "macos")]
+use crate::media::mediaremote::MediaRemoteBackend;
 use crate::media::mpd::MpdBackend;
 #[cfg(target_os = "windows")]
 use crate::media::smtc::SmtcBackend;
@@ -119,6 +121,11 @@ pub fn default_backend(media: &MediaConfig) -> Arc<dyn MediaBackend> {
     ))]
     if selected(BackendKind::Mpris) {
         backends.push(Arc::new(MprisBackend));
+    }
+
+    #[cfg(target_os = "macos")]
+    if selected(BackendKind::MediaRemote) {
+        backends.push(Arc::new(MediaRemoteBackend));
     }
 
     #[cfg(target_os = "macos")]
