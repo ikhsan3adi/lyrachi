@@ -45,10 +45,6 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --all-features
       - run: cargo test --locked --no-default-features
-      # The draw-timing checks (dod_6*) measure the dev machine; shared
-      # runners are too noisy to judge a p99 budget, so only the other
-      # dod behaviors run here.
-      - run: cargo test --locked --release --all-features --test dod_verification -- --skip dod_6
 
   check:
     name: check (${{ matrix.os }})
