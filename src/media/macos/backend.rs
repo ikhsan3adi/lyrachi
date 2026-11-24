@@ -8,7 +8,6 @@
 
 use std::io::Read;
 use std::process::{Command, Stdio};
-use std::sync::Mutex;
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -743,6 +742,7 @@ impl MediaBackend for MacosBackend {
 mod tests {
     use super::*;
     use std::collections::VecDeque;
+    use std::sync::Mutex;
 
     struct FixtureRunner {
         responses: Mutex<VecDeque<Result<String, (i32, String)>>>,

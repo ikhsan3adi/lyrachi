@@ -514,7 +514,6 @@ pub async fn run_debug_smtc() -> color_eyre::Result<()> {
 /// raw rows, and the parsed result with the unit heuristic applied.
 #[cfg(target_os = "macos")]
 pub async fn run_debug_applescript() -> color_eyre::Result<()> {
-    use crate::media::macos::backend::DebugDump;
     use crate::media::macos::parse::{self, RowState};
 
     let dump = tokio::task::spawn_blocking(crate::media::macos::backend::debug_dump).await?;
