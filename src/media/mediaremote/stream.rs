@@ -109,12 +109,12 @@ impl StreamSource for ProcessStream {
     fn shutdown(&mut self) {
         let _ = self.child.kill();
         let _ = self.child.wait();
-        if let Some(reader) = self.reader.take() {
-            let _ = reader.join();
-        }
-        if let Some(stderr) = self.stderr.take() {
-            let _ = stderr.join();
-        }
+        // Reap only the direct child. A grandchild (the adapter runs perl)
+        // can keep the pipes open, and joining the reader threads would then
+        // block shutdown until it exits. Detached threads hold no locks and
+        // end on EOF once every writer closes.
+        self.reader = None;
+        self.stderr = None;
     }
 }
 
@@ -136,10 +136,11 @@ pub(crate) fn run_once(binary: &Path, args: &[&str], timeout: Duration) -> Resul
         .map_err(|error| format!("spawn {}: {error}", binary.display()))?;
 
     let mut stderr_pipe = child.stderr.take().expect("stderr is piped");
-    let stderr_thread = thread::spawn(move || {
+    let (stderr_tx, stderr_rx) = mpsc::channel();
+    thread::spawn(move || {
         let mut buffer = String::new();
         let _ = stderr_pipe.read_to_string(&mut buffer);
-        buffer
+        let _ = stderr_tx.send(buffer);
     });
 
     let started = Instant::now();
@@ -150,7 +151,6 @@ pub(crate) fn run_once(binary: &Path, args: &[&str], timeout: Duration) -> Resul
                 if started.elapsed() >= timeout {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let _ = stderr_thread.join();
                     return Err(format!("{} timed out after {timeout:?}", args.join(" ")));
                 }
                 thread::sleep(POLL_SLICE);
@@ -158,7 +158,6 @@ pub(crate) fn run_once(binary: &Path, args: &[&str], timeout: Duration) -> Resul
             Err(error) => {
                 let _ = child.kill();
                 let _ = child.wait();
-                let _ = stderr_thread.join();
                 return Err(format!("wait failed: {error}"));
             }
         }
@@ -175,7 +174,10 @@ pub(crate) fn run_once(binary: &Path, args: &[&str], timeout: Duration) -> Resul
             String::from_utf8_lossy(&buffer).into_owned()
         })
         .unwrap_or_default();
-    let stderr = stderr_thread.join().unwrap_or_default();
+    // Bounded: a grandchild holding stderr must not stall the command.
+    let stderr = stderr_rx
+        .recv_timeout(Duration::from_millis(200))
+        .unwrap_or_default();
 
     if status.success() {
         Ok(stdout)
