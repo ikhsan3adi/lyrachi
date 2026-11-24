@@ -1,6 +1,6 @@
 [package]
 name = "lyrachi"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.89"
 description = "Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal"
