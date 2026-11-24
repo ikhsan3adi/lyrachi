@@ -229,23 +229,26 @@ fn raw_status(
     }
 }
 
-fn read_status(session: &SmtcSession) -> RawPlaybackStatus {
+/// Read the playback status and rate with a single `GetPlaybackInfo` call.
+/// The COM round-trip dominates the cost, so no caller asks twice per tick.
+fn read_playback(session: &SmtcSession) -> (RawPlaybackStatus, f64) {
     session
         .GetPlaybackInfo()
         .ok()
-        .and_then(|info| info.PlaybackStatus().ok())
-        .map(raw_status)
-        .unwrap_or(RawPlaybackStatus::Stopped)
-}
-
-fn read_rate(session: &SmtcSession) -> f64 {
-    session
-        .GetPlaybackInfo()
-        .ok()
-        .and_then(|info| info.PlaybackRate().ok())
-        .and_then(|reference| reference.Value().ok())
-        .map(util::safe_rate)
-        .unwrap_or(1.0)
+        .map_or((RawPlaybackStatus::Stopped, 1.0), |info| {
+            let status = info
+                .PlaybackStatus()
+                .ok()
+                .map(raw_status)
+                .unwrap_or(RawPlaybackStatus::Stopped);
+            let rate = info
+                .PlaybackRate()
+                .ok()
+                .and_then(|reference| reference.Value().ok())
+                .map(util::safe_rate)
+                .unwrap_or(1.0);
+            (status, rate)
+        })
 }
 
 struct TimelineSample {
@@ -334,8 +337,9 @@ fn collect_candidates(manager: &SmtcManager) -> Vec<SessionInfo> {
                 continue;
             };
             let aumid = aumid.to_string();
+            let (status, _) = read_playback(&session);
             let candidate = SessionCandidate {
-                status: read_status(&session),
+                status,
                 current: current_id
                     .as_deref()
                     .is_some_and(|current| current == aumid),
@@ -350,8 +354,9 @@ fn collect_candidates(manager: &SmtcManager) -> Vec<SessionInfo> {
         && let Ok(aumid) = session.SourceAppUserModelId()
     {
         let aumid = aumid.to_string();
+        let (status, _) = read_playback(&session);
         let candidate = SessionCandidate {
-            status: read_status(&session),
+            status,
             current: true,
             id: aumid,
         };
@@ -490,7 +495,7 @@ fn tick(
     }
 
     let timeline = read_timeline(&info.session);
-    let raw = read_status(&info.session);
+    let (raw, rate) = read_playback(&info.session);
     let status = util::map_status(raw).unwrap_or_else(|| {
         // `Changing` or an unknown value: hold the previous status, or assume
         // stopped on the very first read.
@@ -552,7 +557,6 @@ fn tick(
         state.status = Some(status);
     }
 
-    let rate = read_rate(&info.session);
     if state.rate != Some(rate) {
         send(tx, MediaEvent::Rate(rate))?;
         state.rate = Some(rate);
