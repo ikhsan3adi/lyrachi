@@ -579,13 +579,23 @@ fn apply_poll(
         state.last_position_ms = position;
     }
 
+    // A repeated position is a stale timeline read (SMTC players push the
+    // timeline every few seconds): its true age is the last fresh sample's,
+    // so stale stretches carry `sampled_at` forward and the next fresh push
+    // is extrapolated across the whole gap instead of looking like a seek.
+    let sampled_at = if position_ms == state.previous.position_ms {
+        state.previous.sampled_at
+    } else {
+        now
+    };
+
     let next = PollState {
         player: state.player.clone(),
         track: state.emitted_track.clone(),
         playback: status,
         position_ms,
         rate,
-        sampled_at: now,
+        sampled_at,
     };
 
     // The single event path: diff decides what changed, including seeks, so
@@ -1073,5 +1083,95 @@ mod tests {
         ));
         assert!(matches!(events[3], MediaEvent::Rate(rate) if rate == 1.0));
         assert!(matches!(events[4], MediaEvent::PositionPoll { .. }));
+    }
+
+    #[test]
+    fn stale_pushes_do_not_look_like_seeks() {
+        let base = Instant::now();
+        let mut state = settled_monitor(10_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        // The player freezes its timeline between pushes: five stale polls.
+        for offset in [500, 1_000, 1_500, 2_000, 2_500] {
+            apply_poll(
+                &mut state,
+                Some(&timeline(10_000)),
+                (RawPlaybackStatus::Playing, 1.0),
+                TrackRead::Track(track("Song", Some(200_000))),
+                Duration::ZERO,
+                at(base, offset),
+                &tx,
+            );
+        }
+
+        // The next push lands 6 s after the previous one: the inherited
+        // sample age makes the extrapolation match, so no seek fires.
+        apply_poll(
+            &mut state,
+            Some(&timeline(16_000)),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 6_000),
+            &tx,
+        );
+
+        let events = drain(&mut rx);
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, MediaEvent::Seeked { .. })),
+            "stepped pushes are not seeks: {events:?}"
+        );
+        assert_eq!(events.len(), 6, "every playing tick still polls");
+        assert!(matches!(
+            events[5],
+            MediaEvent::PositionPoll { pos_ms: 16_000, .. }
+        ));
+    }
+
+    #[test]
+    fn a_real_seek_across_a_stale_stretch_still_fires() {
+        let base = Instant::now();
+        let mut state = settled_monitor(10_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        // Two stale polls, then the user seeks +15 s and the player pushes.
+        for offset in [500, 1_000] {
+            apply_poll(
+                &mut state,
+                Some(&timeline(10_000)),
+                (RawPlaybackStatus::Playing, 1.0),
+                TrackRead::Track(track("Song", Some(200_000))),
+                Duration::ZERO,
+                at(base, offset),
+                &tx,
+            );
+        }
+        apply_poll(
+            &mut state,
+            Some(&timeline(25_000)),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 6_000),
+            &tx,
+        );
+
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 4, "two polls, one seek, one poll: {events:?}");
+        assert!(matches!(
+            events[0],
+            MediaEvent::PositionPoll { pos_ms: 10_000, .. }
+        ));
+        assert!(matches!(
+            events[1],
+            MediaEvent::PositionPoll { pos_ms: 10_000, .. }
+        ));
+        assert!(matches!(events[2], MediaEvent::Seeked { pos_ms: 25_000 }));
+        assert!(matches!(
+            events[3],
+            MediaEvent::PositionPoll { pos_ms: 25_000, .. }
+        ));
     }
 }
