@@ -5,7 +5,7 @@ use lyrachi::core::model::{
 };
 use lyrachi::core::parse::ttml::parse_ttml;
 use lyrachi::core::text::display_width;
-use lyrachi::media::{MediaAvailability, TrackMeta};
+use lyrachi::media::{BackendKind, MediaAvailability, TrackMeta};
 use lyrachi::ui::{CandidateMenuItem, DisplayMode, LyricsView, UiState, render};
 use ratatui::{
     Terminal,
@@ -188,6 +188,7 @@ fn instrumental_track() -> SyncedTrack {
 
 fn base_state() -> UiState {
     let mut state = UiState::new();
+    state.backend = BackendKind::Mpris;
     state.player = Some("limusic".to_string());
     state.playback = PlaybackStatus::Playing;
     state.track = Some(meta());
@@ -195,17 +196,21 @@ fn base_state() -> UiState {
 }
 
 fn no_player() -> UiState {
-    UiState::new()
+    let mut state = UiState::new();
+    state.backend = BackendKind::Mpris;
+    state
 }
 
 fn no_media_backend() -> UiState {
     let mut state = UiState::new();
+    state.backend = BackendKind::Mpris;
     state.media_availability = MediaAvailability::Unsupported;
     state
 }
 
 fn media_session_unavailable() -> UiState {
     let mut state = UiState::new();
+    state.backend = BackendKind::Mpris;
     state.media_availability = MediaAvailability::Unavailable;
     state
 }
