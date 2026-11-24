@@ -20,6 +20,7 @@ use super::com::spawn_mta;
 use super::util::{self, RawPlaybackStatus, SessionCandidate};
 use crate::core::clock::PlaybackStatus;
 use crate::media::backend::{BoxFuture, MediaBackend};
+use crate::media::diff::{PollState, diff};
 use crate::media::{
     BackendKind, MediaError, MediaEvent, MediaSnapshot, PlayerKind, PlayerSnapshot, TrackMeta,
 };
@@ -377,19 +378,26 @@ fn selected<'a>(
 #[derive(Default)]
 struct MonitorState {
     player: Option<PlayerSnapshot>,
+    /// Previous poll, handed to `media::diff` on the next tick.
+    previous: PollState,
+    /// Last reported status, kept only as the hold value while a session
+    /// reports `Changing`.
     status: Option<PlaybackStatus>,
-    rate: Option<f64>,
     emitted_track: Option<TrackMeta>,
     pending_track: Option<TrackMeta>,
     pending_empty: bool,
-    no_track_sent: bool,
     last_position_ms: u64,
     held_position: Option<u64>,
 }
 
 impl MonitorState {
     fn reset(&mut self) {
+        let rate = self.previous.rate;
         *self = Self::default();
+        // The clock keeps its rate across players, so the next diff must
+        // still see the old rate and announce a correction when the new
+        // player runs at a different speed.
+        self.previous.rate = rate;
     }
 }
 
@@ -454,6 +462,18 @@ fn monitor_loop(
     }
 }
 
+/// Clear per-player tracking and adopt a new player. `reset` keeps the old
+/// rate so `diff` still announces a correction when the new player runs at a
+/// different speed.
+fn adopt_player(state: &mut MonitorState, id: &str) {
+    state.reset();
+    state.player = Some(PlayerSnapshot {
+        id: id.to_string(),
+        kind: PlayerKind::from_id(id),
+        backend: BackendKind::Smtc,
+    });
+}
+
 /// Read every session once, emit events for changes, and return the next poll
 /// interval. `None` means the event channel closed and the loop should stop.
 fn tick(
@@ -477,33 +497,47 @@ fn tick(
         .as_ref()
         .is_none_or(|player| player.id != info.candidate.id)
     {
-        state.reset();
-        let player = PlayerSnapshot {
-            id: info.candidate.id.clone(),
-            kind: PlayerKind::from_id(&info.candidate.id),
-            backend: BackendKind::Smtc,
-        };
-        send(
-            tx,
-            MediaEvent::PlayerChanged {
-                id: player.id.clone(),
-                kind: player.kind,
-                backend: player.backend,
-            },
-        )?;
-        state.player = Some(player);
+        adopt_player(state, &info.candidate.id);
     }
 
     let timeline = read_timeline(&info.session);
     let (raw, rate) = read_playback(&info.session);
-    let status = util::map_status(raw).unwrap_or_else(|| {
+    let track = read_track(&info.session, timeline.as_ref().and_then(|t| t.duration_ms));
+
+    apply_poll(
+        state,
+        timeline.as_ref(),
+        (raw, rate),
+        track,
+        started.elapsed(),
+        Instant::now(),
+        tx,
+    )
+}
+
+/// Fold one poll of session reads into the monitor state and emit the
+/// transition events. Split from `tick` so the transition matrix stays
+/// testable without a live WinRT session: `rtt` feeds `PositionPoll` and
+/// `now` seeds `PollState::sampled_at`. The playback tuple is `read_playback`'s
+/// (status, rate) pair.
+fn apply_poll(
+    state: &mut MonitorState,
+    timeline: Option<&TimelineSample>,
+    playback: (RawPlaybackStatus, f64),
+    track_read: TrackRead,
+    rtt: Duration,
+    now: Instant,
+    tx: &Sender<MediaEvent>,
+) -> Option<Duration> {
+    let (raw_status, rate) = playback;
+    let status = util::map_status(raw_status).unwrap_or_else(|| {
         // `Changing` or an unknown value: hold the previous status, or assume
         // stopped on the very first read.
         state.status.unwrap_or(PlaybackStatus::Stopped)
     });
 
     let mut track_changed = false;
-    match read_track(&info.session, timeline.as_ref().and_then(|t| t.duration_ms)) {
+    match track_read {
         TrackRead::Track(mut track) => {
             state.pending_empty = false;
             with_pinned_duration(&mut track, state.emitted_track.as_ref());
@@ -513,9 +547,7 @@ fn tick(
                 // filtered out.
                 if state.emitted_track.is_none() || state.pending_track.as_ref() == Some(&track) {
                     state.pending_track = None;
-                    state.no_track_sent = false;
-                    state.emitted_track = Some(track.clone());
-                    send(tx, MediaEvent::TrackChanged(track))?;
+                    state.emitted_track = Some(track);
                     track_changed = true;
                 } else {
                     state.pending_track = Some(track);
@@ -524,11 +556,11 @@ fn tick(
         }
         TrackRead::Empty => {
             // One empty read may be transient; only a repeated one counts.
-            if state.pending_empty && !state.no_track_sent {
-                state.no_track_sent = true;
+            // `diff` re-announces only when the track actually leaves, so no
+            // extra latch is needed here.
+            if state.pending_empty && state.emitted_track.is_some() {
                 state.emitted_track = None;
                 state.pending_track = None;
-                send(tx, MediaEvent::NoTrack)?;
             }
             state.pending_empty = true;
         }
@@ -538,46 +570,45 @@ fn tick(
     }
 
     // Gate the position sample once per tick; both the transition anchor and
-    // the periodic poll consume the same verdict.
-    let accepted = timeline
-        .as_ref()
-        .and_then(|timeline| accept_position(state, timeline.position_ms, track_changed));
-
-    if state.status != Some(status) {
-        if let Some(position) = accepted {
-            // Anchor the clock on the exact reported position across status
-            // transitions (notably into and out of Paused), but only when the
-            // sample actually moves the clock forward in knowledge.
-            if position != state.last_position_ms {
-                send(tx, MediaEvent::Seeked { pos_ms: position })?;
-                state.last_position_ms = position;
-            }
-        }
-        send(tx, MediaEvent::Status(status))?;
-        state.status = Some(status);
+    // the periodic poll consume the same verdict. A held sample falls back to
+    // the last accepted position so `diff` sees a stale poll, not a seek.
+    let accepted =
+        timeline.and_then(|timeline| accept_position(state, timeline.position_ms, track_changed));
+    let position_ms = accepted.unwrap_or(state.last_position_ms);
+    if let Some(position) = accepted {
+        state.last_position_ms = position;
     }
 
-    if state.rate != Some(rate) {
-        send(tx, MediaEvent::Rate(rate))?;
-        state.rate = Some(rate);
+    let next = PollState {
+        player: state.player.clone(),
+        track: state.emitted_track.clone(),
+        playback: status,
+        position_ms,
+        rate,
+        sampled_at: now,
+    };
+
+    // The single event path: diff decides what changed, including seeks, so
+    // the old manual Seeked branches cannot double-emit anymore.
+    for event in diff(&state.previous, &next) {
+        send(tx, event)?;
     }
 
-    if let (Some(timeline), Some(position)) = (&timeline, accepted) {
-        if status == PlaybackStatus::Playing {
-            send(
-                tx,
-                MediaEvent::PositionPoll {
-                    pos_ms: position,
-                    rtt: started.elapsed(),
-                    sample_age: timeline.sample_age,
-                },
-            )?;
-            state.last_position_ms = position;
-        } else if status == PlaybackStatus::Paused && position != state.last_position_ms {
-            send(tx, MediaEvent::Seeked { pos_ms: position })?;
-            state.last_position_ms = position;
-        }
+    if status == PlaybackStatus::Playing
+        && let (Some(timeline), Some(position)) = (timeline, accepted)
+    {
+        send(
+            tx,
+            MediaEvent::PositionPoll {
+                pos_ms: position,
+                rtt,
+                sample_age: timeline.sample_age,
+            },
+        )?;
     }
+
+    state.previous = next;
+    state.status = Some(status);
 
     Some(match status {
         PlaybackStatus::Playing => PLAYING_POLL_INTERVAL,
@@ -740,5 +771,307 @@ mod tests {
         let mut bare = track("Yellow", None);
         with_pinned_duration(&mut bare, None);
         assert_eq!(bare.duration_ms, None);
+    }
+
+    fn at(base: Instant, ms: u64) -> Instant {
+        base + Duration::from_millis(ms)
+    }
+
+    fn timeline(position_ms: u64) -> TimelineSample {
+        TimelineSample {
+            position_ms,
+            duration_ms: Some(200_000),
+            sample_age: None,
+        }
+    }
+
+    /// A monitor one tick after a settled playing poll, so transitions under
+    /// test start from a known steady state.
+    fn settled_monitor(position_ms: u64, at: Instant) -> MonitorState {
+        let emitted = Some(track("Song", Some(200_000)));
+        let player = Some(PlayerSnapshot {
+            id: "player".to_string(),
+            kind: PlayerKind::Native,
+            backend: BackendKind::Smtc,
+        });
+        MonitorState {
+            player: player.clone(),
+            emitted_track: emitted.clone(),
+            previous: PollState {
+                player,
+                track: emitted,
+                playback: PlaybackStatus::Playing,
+                position_ms,
+                rate: 1.0,
+                sampled_at: at,
+            },
+            last_position_ms: position_ms,
+            ..MonitorState::default()
+        }
+    }
+
+    fn drain(rx: &mut tokio::sync::mpsc::Receiver<MediaEvent>) -> Vec<MediaEvent> {
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    #[test]
+    fn a_large_forward_jump_emits_exactly_one_seek() {
+        let base = Instant::now();
+        let mut state = settled_monitor(10_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        // Two seconds of playback, then the timeline reports a minute in.
+        let sample = timeline(60_000);
+        let interval = apply_poll(
+            &mut state,
+            Some(&sample),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 2_000),
+            &tx,
+        );
+
+        assert_eq!(interval, Some(PLAYING_POLL_INTERVAL));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2, "one seek plus its poll: {events:?}");
+        assert!(matches!(events[0], MediaEvent::Seeked { pos_ms: 60_000 }));
+        assert!(matches!(
+            events[1],
+            MediaEvent::PositionPoll {
+                pos_ms: 60_000,
+                sample_age: None,
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn a_confirmed_backward_jump_emits_exactly_one_seek() {
+        let base = Instant::now();
+        let mut state = settled_monitor(90_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        // Tick 1: the suspicious sample is held, and diff sees an unchanged
+        // position (stale poll), not a seek.
+        let held = timeline(30_000);
+        let interval = apply_poll(
+            &mut state,
+            Some(&held),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 500),
+            &tx,
+        );
+        assert_eq!(interval, Some(PLAYING_POLL_INTERVAL));
+        assert!(drain(&mut rx).is_empty(), "a held sample stays silent");
+
+        // Tick 2: the sample repeats just past the held value: a real seek,
+        // announced once even though the old code had two Seeked paths.
+        let confirmed = timeline(30_500);
+        apply_poll(
+            &mut state,
+            Some(&confirmed),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 1_000),
+            &tx,
+        );
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2, "one seek plus its poll: {events:?}");
+        assert!(matches!(events[0], MediaEvent::Seeked { pos_ms: 30_500 }));
+        assert!(matches!(
+            events[1],
+            MediaEvent::PositionPoll { pos_ms: 30_500, .. }
+        ));
+    }
+
+    #[test]
+    fn a_track_change_reanchors_without_a_seek() {
+        let base = Instant::now();
+        let mut state = settled_monitor(100_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+        let next_track = track("Next", Some(210_000));
+
+        // Tick 1: fresh metadata waits one tick (flicker filter); only the
+        // routine position poll flows, no track or seek event.
+        apply_poll(
+            &mut state,
+            Some(&timeline(100_500)),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(next_track.clone()),
+            Duration::ZERO,
+            at(base, 500),
+            &tx,
+        );
+        let flicker = drain(&mut rx);
+        assert_eq!(flicker.len(), 1, "poll only: {flicker:?}");
+        assert!(matches!(
+            flicker[0],
+            MediaEvent::PositionPoll {
+                pos_ms: 100_500,
+                ..
+            }
+        ));
+
+        // Tick 2: the metadata repeats, the track goes out, and the new
+        // track's near-zero position must not masquerade as a seek.
+        apply_poll(
+            &mut state,
+            Some(&timeline(400)),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(next_track),
+            Duration::ZERO,
+            at(base, 1_000),
+            &tx,
+        );
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 2, "track plus its poll: {events:?}");
+        assert!(matches!(&events[0], MediaEvent::TrackChanged(t) if t.title == "Next"));
+        assert!(matches!(
+            events[1],
+            MediaEvent::PositionPoll { pos_ms: 400, .. }
+        ));
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, MediaEvent::Seeked { .. }))
+        );
+    }
+
+    #[test]
+    fn pausing_at_the_same_position_emits_only_status() {
+        let base = Instant::now();
+        let mut state = settled_monitor(50_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let interval = apply_poll(
+            &mut state,
+            Some(&timeline(50_000)),
+            (RawPlaybackStatus::Paused, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 300),
+            &tx,
+        );
+
+        assert_eq!(interval, Some(IDLE_POLL_INTERVAL));
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1, "status only: {events:?}");
+        assert!(matches!(
+            events[0],
+            MediaEvent::Status(PlaybackStatus::Paused)
+        ));
+    }
+
+    #[test]
+    fn a_seek_while_paused_is_detected() {
+        let base = Instant::now();
+        let mut state = settled_monitor(50_000, base);
+        state.previous.playback = PlaybackStatus::Paused;
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        apply_poll(
+            &mut state,
+            Some(&timeline(80_000)),
+            (RawPlaybackStatus::Paused, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 1_000),
+            &tx,
+        );
+
+        let events = drain(&mut rx);
+        assert_eq!(
+            events.len(),
+            1,
+            "seek only, no poll while paused: {events:?}"
+        );
+        assert!(matches!(events[0], MediaEvent::Seeked { pos_ms: 80_000 }));
+    }
+
+    #[test]
+    fn position_poll_only_flows_while_playing_and_carries_sample_age() {
+        let base = Instant::now();
+        let mut state = settled_monitor(10_000, base);
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        let mut sample = timeline(10_500);
+        sample.sample_age = Some(Duration::from_millis(120));
+        apply_poll(
+            &mut state,
+            Some(&sample),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 500),
+            &tx,
+        );
+        let events = drain(&mut rx);
+        assert_eq!(events.len(), 1, "poll only: {events:?}");
+        assert!(matches!(
+            events[0],
+            MediaEvent::PositionPoll {
+                pos_ms: 10_500,
+                sample_age: Some(_),
+                ..
+            }
+        ));
+
+        // The same sample while paused produces nothing at all.
+        let mut paused = settled_monitor(10_000, base);
+        paused.previous.playback = PlaybackStatus::Paused;
+        apply_poll(
+            &mut paused,
+            Some(&sample),
+            (RawPlaybackStatus::Paused, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 500),
+            &tx,
+        );
+        assert!(drain(&mut rx).is_empty(), "paused emits no poll");
+    }
+
+    #[test]
+    fn a_player_swap_announces_the_new_player_exactly_once() {
+        let base = Instant::now();
+        let mut state = settled_monitor(30_000, base);
+        // The old player ran slow; the clock keeps that rate across the swap,
+        // so the diff must still announce the correction.
+        state.previous.rate = 0.75;
+        adopt_player(&mut state, "Other");
+        let (tx, mut rx) = tokio::sync::mpsc::channel(16);
+
+        apply_poll(
+            &mut state,
+            Some(&timeline(45_000)),
+            (RawPlaybackStatus::Playing, 1.0),
+            TrackRead::Track(track("Song", Some(200_000))),
+            Duration::ZERO,
+            at(base, 500),
+            &tx,
+        );
+
+        let events = drain(&mut rx);
+        assert_eq!(
+            events.len(),
+            5,
+            "player, track, status, rate, poll: {events:?}"
+        );
+        assert!(matches!(&events[0], MediaEvent::PlayerChanged { id, .. } if id == "Other"));
+        assert!(matches!(events[1], MediaEvent::TrackChanged(_)));
+        assert!(matches!(
+            events[2],
+            MediaEvent::Status(PlaybackStatus::Playing)
+        ));
+        assert!(matches!(events[3], MediaEvent::Rate(rate) if rate == 1.0));
+        assert!(matches!(events[4], MediaEvent::PositionPoll { .. }));
     }
 }
