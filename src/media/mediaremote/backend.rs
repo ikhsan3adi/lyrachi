@@ -103,9 +103,13 @@ fn health_check() -> Result<PathBuf, MediaError> {
 }
 
 fn validate_get(output: &str) -> Result<(), MediaError> {
-    serde_json::from_str::<serde_json::Value>(output).map_err(|error| {
-        MediaError::SessionUnavailable(format!("media-control get returned invalid JSON: {error}"))
-    })?;
+    serde_json::from_str::<Option<serde_json::Map<String, serde_json::Value>>>(output).map_err(
+        |error| {
+            MediaError::SessionUnavailable(format!(
+                "media-control get returned invalid JSON: {error}"
+            ))
+        },
+    )?;
     Ok(())
 }
 
@@ -555,6 +559,8 @@ mod tests {
         assert!(validate_get("not json").is_err());
         assert!(validate_get("null").is_ok());
         assert!(validate_get("{}").is_ok());
+        assert!(validate_get("[]").is_err());
+        assert!(validate_get("42").is_err());
         assert!(snapshot_from_get("not json", None).is_err());
     }
 }

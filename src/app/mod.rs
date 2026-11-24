@@ -600,17 +600,20 @@ pub async fn run_debug_mediaremote() -> color_eyre::Result<()> {
     }
     if let Some(get) = &dump.get {
         println!("get: {get}");
-        match parse::parse_line(get) {
-            parse::Outcome::Poll(poll) => println!(
-                "parsed: {} {:?} position={} ms duration={:?} ms sample_age={:?}",
-                poll.player.id,
-                poll.playback,
-                poll.position_ms,
-                poll.track.duration_ms,
-                poll.sample_age
-            ),
-            parse::Outcome::NoPlayer => println!("parsed: no player"),
-            parse::Outcome::Skip => println!("parsed: skipped"),
+        match serde_json::from_str::<Option<parse::Payload>>(get) {
+            Ok(Some(payload)) => match parse::poll_from_payload(&payload) {
+                Some(poll) => println!(
+                    "parsed: {} {:?} position={} ms duration={:?} ms sample_age={:?}",
+                    poll.player.id,
+                    poll.playback,
+                    poll.position_ms,
+                    poll.track.duration_ms,
+                    poll.sample_age
+                ),
+                None => println!("parsed: no player (payload has no bundle id or title)"),
+            },
+            Ok(None) => println!("parsed: no player (null payload)"),
+            Err(error) => println!("parsed: invalid JSON ({error})"),
         }
     }
     if dump.frames.is_empty() {
