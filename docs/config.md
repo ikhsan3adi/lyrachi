@@ -236,6 +236,7 @@ Subcommands:
 | `lyrachi config print-default`                        | Print the commented default `config.toml`.                                                                            |
 | `lyrachi config schema [--kind config\|style]`        | Print a JSON Schema (draft 2020-12) for the config or for a style profile.                                            |
 | `lyrachi debug smtc`                                  | Dump every Windows SMTC session (AUMID, status, position, timeline age) for debugging.                                |
+| `lyrachi debug applescript`                           | Dump raw per-player AppleScript output (macOS) for debugging and unit verification.                                   |
 
 Setting `LYRACHI_HOME` redirects the whole base directory into one tree:
 `config/config.toml`, `data/offsets.json`, `cache/lyrics_v1.db`,

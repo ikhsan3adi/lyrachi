@@ -43,6 +43,13 @@ async fn main() -> Result<()> {
         return app::run_debug_smtc().await;
     }
 
+    if let Some(Command::Debug {
+        target: DebugTarget::Applescript,
+    }) = args.command
+    {
+        return app::run_debug_applescript().await;
+    }
+
     let outcome =
         RuntimeConfig::resolve(&paths.config_file, paths.default_music_dirs.clone(), &args);
     let _guard = logging::init(&paths.log_file)?;

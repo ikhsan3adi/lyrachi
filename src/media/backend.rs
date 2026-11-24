@@ -7,6 +7,8 @@ use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 
 use crate::media::composite::CompositeBackend;
+#[cfg(target_os = "macos")]
+use crate::media::macos::MacosBackend;
 use crate::media::mpd::MpdBackend;
 #[cfg(target_os = "windows")]
 use crate::media::smtc::SmtcBackend;
@@ -117,6 +119,11 @@ pub fn default_backend(media: &MediaConfig) -> Arc<dyn MediaBackend> {
     ))]
     if selected(BackendKind::Mpris) {
         backends.push(Arc::new(MprisBackend));
+    }
+
+    #[cfg(target_os = "macos")]
+    if selected(BackendKind::AppleScript) {
+        backends.push(Arc::new(MacosBackend));
     }
 
     #[cfg(target_os = "windows")]

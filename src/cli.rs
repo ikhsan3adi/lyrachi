@@ -84,6 +84,8 @@ pub enum Command {
 pub enum DebugTarget {
     /// Dump every System Media Transport Controls session (Windows).
     Smtc,
+    /// Dump raw per-player AppleScript output for debugging (macOS).
+    Applescript,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Subcommand)]

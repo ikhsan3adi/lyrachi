@@ -510,6 +510,81 @@ pub async fn run_debug_smtc() -> color_eyre::Result<()> {
     Err(color_eyre::eyre::eyre!("smtc is only available on Windows"))
 }
 
+/// `lyrachi debug applescript`: dump what pgrep saw, the exact script, the
+/// raw rows, and the parsed result with the unit heuristic applied.
+#[cfg(target_os = "macos")]
+pub async fn run_debug_applescript() -> color_eyre::Result<()> {
+    use crate::media::macos::backend::DebugDump;
+    use crate::media::macos::parse::{self, RowState};
+
+    let dump = tokio::task::spawn_blocking(crate::media::macos::backend::debug_dump).await?;
+    println!(
+        "detected players: {}",
+        if dump.detected.is_empty() {
+            "none".to_string()
+        } else {
+            dump.detected
+                .iter()
+                .map(|player| player.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        }
+    );
+    if let Some(failure) = &dump.failure {
+        println!("failure: {failure}");
+    }
+    println!("poll elapsed: {:.1?}", dump.elapsed);
+    if let Some(script) = &dump.script {
+        println!("\nscript:\n{script}");
+    }
+    if let Some(raw) = &dump.raw_stdout {
+        println!("raw rows (field separator shown as |):");
+        for line in raw.split(parse::ROW_SEP) {
+            if !line.is_empty() {
+                println!("  {}", line.replace(parse::FIELD_SEP, "|"));
+            }
+        }
+    }
+    if let Some(stderr) = &dump.stderr {
+        if !stderr.is_empty() {
+            println!("\nstderr:\n{stderr}");
+        }
+    }
+    if !dump.rows.is_empty() {
+        println!("\nparsed (unit heuristic applied):");
+        for row in &dump.rows {
+            let (position_ms, duration_ms) = row.normalized();
+            let state = match row.state {
+                RowState::Playing => "playing".to_string(),
+                RowState::Paused => "paused".to_string(),
+                RowState::Stopped => "stopped".to_string(),
+                RowState::Error(code) => format!("error ({code})"),
+            };
+            println!(
+                "  {}: state={state} position_raw={:?} duration_raw={:?} duration_time={:?} -> position={position_ms} ms duration={duration_ms:?} ms",
+                row.player.as_str(),
+                row.position_raw,
+                row.duration_raw,
+                row.duration_time,
+            );
+        }
+    }
+    println!(
+        "\nunit assumptions: Music reads seconds (duration also via the time string); \
+         Spotify uses a heuristic (raw duration over 3600, or position beyond the \
+         duration-as-seconds, means milliseconds). Verify against this dump on real hardware."
+    );
+    Ok(())
+}
+
+/// `lyrachi debug applescript` on platforms without AppleScript.
+#[cfg(not(target_os = "macos"))]
+pub async fn run_debug_applescript() -> color_eyre::Result<()> {
+    Err(color_eyre::eyre::eyre!(
+        "applescript is only available on macOS"
+    ))
+}
+
 pub fn draw_frame<B: ratatui::backend::Backend>(
     terminal: &mut ratatui::Terminal<B>,
     state: &mut UiState,
