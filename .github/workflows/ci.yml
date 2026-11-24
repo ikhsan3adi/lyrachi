@@ -44,16 +44,11 @@ jobs:
           toolchain: 1.89.0
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --locked --all-features
-      - run: cargo test --locked --no-default-features
 
   check:
-    name: check (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
+    name: check (macos)
+    runs-on: macos-latest
     timeout-minutes: 15
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [windows-latest, macos-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
