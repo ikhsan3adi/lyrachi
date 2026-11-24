@@ -321,7 +321,7 @@ fn tick(
         READY_TIMEOUT
     };
 
-    let mut result = runner.run(OSASCRIPT, &[&script], timeout, cancel);
+    let mut result = runner.run(OSASCRIPT, &["-e", script.as_str()], timeout, cancel);
     // One immediate retry for a timeout while every player is Ready; during
     // first consent a timeout means the dialog is open and must not be
     // retried into a second dialog.
@@ -338,7 +338,7 @@ fn tick(
         )
     {
         tracing::warn!("applescript: poll timed out; retrying once");
-        result = runner.run(OSASCRIPT, &[&script], timeout, cancel);
+        result = runner.run(OSASCRIPT, &["-e", script.as_str()], timeout, cancel);
     }
     let output = match result {
         Ok(output) => output,
@@ -581,9 +581,20 @@ fn probe_sync(
         });
     }
 
-    let script = script_for(&players);
+    let requested: Vec<PlayerId> = players
+        .into_iter()
+        .filter(|player| player_matches_id(*player, filter))
+        .collect();
+    if requested.is_empty() {
+        return Ok(MediaSnapshot {
+            backend: BackendKind::AppleScript,
+            ..MediaSnapshot::default()
+        });
+    }
+
+    let script = script_for(&requested);
     let output = runner
-        .run(OSASCRIPT, &[&script], PROBE_TIMEOUT, &cancel)
+        .run(OSASCRIPT, &["-e", script.as_str()], PROBE_TIMEOUT, &cancel)
         .map_err(|failure| {
             if let FailureKind::Exit(_) = failure.kind {
                 tracing::debug!(stderr = %failure.stderr, "applescript probe stderr");
@@ -653,7 +664,12 @@ pub fn debug_dump() -> DebugDump {
 
     let script = script_for(&detected);
     let started = Instant::now();
-    match runner.run(OSASCRIPT, &[&script], CONSENT_TIMEOUT, &cancel) {
+    match runner.run(
+        OSASCRIPT,
+        &["-e", script.as_str()],
+        CONSENT_TIMEOUT,
+        &cancel,
+    ) {
         Ok(output) => {
             let rows = parse_output(&output.stdout);
             let stderr = (!output.stderr.is_empty()).then_some(output.stderr);
@@ -731,6 +747,7 @@ mod tests {
     struct FixtureRunner {
         responses: Mutex<VecDeque<Result<String, (i32, String)>>>,
         calls: Mutex<Vec<(String, Duration)>>,
+        args: Mutex<Vec<Vec<String>>>,
     }
 
     impl FixtureRunner {
@@ -738,11 +755,16 @@ mod tests {
             Self {
                 responses: Mutex::new(responses.into()),
                 calls: Mutex::new(Vec::new()),
+                args: Mutex::new(Vec::new()),
             }
         }
 
         fn calls(&self) -> Vec<(String, Duration)> {
             self.calls.lock().unwrap().clone()
+        }
+
+        fn recorded_args(&self) -> Vec<Vec<String>> {
+            self.args.lock().unwrap().clone()
         }
     }
 
@@ -750,7 +772,7 @@ mod tests {
         fn run(
             &self,
             program: &str,
-            _args: &[&str],
+            args: &[&str],
             timeout: Duration,
             _cancel: &CancellationToken,
         ) -> Result<RawOutput, ScriptFailure> {
@@ -758,6 +780,10 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push((program.to_string(), timeout));
+            self.args
+                .lock()
+                .unwrap()
+                .push(args.iter().map(|arg| arg.to_string()).collect());
             self.responses
                 .lock()
                 .unwrap()
@@ -1108,5 +1134,66 @@ mod tests {
         .expect("sh succeeds");
         assert!(output.stdout.starts_with("out"));
         assert!(output.stderr.starts_with("err"));
+    }
+
+    #[test]
+    fn tick_passes_script_to_osascript_via_e_flag() {
+        let runner = FixtureRunner::new(vec![
+            pgrep(true),
+            pgrep(false),
+            script_output(music_row("playing", "10", "200", "Song")),
+        ]);
+        let mut state = LoopState::default();
+        tick_events(&mut state, &runner, None);
+
+        let args = runner.recorded_args();
+        let script_args = args.last().expect("osascript call");
+        assert_eq!(script_args.first().map(String::as_str), Some("-e"));
+        assert!(
+            script_args
+                .get(1)
+                .is_some_and(|script| script.contains("Music"))
+        );
+    }
+
+    #[test]
+    fn probe_passes_script_to_osascript_via_e_flag() {
+        let runner = FixtureRunner::new(vec![
+            pgrep(true),
+            pgrep(false),
+            script_output(music_row("playing", "10", "200", "Song")),
+        ]);
+        let snapshot = probe_sync(None, &runner).unwrap();
+        assert_eq!(
+            snapshot.player.as_ref().map(|player| player.id.as_str()),
+            Some("music")
+        );
+
+        let args = runner.recorded_args();
+        let script_args = args.last().expect("osascript call");
+        assert_eq!(script_args.first().map(String::as_str), Some("-e"));
+    }
+
+    #[test]
+    fn probe_script_only_targets_the_filtered_player() {
+        // Both players running, but only Spotify is requested.
+        let runner = FixtureRunner::new(vec![
+            pgrep(true),
+            pgrep(true),
+            script_output(spotify_row("playing", "45000", "225000", "Other")),
+        ]);
+        let snapshot = probe_sync(Some("spotify"), &runner).unwrap();
+        assert_eq!(
+            snapshot.player.as_ref().map(|player| player.id.as_str()),
+            Some("spotify")
+        );
+
+        let args = runner.recorded_args();
+        let script = args
+            .last()
+            .and_then(|args| args.get(1))
+            .expect("script argument");
+        assert!(script.contains("Spotify"));
+        assert!(!script.contains("Music"), "Music must not be scripted");
     }
 }

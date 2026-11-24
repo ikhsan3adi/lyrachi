@@ -154,7 +154,7 @@ pub fn parse_row(line: &str) -> Option<ParsedRow> {
     let player = PlayerId::from_name(&fields[0])?;
 
     let state = match fields[1].as_str() {
-        "playing" => RowState::Playing,
+        "playing" | "fast forwarding" | "rewinding" => RowState::Playing,
         "paused" => RowState::Paused,
         "stopped" => RowState::Stopped,
         "error" => RowState::Error(fields[2].parse::<i32>().ok()?),
@@ -229,11 +229,13 @@ pub fn normalize_ms(
     let position_ms = match position_raw {
         None => 0,
         Some(raw) => {
-            let is_ms = match (duration_raw, time_ms) {
-                (Some(d), _) if d > SECONDS_AMBIGUITY_CAP => true,
-                (Some(d), _) if d > 0 => raw > d * 105 / 100,
-                (None, Some(tms)) => raw > tms * 105 / 1000,
-                _ => false,
+            let is_ms = match time_ms {
+                Some(tms) => raw > tms * 105 / 1000,
+                None => match duration_raw {
+                    Some(d) if d > SECONDS_AMBIGUITY_CAP => true,
+                    Some(d) if d > 0 => raw > d * 105 / 100,
+                    _ => false,
+                },
             };
             if is_ms { raw } else { raw.saturating_mul(1000) }
         }
@@ -408,6 +410,26 @@ mod tests {
         let (position_ms, duration_ms) = normalize_ms(Some(45), None, None);
         assert_eq!(position_ms, 45_000);
         assert_eq!(duration_ms, None);
+    }
+
+    #[test]
+    fn long_music_track_uses_time_string_for_position_units() {
+        // A 1:30:00 Music track reports seconds; the MM:SS string proves the
+        // unit even though the raw duration exceeds the seconds cap.
+        let (position_ms, duration_ms) = normalize_ms(Some(1_800), Some(5_400), Some("1:30:00"));
+        assert_eq!(position_ms, 1_800_000);
+        assert_eq!(duration_ms, Some(5_400_000));
+    }
+
+    #[test]
+    fn scrubbing_states_are_treated_as_playing() {
+        for state in ["fast forwarding", "rewinding"] {
+            let parsed = row(&format!(
+                "music{FS}{state}{FS}45{FS}225{FS}3:45{FS}Title{FS}Artist{FS}Album{FS}42"
+            ));
+            assert_eq!(parsed.state, RowState::Playing);
+            assert_eq!(parsed.normalized().0, 45_000);
+        }
     }
 
     #[test]

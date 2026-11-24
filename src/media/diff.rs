@@ -93,9 +93,13 @@ pub fn diff(previous: &PollState, next: &PollState) -> Vec<MediaEvent> {
 /// Returns the seek target when `next` deviates from the expected position,
 /// or `None` when the sample is ordinary (including a stale repeated value).
 /// Expectation extrapolates only out of `Playing`; out of `Paused` it is the
-/// frozen position, so a resume after a paused seek is still detected.
+/// frozen position, so a paused seek or a resume after a paused seek is still
+/// detected.
 fn seek_position(previous: &PollState, next: &PollState) -> Option<u64> {
-    if next.playback != PlaybackStatus::Playing {
+    if !matches!(
+        next.playback,
+        PlaybackStatus::Playing | PlaybackStatus::Paused
+    ) {
         return None;
     }
     if !matches!(
@@ -312,6 +316,40 @@ mod tests {
             vec![
                 MediaEvent::Status(PlaybackStatus::Playing),
                 MediaEvent::Seeked { pos_ms: 90_000 },
+            ]
+        );
+    }
+
+    #[test]
+    fn paused_seek_is_detected() {
+        let at = Instant::now();
+        let mut previous = state(Some("music"), at);
+        previous.playback = PlaybackStatus::Paused;
+        previous.position_ms = 10_000;
+        let mut next = previous.clone();
+        next.sampled_at = at + std::time::Duration::from_secs(1);
+        next.position_ms = 50_000;
+        assert_eq!(
+            diff(&previous, &next),
+            vec![MediaEvent::Seeked { pos_ms: 50_000 }]
+        );
+    }
+
+    #[test]
+    fn pausing_after_a_seek_is_detected() {
+        let at = Instant::now();
+        let mut previous = state(Some("music"), at);
+        previous.playback = PlaybackStatus::Playing;
+        previous.position_ms = 10_000;
+        let mut next = previous.clone();
+        next.sampled_at = at + std::time::Duration::from_millis(500);
+        next.playback = PlaybackStatus::Paused;
+        next.position_ms = 50_000;
+        assert_eq!(
+            diff(&previous, &next),
+            vec![
+                MediaEvent::Status(PlaybackStatus::Paused),
+                MediaEvent::Seeked { pos_ms: 50_000 },
             ]
         );
     }
