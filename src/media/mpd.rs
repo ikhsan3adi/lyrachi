@@ -11,7 +11,11 @@ use tracing::debug;
 
 use super::backend::{BoxFuture, MediaBackend};
 use super::composite::{ExponentialBackoff, jitter_seed};
-use super::{BackendKind, MediaError, MediaEvent, MediaSnapshot, MpdConfig, PlayerKind, TrackMeta};
+use super::diff::{PollState, diff};
+use super::{
+    BackendKind, MediaError, MediaEvent, MediaSnapshot, MpdConfig, PlayerKind, PlayerSnapshot,
+    TrackMeta,
+};
 use crate::core::clock::PlaybackStatus;
 
 const PLAYING_POLL: Duration = Duration::from_millis(500);
@@ -189,7 +193,7 @@ async fn poll_connected(
     wake_rx: &mut mpsc::Receiver<()>,
     cancel: &CancellationToken,
 ) -> bool {
-    let mut previous: Option<MpdState> = None;
+    let mut previous: Option<PollState> = None;
     let mut announced = false;
 
     loop {
@@ -209,7 +213,8 @@ async fn poll_connected(
             }
         };
         let rtt = started.elapsed();
-        let current = parse_state(&status, &song);
+        let parsed = parse_state(&status, &song);
+        let current = poll_state(&parsed, Instant::now());
 
         if super::composite::player_matches("mpd", player_filter)
             && emit_changes(previous.as_ref(), &current, rtt, tx).await
@@ -217,8 +222,8 @@ async fn poll_connected(
             announced = true;
         }
 
-        previous = Some(current.clone());
-        let wait = if current.playback == PlaybackStatus::Playing {
+        previous = Some(current);
+        let wait = if parsed.playback == PlaybackStatus::Playing {
             PLAYING_POLL
         } else {
             IDLE_POLL
@@ -239,42 +244,33 @@ async fn sleep_or_cancel(delay: Duration, cancel: &CancellationToken) {
     }
 }
 
+fn poll_state(current: &MpdState, sampled_at: Instant) -> PollState {
+    PollState {
+        player: Some(PlayerSnapshot {
+            id: "mpd".to_string(),
+            kind: PlayerKind::Native,
+            backend: BackendKind::Mpd,
+        }),
+        track: current.track.clone(),
+        playback: current.playback,
+        position_ms: current.position_ms,
+        rate: 1.0,
+        sampled_at,
+    }
+}
+
 async fn emit_changes(
-    previous: Option<&MpdState>,
-    current: &MpdState,
+    previous: Option<&PollState>,
+    current: &PollState,
     rtt: Duration,
     tx: &mpsc::Sender<MediaEvent>,
 ) -> bool {
+    let fresh = PollState::default();
     let mut announced = false;
 
-    if previous.is_none() {
-        let _ = tx
-            .send(MediaEvent::PlayerChanged {
-                id: "mpd".to_string(),
-                kind: PlayerKind::Native,
-                backend: BackendKind::Mpd,
-            })
-            .await;
-        announced = true;
-    }
-
-    if previous.and_then(|state| state.track.as_ref()) != current.track.as_ref() {
-        match &current.track {
-            Some(track) => {
-                let _ = tx.send(MediaEvent::TrackChanged(track.clone())).await;
-            }
-            None => {
-                let _ = tx.send(MediaEvent::NoTrack).await;
-            }
-        }
-    }
-
-    if previous.is_none_or(|state| state.playback != current.playback) {
-        let _ = tx.send(MediaEvent::Status(current.playback)).await;
-    }
-
-    if previous.is_none() {
-        let _ = tx.send(MediaEvent::Rate(1.0)).await;
+    for event in diff(previous.unwrap_or(&fresh), current) {
+        announced |= matches!(event, MediaEvent::PlayerChanged { .. });
+        let _ = tx.send(event).await;
     }
 
     if current.track.is_some() {
@@ -640,6 +636,45 @@ mod tests {
         assert!(snapshot.connections >= 2);
         assert!(snapshot.idle_requests > 0);
         assert!(snapshot.status_requests >= 2);
+
+        cancel.cancel();
+        let _ = handle.await;
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn forward_seek_is_reported_without_a_track_change() {
+        let (port, state, server) = spawn_mock().await;
+        let backend = MpdBackend::new(MpdConfig {
+            enabled: true,
+            host: "127.0.0.1".to_string(),
+            port,
+            timeout: Duration::from_millis(500),
+        });
+        let (tx, mut rx) = mpsc::channel(128);
+        let cancel = CancellationToken::new();
+        let handle = backend
+            .start_monitor(None, tx, cancel.clone())
+            .await
+            .unwrap();
+
+        let initial = collect_events(&mut rx, Duration::from_millis(150)).await;
+        assert!(initial.iter().any(
+            |event| matches!(event, MediaEvent::PositionPoll { pos_ms, .. } if *pos_ms >= 1_000)
+        ));
+
+        state.lock().unwrap().elapsed = 120.0;
+
+        let updated = collect_events(&mut rx, Duration::from_millis(900)).await;
+        assert!(updated.iter().any(|event| matches!(
+            event,
+            MediaEvent::Seeked { pos_ms } if *pos_ms >= 120_000
+        )));
+        assert!(
+            !updated
+                .iter()
+                .any(|event| matches!(event, MediaEvent::TrackChanged(_)))
+        );
 
         cancel.cancel();
         let _ = handle.await;
