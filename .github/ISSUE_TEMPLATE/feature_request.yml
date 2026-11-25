@@ -1,0 +1,46 @@
+name: Feature request
+description: Ask for a capability Lyrachi does not have yet
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What do you try to do, and what stops you today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: What you want instead
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+      description: Other tools, workarounds, or config that gets you close.
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - lyrics resolution
+        - display modes and visuals
+        - media backends
+        - headless pipe and status
+        - configuration and styles
+        - packaging
+        - other
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Screenshots, terminal captures, or links that show the need.
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for this idea
+          required: true

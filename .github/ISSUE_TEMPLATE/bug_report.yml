@@ -1,0 +1,108 @@
+name: Bug report
+description: Something in Lyrachi does not work the way the docs say it should
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Fill in what you can. The version, platform, and backend fields matter most, because most reports are backend specific.
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened
+      description: A short summary of the problem.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Start lyrachi while ...
+        2. Switch to ...
+        3. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected instead
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: Lyrachi version
+      description: Output of `lyrachi --version`.
+    validations:
+      required: true
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Platform
+      options:
+        - Linux
+        - Windows
+        - macOS
+        - BSD
+        - other
+    validations:
+      required: true
+  - type: dropdown
+    id: backend
+    attributes:
+      label: Media backend
+      description: Which backend was active when the problem showed up?
+      options:
+        - MPRIS
+        - SMTC
+        - MPD
+        - WebNowPlaying
+        - MediaRemote
+        - AppleScript
+        - headless pipe
+        - not sure
+    validations:
+      required: true
+  - type: input
+    id: player
+    attributes:
+      label: Player app and version
+      description: For example mpv 0.40, Spotify 1.2.56, LiMusic.
+  - type: dropdown
+    id: install
+    attributes:
+      label: Installation method
+      options:
+        - crates.io
+        - GitHub release
+        - AUR
+        - cargo from source
+        - other
+  - type: textarea
+    id: terminal
+    attributes:
+      label: Terminal and font
+      description: Only for rendering problems. Name the terminal, the font, and whether the text is CJK.
+  - type: textarea
+    id: config
+    attributes:
+      label: Relevant config
+      description: Paste the parts of config.toml that matter. Remove anything private.
+      render: toml
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: |
+        Run with LYRACHI_LOG=debug and paste the output. Logs can contain track titles, so remove anything you do not want to share.
+      render: shell
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I searched existing issues and discussions for this problem
+          required: true
+        - label: I can reproduce this on the latest release
+          required: true
