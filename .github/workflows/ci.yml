@@ -8,6 +8,7 @@ on:
       - "LICENSE"
       - "art/**"
       - "docs/**"
+      - ".github/workflows/release.yml"
   pull_request:
     paths-ignore: *docs-paths
 
