@@ -10,9 +10,7 @@ depends=('gcc-libs')
 makedepends=('rust')
 optdepends=('mpd: MPD media backend')
 source=("$pkgname-$pkgver.crate::https://static.crates.io/crates/$pkgname/$pkgname-$pkgver.crate")
-# TODO(aur): replace SKIP with the real hash once the crate is published:
-# `curl -fsSL https://static.crates.io/crates/lyrachi/lyrachi-$pkgver.crate | sha256sum`
-sha256sums=('SKIP')
+sha256sums=('7d8af1c2033811c5de79db528ea6be813408d2f8572c44640e8197fe9e16b9e5')
 options=('!debug')
 
 prepare() {
