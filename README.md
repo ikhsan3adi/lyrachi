@@ -14,12 +14,13 @@
 
 <div align="center">
 
-[![version](https://img.shields.io/badge/version-0.4.0-blue?style=flat-square)](#building-and-installing)
+[![version](https://img.shields.io/badge/version-0.5.0-blue?style=flat-square)](#building-and-installing)
+[![crates.io](https://img.shields.io/crates/v/lyrachi?style=flat-square&label=crates.io&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi)
 [![rust](https://img.shields.io/badge/rust-1.89%2B-orange?style=flat-square)](#building-and-installing)
 [![platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-red?style=flat-square)](#media-players)
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
-<!-- Badges below need a public repository; uncomment when Lyrachi goes public.
+<!-- Badges below need a public repository or a published AUR package.
 [![CI](https://img.shields.io/github/actions/workflow/status/ikhsan3adi/lyrachi/ci.yml?style=flat-square&label=CI&logo=github)](https://github.com/ikhsan3adi/lyrachi/actions/workflows/ci.yml)
 [![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
 [![crates.io downloads](https://img.shields.io/crates/d/lyrachi?style=flat-square&label=crates.io%20downloads&color=B7410E&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi)
@@ -88,6 +89,18 @@ You need Rust 1.89 or newer.
 
 ```sh
 cargo install --path .
+```
+
+From crates.io:
+
+```sh
+cargo install lyrachi
+```
+
+Release archives ship the experimental providers too; when installing the crate, enable them explicitly:
+
+```sh
+cargo install lyrachi --features experimental-providers
 ```
 
 This builds the `lyrachi` binary and puts it on your cargo bin path. To run from a checkout instead:
