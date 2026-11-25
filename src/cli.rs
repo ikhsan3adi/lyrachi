@@ -6,7 +6,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 #[command(
     name = "lyrachi",
     version,
-    about = "Synchronized terminal lyrics for active media players"
+    about = "Synchronized terminal lyrics for active media players",
+    after_help = "\nExamples:\n  lyrachi                        start the TUI with the resolved config\n  lyrachi --player spotify       follow only Spotify\n  lyrachi status --json          one JSON object for scripts\n  lyrachi pipe --format json     stream lyric lines to a status bar\n  lyrachi config check           validate config.toml and the active style\n\nEnvironment:\n  LYRACHI_HOME  put config, data, cache, state, and Music under one tree\n  LYRACHI_LOG   tracing filter, for example: info or lyrachi=debug"
 )]
 pub struct Args {
     /// Only consider this media player (for example: mpv, spotify, firefox).
@@ -51,7 +52,7 @@ pub struct Args {
 
 #[derive(Debug, Clone, PartialEq, Eq, Subcommand)]
 pub enum Command {
-    /// Print resolved application paths.
+    /// Print resolved application paths (config, styles, cache, log).
     Paths,
     /// Print the active media snapshot and lyric resolution status.
     Status {
