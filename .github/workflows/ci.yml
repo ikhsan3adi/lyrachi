@@ -3,7 +3,13 @@ name: CI
 on:
   push:
     branches: ["master"]
+    paths-ignore: &docs-paths
+      - "**.md"
+      - "LICENSE"
+      - "art/**"
+      - "docs/**"
   pull_request:
+    paths-ignore: *docs-paths
 
 permissions:
   contents: read
