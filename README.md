@@ -9,19 +9,22 @@
 </h1>
 
 <p align="center">
-  Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal
+  <b>Synchronized lyrics with animated visual stages in your terminal</b>
 </p>
 
 <div align="center">
 
-[![version](https://img.shields.io/badge/version-0.3.1-blue?style=flat-square)](#building-and-installing)
-[![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
+[![version](https://img.shields.io/badge/version-0.4.0-blue?style=flat-square)](#building-and-installing)
 [![rust](https://img.shields.io/badge/rust-1.89%2B-orange?style=flat-square)](#building-and-installing)
-[![platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows-red?style=flat-square)](#media-players)
+[![platform](https://img.shields.io/badge/platform-Linux%20%C2%B7%20Windows%20%C2%B7%20macOS-red?style=flat-square)](#media-players)
 [![license](https://img.shields.io/badge/license-GPL--3.0-blue?style=flat-square)](LICENSE)
 
-<!-- [![crates.io downloads](https://img.shields.io/crates/d/lyrachi?style=flat-square&label=crates.io%20downloads&color=B7410E&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi) -->
-<!-- [![AUR Last Modified](https://img.shields.io/aur/last-modified/lyrachi?style=flat-square&logo=arch-linux)](https://aur.archlinux.org/packages/lyrachi) -->
+<!-- Badges below need a public repository; uncomment when Lyrachi goes public.
+[![CI](https://img.shields.io/github/actions/workflow/status/ikhsan3adi/lyrachi/ci.yml?style=flat-square&label=CI&logo=github)](https://github.com/ikhsan3adi/lyrachi/actions/workflows/ci.yml)
+[![GitHub release downloads](https://img.shields.io/github/downloads/ikhsan3adi/lyrachi/total?style=flat-square&label=release%20downloads&color=2EA44F&logo=github&logoColor=white)](https://github.com/ikhsan3adi/lyrachi/releases)
+[![crates.io downloads](https://img.shields.io/crates/d/lyrachi?style=flat-square&label=crates.io%20downloads&color=B7410E&logo=rust&logoColor=white)](https://crates.io/crates/lyrachi)
+[![AUR Last Modified](https://img.shields.io/aur/last-modified/lyrachi?style=flat-square&logo=arch-linux)](https://aur.archlinux.org/packages/lyrachi)
+-->
 
 </div>
 
@@ -183,7 +186,6 @@ Four builtin presets ship: `builtin:default`, `builtin:dark`, `builtin:aurora`, 
 ## Roadmap
 
 - **macOS**: runtime verification of the MediaRemote and AppleScript backends on real hardware.
-- **Stable release**: render benchmarks and UI snapshots finalized for every display mode.
 
 After that, the visual era: full bitmap font coverage for CJK and other scripts in the block and cylinder modes, broader visual and UI polish, more built-in color schemes, and album artwork with dynamic accent colors.
 A spectrum visualizer and beat-synced animation are planned further out.

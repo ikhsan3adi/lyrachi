@@ -1,4 +1,4 @@
-//! Lyrachi: terminal lyrics for active media players.
+//! Lyrachi: synchronized lyrics with animated visual stages in your terminal.
 
 #![deny(unsafe_code)]
 
