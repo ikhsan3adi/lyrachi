@@ -1,29 +1,31 @@
 # Maintainer: Ikhsan Satriadi <ikhsan3adi@proton.me>
 pkgname=lyrachi
-pkgver=0.2.0
+pkgver=0.5.0
 pkgrel=1
-pkgdesc="Real-time synchronized lyrics for your music player, with rich visual stages, live in your terminal"
-arch=('x86_64')
+pkgdesc="Synchronized lyrics with animated visual stages in your terminal"
+arch=('x86_64' 'aarch64')
 url="https://github.com/ikhsan3adi/lyrachi"
 license=('GPL3')
 depends=('gcc-libs')
-optdepends=('mpd: MPD media backend')
 makedepends=('rust')
-source=("$pkgname-$pkgver.tar.gz::$url/archive/refs/tags/v$pkgver.tar.gz")
-# TODO(release): replace SKIP with the real sha256 after the tag is pushed
-# to GitHub: `curl -L <tag-tarball-url> | sha256sum`.
+optdepends=('mpd: MPD media backend')
+source=("$pkgname-$pkgver.crate::https://static.crates.io/crates/$pkgname/$pkgname-$pkgver.crate")
+# TODO(aur): replace SKIP with the real hash once the crate is published:
+# `curl -fsSL https://static.crates.io/crates/lyrachi/lyrachi-$pkgver.crate | sha256sum`
 sha256sums=('SKIP')
 options=('!debug')
 
 prepare() {
+  cd "$srcdir"
+  tar -xzf "$pkgname-$pkgver.crate"
   cd "$pkgname-$pkgver"
   cargo fetch --locked --target "$(rustc -vV | sed -n 's/host: //p')"
 }
 
 build() {
-  cd "$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver"
   export CARGO_TARGET_DIR="target"
-  cargo build --frozen --release
+  cargo build --frozen --release --features experimental-providers
 }
 
 # check() is intentionally omitted: the full suite renders TUI snapshots and
@@ -31,7 +33,7 @@ build() {
 # machines without a terminal or with slow CPUs.
 
 package() {
-  cd "$pkgname-$pkgver"
+  cd "$srcdir/$pkgname-$pkgver"
   install -Dm0755 -t "$pkgdir/usr/bin/" target/release/lyrachi
   install -Dm0644 README.md "$pkgdir/usr/share/doc/$pkgname/README.md"
   install -Dm0644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
