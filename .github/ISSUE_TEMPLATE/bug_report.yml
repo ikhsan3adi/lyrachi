@@ -60,7 +60,6 @@ body:
         - WebNowPlaying
         - MediaRemote
         - AppleScript
-        - headless pipe
         - not sure
     validations:
       required: true
